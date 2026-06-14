@@ -1,0 +1,21 @@
+[project]
+name = "qmds"
+version = "0.1.0"
+description = "QMDS - 模块化数据管理系统"
+requires-python = ">=3.12"
+dependencies = [
+    "requests>=2.31",
+    "beautifulsoup4>=4.12",
+    "pymongo>=4.0",
+    "pandas>=2.0",
+    "openpyxl>=3.1",
+    "tldextract>=5.0",
+    "loguru>=0.7",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+qmds = "qmds.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

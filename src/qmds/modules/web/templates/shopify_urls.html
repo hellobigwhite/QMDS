@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card" style="max-width:960px;margin:0 auto;">
+    <h2>🔗 获取指定类目的Shopify店铺URL</h2>
+    <p class="text-muted" style="margin-bottom:16px;">选择类目 → 输入关键词 → 多 API 自动搜索 → URL 清洗去重 → 平台检测 → 存储</p>
+
+    <form method="post" action="/shopify/fetch-urls">
+        <div class="form-group">
+            <label for="category">选择类目</label>
+            <select id="category" name="category" required>
+                <option value="">-- 请选择类目 --</option>
+                {% for cat in categories %}
+                <option value="{{ cat }}" {% if request.form.get('category') == cat %}selected{% endif %}>{{ cat }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="form-group">
+            <label for="keyword">搜索关键词</label>
+            <input type="text" id="keyword" name="keyword" placeholder="例如: wireless headphones, yoga mats, pet food" value="{{ request.form.get('keyword', '') }}" required>
+            <small class="text-muted">多个关键词用逗号或分号分隔</small>
+        </div>
+        <div class="form-group">
+            <label for="provider">搜索平台</label>
+            <select id="provider" name="provider">
+                <option value="">自动切换（全部）</option>
+                {% for api in api_status %}
+                <option value="{{ api.name }}" {% if api.enabled %}{% else %}disabled{% endif %} {% if request.form.get('provider') == api.name %}selected{% endif %}>
+                    {{ api.name }} ({{ api.available_keys }}/{{ api.total_keys }} key){% if not api.enabled %} - 无可用key{% endif %}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="form-group">
+            <label for="min_products">最低商品数（0 表示不限）</label>
+            <input type="number" id="min_products" name="min_products" placeholder="0" value="{{ request.form.get('min_products', '0') }}" min="0">
+        </div>
+        <div class="form-group">
+            <label>存储方式（二选一）</label>
+            <div style="display:flex;gap:20px;margin-top:4px;">
+                <label style="display:flex;align-items:center;gap:6px;font-size:14px;cursor:pointer;">
+                    <input type="radio" name="storage" value="mongo" {% if request.form.get('storage', 'mongo') == 'mongo' %}checked{% endif %}>
+                    💾 MongoDB（{{ db_name }}.{{ '{category}' }}_unfiltered）
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;font-size:14px;cursor:pointer;">
+                    <input type="radio" name="storage" value="excel" {% if request.form.get('storage') == 'excel' %}checked{% endif %}>
+                    📊 Excel（Data/{category}/{category}.xlsx）
+                </label>
+            </div>
+        </div>
+        <button type="submit" class="btn btn-primary">🚀 开始获取</button>
+    </form>
+
+    {% if api_status %}
+    <div style="margin-top:16px;padding:12px;background:#f8f9ff;border-radius:8px;border:1px solid #e8eaf6;">
+        <strong style="font-size:13px;color:#666;">搜索 API 状态：</strong>
+        <div style="display:flex;gap:12px;margin-top:8px;flex-wrap:wrap;">
+            {% for api in api_status %}
+            <div style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 10px;border-radius:16px;{% if api.enabled %}background:#e8f5e9;color:#2e7d32;{% else %}background:#f5f5f5;color:#999;{% endif %}">
+                <span style="width:8px;height:8px;border-radius:50%;{% if api.enabled %}background:#4caf50;{% else %}background:#ccc;{% endif %}"></span>
+                {{ api.name }}
+                <span style="font-size:11px;opacity:0.8;">({{ api.available_keys }}/{{ api.total_keys }})</span>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    {% if result is not none %}
+    <div class="result-box" style="margin-top:20px;">
+        <div class="stat-row">
+            <span class="stat-label">类目</span>
+            <span class="stat-value">{{ result.category }}</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">关键词</span>
+            <span class="stat-value">{{ result.keyword }}</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">搜索 API</span>
+            <span class="stat-value">{{ result.api_used or 'multi_api' }}</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">原始搜索结果</span>
+            <span class="stat-value">{{ result.total_raw }} 个 URL</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">清洗去重后</span>
+            <span class="stat-value">{{ result.total_after_filter }} 个 URL</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">✅ Shopify 店铺</span>
+            <span class="stat-value" style="color:#2e7d32;">{{ result.total_shopify }} 个</span>
+        </div>
+        {% if result.saved_mongodb is not none %}
+        <div class="stat-row">
+            <span class="stat-label">MongoDB 存储</span>
+            <span class="stat-value" style="color:#1565c0;">{{ result.saved_mongodb }} 条 → {{ result.category }}_unfiltered</span>
+        </div>
+        {% endif %}
+        {% if result.saved_excel %}
+        <div class="stat-row">
+            <span class="stat-label">Excel 导出</span>
+            <span class="stat-value" style="color:#e65100;">{{ result.saved_excel }}</span>
+        </div>
+        {% endif %}
+
+        {% if result.error %}
+        <div class="flash flash-error" style="margin-top:12px;">⚠️ {{ result.error }}</div>
+        {% endif %}
+
+        {% if result.stores %}
+        <div style="margin-top:16px;overflow-x:auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>域名</th>
+                        <th>店铺名称</th>
+                        <th>商品数</th>
+                        <th>货币</th>
+                        <th>URL</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for store in result.stores %}
+                    <tr>
+                        <td>{{ loop.index }}</td>
+                        <td><strong>{{ store.domain }}</strong></td>
+                        <td>{{ store.store_name or '-' }}</td>
+                        <td>{{ store.product_count }}</td>
+                        <td>{{ store.currency }}</td>
+                        <td style="font-size:12px;word-break:break-all;max-width:300px;">
+                            <a href="{{ store.url }}" target="_blank" rel="noopener">{{ store.url }}</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <div style="margin-top:12px;padding:12px;background:#e8f5e9;border-radius:6px;font-size:13px;color:#2e7d32;">
+            ✅ 共找到 <strong>{{ result.total_shopify }}</strong> 个 Shopify 店铺
+            （原始 {{ result.total_raw }} → 去重 {{ result.total_after_filter }} → 确认 {{ result.total_shopify }}）
+        </div>
+        {% elif not result.error %}
+        <p class="text-muted" style="margin-top:12px;">未找到 Shopify 店铺，请尝试其他关键词</p>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

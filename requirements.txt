@@ -1,0 +1,25 @@
+# 核心依赖
+requests>=2.31
+beautifulsoup4>=4.12
+pymongo>=4.0
+pandas>=2.0
+openpyxl>=3.1
+tldextract>=5.0
+loguru>=0.7
+python-dotenv>=1.0
+
+# 浏览器自动化（按需安装）
+# playwright>=1.40
+# playwright-stealth>=1.0
+
+# 数据处理增强（按需安装）
+# pyahocorasick>=2.0
+# rapidfuzz>=3.0
+# sentence-transformers>=2.2
+
+# 代理
+# dnspython>=2.0
+
+# Web 界面（按需安装）
+flask>=3.0
+waitress>=3.0

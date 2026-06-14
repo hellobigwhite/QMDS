@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <h2>检测电商平台</h2>
+    <p class="text-muted mb-4">识别目标网址所使用的电商平台类型。</p>
+    <form method="POST">
+        <label for="url">目标 URL</label>
+        <input type="url" id="url" name="url" placeholder="https://example.com" required>
+        <button type="submit" class="btn btn-info">检测</button>
+    </form>
+</div>
+
+{% if result %}
+<div class="card">
+    <h2>检测结果</h2>
+    <div class="result-box">
+        <div class="stat-row">
+            <span class="stat-label">平台</span>
+            <span class="stat-value">
+                <span class="badge-platform
+                    {%- if result.platform.value == 'shopify' %} badge-shopify
+                    {%- elif result.platform.value == 'woocommerce' %} badge-woocommerce
+                    {%- elif result.platform.value == 'magento' %} badge-magento
+                    {%- else %} badge-unknown{% endif %}">
+                    {{ result.platform.value }}
+                </span>
+            </span>
+        </div>
+        <div class="stat-row"><span class="stat-label">置信度</span><span class="stat-value">{{ "%.0f"|format(result.confidence * 100) }}%</span></div>
+        {% if result.store_name %}<div class="stat-row"><span class="stat-label">店铺名称</span><span class="stat-value">{{ result.store_name }}</span></div>{% endif %}
+        {% if result.product_count %}<div class="stat-row"><span class="stat-label">商品数量</span><span class="stat-value">{{ result.product_count }}</span></div>{% endif %}
+        {% if result.currency %}<div class="stat-row"><span class="stat-label">货币</span><span class="stat-value">{{ result.currency }}</span></div>{% endif %}
+    </div>
+</div>
+{% endif %}
+{% endblock %}

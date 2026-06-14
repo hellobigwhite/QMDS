@@ -1,0 +1,516 @@
+{% extends "base.html" %}
+
+{% block title %}数据爬取 - 站群网页控制台{% endblock %}
+
+{% block content %}
+<h2 class="section-title">数据爬取</h2>
+<p class="muted">把关键词提交到后台任务中心执行，结果可保存到 Excel 或 MongoDB。</p>
+
+<form method="post" action="{{ url_for('scraper_start') }}" class="stack">
+    <div>
+        <h3 class="section-title">爬取参数</h3>
+        <div class="form-grid">
+            <div class="field">
+                <label>关键词</label>
+                <textarea name="keywords" rows="6" style="width: 100%; border: 1px solid #cfd9e6; border-radius: 10px; padding: 10px 12px; font-size: 14px;">{{ defaults.keywords }}</textarea>
+            </div>
+            <div class="field">
+                <label>搜索接口</label>
+                <select name="api_mode" style="width: 100%; border: 1px solid #cfd9e6; border-radius: 10px; padding: 10px 12px; font-size: 14px;">
+                    <option value="1" {% if defaults.api_mode == '1' %}selected{% endif %}>SearchAPI</option>
+                    <option value="2" {% if defaults.api_mode == '2' %}selected{% endif %}>ScraperAPI</option>
+                    <option value="3" {% if defaults.api_mode == '3' %}selected{% endif %}>BestProxy</option>
+                    <option value="4" {% if defaults.api_mode == '4' %}selected{% endif %}>Crawlbase</option>
+                    <option value="5" {% if defaults.api_mode == '5' %}selected{% endif %}>XCrawl</option>
+                </select>
+            </div>
+            <div class="field">
+                <label>API Key / Token</label>
+                <input type="text" name="api_key" value="{{ defaults.api_key }}" placeholder="SearchAPI / ScraperAPI / Crawlbase / XCrawl Key">
+            </div>
+            <div class="field">
+                <label>BestProxy Token 文件</label>
+                <input type="text" name="bestproxy_tokens_file" value="{{ defaults.bestproxy_tokens_file }}" placeholder="留空则使用 bestproxy_tokens.txt">
+            </div>
+            <div class="field">
+                <label>最大结果数</label>
+                <input type="number" name="max_results" value="{{ defaults.max_results }}">
+            </div>
+            <div class="field">
+                <label>Shopify 最小产品数</label>
+                <input type="number" name="min_product_count" value="{{ defaults.min_product_count }}">
+            </div>
+            <div class="field">
+                <label>保存方式</label>
+                <select name="save_mode" style="width: 100%; border: 1px solid #cfd9e6; border-radius: 10px; padding: 10px 12px; font-size: 14px;">
+                    <option value="excel" {% if defaults.save_mode == 'excel' %}selected{% endif %}>Excel</option>
+                    <option value="mongo" {% if defaults.save_mode == 'mongo' %}selected{% endif %}>MongoDB</option>
+                </select>
+            </div>
+            <div class="field">
+                <label>分类名</label>
+                <input type="text" name="category" value="{{ defaults.category }}" placeholder="用于 Data/分类名/分类名.xlsx">
+            </div>
+            <div class="field">
+                <label>MongoDB 集合</label>
+                <input type="text" name="mongo_collection" value="{{ defaults.mongo_collection }}" placeholder="留空则自动使用 分类名_Unfiltered_URLs">
+            </div>
+        </div>
+    </div>
+
+    <div class="toolbar">
+        <button class="btn btn-primary" type="submit">开始爬取</button>
+        <a class="btn btn-secondary" href="{{ url_for('tasks_list') }}">查看任务中心</a>
+    </div>
+</form>
+
+<form method="post" action="{{ url_for('scraper_crawl_domains') }}" class="stack" style="margin-top: 24px;">
+    <div>
+        <h3 class="section-title">域名直爬</h3>
+        <p class="muted">直接粘贴 Shopify 域名，系统会自动导入并爬取商品数据到 <code>shopify_data_new</code>，相当于"导入 URL + 商品爬取"一步完成。</p>
+        <div class="form-grid">
+            <div class="field" style="grid-column: 1 / -1;">
+                <label>粘贴域名（一行一个）</label>
+                <textarea name="domains" rows="6" placeholder="example.com&#10;shop-demo.com&#10;camergait.com" style="width: 100%; border: 1px solid #cfd9e6; border-radius: 10px; padding: 10px 12px; font-size: 14px;"></textarea>
+            </div>
+            <div class="field">
+                <label>分类名</label>
+                <input type="text" name="category" placeholder="如 Beauty、Office" style="width: 100%;">
+            </div>
+            <div class="field">
+                <label>MongoDB 集合（选填）</label>
+                <input type="text" name="mongo_collection" placeholder="留空自动使用 分类名_Unfiltered_URLs" style="width: 100%;">
+            </div>
+            <div class="field">
+                <label>线程数</label>
+                <input type="number" name="max_workers" value="10" style="width: 100%;">
+            </div>
+            <div class="field">
+                <label>单站最大重试</label>
+                <input type="number" name="max_retry_per_site" value="4" style="width: 100%;">
+            </div>
+            <div class="field">
+                <label>最低价格</label>
+                <input type="number" step="0.01" name="min_price" value="1" style="width: 100%;">
+            </div>
+            <div class="field">
+                <label>每分类回投上限</label>
+                <input type="number" name="reuse_per_category_limit" value="200" style="width: 100%;">
+            </div>
+        </div>
+        <div class="toolbar" style="margin-top: 12px;">
+            <label><input type="checkbox" name="reuse_requeue_before_crawl" value="1" checked> 爬取前自动回投复用池</label>
+            <label><input type="checkbox" name="skip_already_crawled_source_url" value="1"> 跳过已爬来源</label>
+        </div>
+    </div>
+    <div class="toolbar">
+        <button class="btn btn-success" type="submit">开始域名直爬</button>
+        <a class="btn btn-secondary" href="{{ url_for('tasks_list') }}">查看任务中心</a>
+    </div>
+</form>
+
+<form method="post" action="{{ url_for('scraper_auto_classify') }}" class="stack" style="margin-top: 24px;">
+    <div>
+        <h3 class="section-title">Shopify URL 自动分类</h3>
+        <p class="muted">系统会自动判断 Shopify URL 属于哪个大类。高置信度结果会移动到对应的 <code>*_Filtered_URLs</code> 集合，低置信度或非 Shopify URL 会从来源集合删除。</p>
+        <div class="form-grid">
+            <div class="field">
+                <label>来源集合</label>
+                <select name="source_collection" style="width: 100%; border: 1px solid #cfd9e6; border-radius: 10px; padding: 10px 12px; font-size: 14px;">
+                    <option value="">请选择来源集合</option>
+                    {% for item in url_source_collections %}
+                    <option value="{{ item }}" {% if auto_classify_defaults.source_collection == item %}selected{% endif %}>{{ item }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="field">
+                <label>最大处理数</label>
+                <input type="number" name="limit" min="1" value="{{ auto_classify_defaults.limit }}">
+            </div>
+            <div class="field">
+                <label>最低命中分</label>
+                <input type="number" name="min_score" min="1" value="{{ auto_classify_defaults.min_score }}">
+            </div>
+            <div class="field">
+                <label>最小领先分差</label>
+                <input type="number" name="min_margin" min="1" value="{{ auto_classify_defaults.min_margin }}">
+            </div>
+        </div>
+        <p class="muted" style="margin-top: 10px;">建议默认值：最大处理数 100，最低命中分 12，最小领先分差 4。分数越高越严格，分差越大越能避免相近类目误判。</p>
+    </div>
+
+    <div class="toolbar">
+        <button class="btn btn-warning" type="submit">开始自动分类</button>
+        <a class="btn btn-secondary" href="{{ url_for('tasks_list') }}">查看任务中心</a>
+    </div>
+</form>
+
+<form method="post" action="{{ url_for('scraper_start_product_crawl') }}" class="stack" style="margin-top: 24px;">
+    <div>
+        <h3 class="section-title">商品数据爬取</h3>
+        <p class="muted">从 `shopify_url` 的 `_Filtered_URLs` 或 `_Unfiltered_URLs` 读取来源，先把当前任务按分类写入 `_Reuse_Queue`，再按时间和次数规则把到期旧 URL 回投到任务池，最后爬取商品数据到 `shopify_data_new`。</p>
+        <div class="form-grid">
+            <div class="field">
+                <label>来源模式</label>
+                <select name="task_source_mode" style="width: 100%; border: 1px solid #cfd9e6; border-radius: 10px; padding: 10px 12px; font-size: 14px;">
+                    <option value="1" {% if product_defaults.task_source_mode == '1' %}selected{% endif %}>Filtered_URLs</option>
+                    <option value="2" {% if product_defaults.task_source_mode == '2' %}selected{% endif %}>Unfiltered_URLs</option>
+                </select>
+            </div>
+            <div class="field">
+                <label>线程数</label>
+                <input type="number" name="max_workers" value="{{ product_defaults.max_workers }}">
+            </div>
+            <div class="field">
+                <label>单站最大重试</label>
+                <input type="number" name="max_retry_per_site" value="{{ product_defaults.max_retry_per_site }}">
+            </div>
+            <div class="field">
+                <label>最低价格</label>
+                <input type="number" step="0.01" name="min_price" value="{{ product_defaults.min_price }}">
+            </div>
+            <div class="field">
+                <label>每分类回投上限</label>
+                <input type="number" name="reuse_per_category_limit" value="{{ product_defaults.reuse_per_category_limit }}">
+            </div>
+            <div class="field">
+                <label>URL 最大复用次数</label>
+                <input type="number" name="reuse_max_use_count" value="{{ product_defaults.reuse_max_use_count }}">
+                <div class="muted">填 0 表示不限制</div>
+            </div>
+            <div class="field">
+                <label>Mode2 最大回投次数</label>
+                <input type="number" name="reuse_max_mode2_count" value="{{ product_defaults.reuse_max_mode2_count }}">
+                <div class="muted">仅 Unfiltered 模式生效，填 0 表示不限制</div>
+            </div>
+            <div class="field">
+                <label>汇率文件</label>
+                <input type="text" value="{{ default_currency_path }}" readonly>
+                <div class="muted">{% if default_currency_exists %}已在项目根目录找到 currency_config.json{% else %}当前项目根目录还没有 currency_config.json{% endif %}</div>
+            </div>
+            <div class="field">
+                <label>代理文件</label>
+                <input type="text" value="{{ default_proxies_path }}" readonly>
+                <div class="muted">{% if default_proxies_exists %}已在项目根目录找到 proxies.txt{% else %}当前项目根目录还没有 proxies.txt{% endif %}</div>
+            </div>
+        </div>
+        <div class="toolbar">
+            <label><input type="checkbox" name="reuse_requeue_before_crawl" value="1" {% if product_defaults.reuse_requeue_before_crawl %}checked{% endif %}> 爬取前自动回投复用池</label>
+            <label><input type="checkbox" name="skip_already_crawled_source_url" value="1" {% if product_defaults.skip_already_crawled_source_url %}checked{% endif %}> 跳过已爬来源</label>
+            <label><input type="checkbox" name="clear_only_consumed_urls" value="1" {% if product_defaults.clear_only_consumed_urls %}checked{% endif %}> 只删除本次成功消费来源</label>
+            <label><input type="checkbox" name="clear_source_after_crawl" value="1" {% if product_defaults.clear_source_after_crawl %}checked{% endif %}> 爬完清空全部来源集合</label>
+        </div>
+    </div>
+
+    <div class="toolbar">
+        <button class="btn btn-success" type="submit">开始商品爬取</button>
+        <a class="btn btn-secondary" href="{{ url_for('tasks_list') }}">查看任务中心</a>
+    </div>
+</form>
+
+<form method="post" action="{{ url_for('scraper_start_single_collection_crawl') }}" class="stack" style="margin-top: 24px;">
+    <div>
+        <h3 class="section-title">单类目集合商品爬取</h3>
+        <p class="muted">只从选定的单个 MongoDB 集合（如 <code>五金_Filtered_URLs</code>）中读取来源 URL，不遍历所有类目，适用于定向补爬某个类目的商品数据。选好集合后点击下方按钮，系统会仅从该集合加载待爬 URL。</p>
+        <div class="form-grid">
+            <div class="field">
+                <label>目标集合</label>
+                <select name="single_collection" style="width: 100%; border: 1px solid #cfd9e6; border-radius: 10px; padding: 10px 12px; font-size: 14px;">
+                    <option value="">请选择集合</option>
+                    {% for item in product_source_collections %}
+                    <option value="{{ item.name }}" {% if single_collection_defaults.single_collection == item.name %}selected{% endif %}>
+                        {{ item.name }}（{{ item.count }}）
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="field">
+                <label>来源模式</label>
+                <select name="task_source_mode" style="width: 100%; border: 1px solid #cfd9e6; border-radius: 10px; padding: 10px 12px; font-size: 14px;">
+                    <option value="1" {% if single_collection_defaults.task_source_mode == '1' %}selected{% endif %}>Filtered_URLs</option>
+                    <option value="2" {% if single_collection_defaults.task_source_mode == '2' %}selected{% endif %}>Unfiltered_URLs</option>
+                </select>
+            </div>
+            <div class="field">
+                <label>线程数</label>
+                <input type="number" name="max_workers" value="{{ product_defaults.max_workers }}">
+            </div>
+            <div class="field">
+                <label>单站最大重试</label>
+                <input type="number" name="max_retry_per_site" value="{{ product_defaults.max_retry_per_site }}">
+            </div>
+            <div class="field">
+                <label>最低价格</label>
+                <input type="number" step="0.01" name="min_price" value="{{ product_defaults.min_price }}">
+            </div>
+            <div class="field">
+                <label>每分类回投上限</label>
+                <input type="number" name="reuse_per_category_limit" value="{{ product_defaults.reuse_per_category_limit }}">
+            </div>
+            <div class="field">
+                <label>URL 最大复用次数</label>
+                <input type="number" name="reuse_max_use_count" value="{{ product_defaults.reuse_max_use_count }}">
+            </div>
+            <div class="field">
+                <label>Mode2 最大回投次数</label>
+                <input type="number" name="reuse_max_mode2_count" value="{{ product_defaults.reuse_max_mode2_count }}">
+            </div>
+        </div>
+        <div class="toolbar">
+            <label><input type="checkbox" name="reuse_requeue_before_crawl" value="1" {% if product_defaults.reuse_requeue_before_crawl %}checked{% endif %}> 爬取前自动回投复用池</label>
+            <label><input type="checkbox" name="skip_already_crawled_source_url" value="1" {% if product_defaults.skip_already_crawled_source_url %}checked{% endif %}> 跳过已爬来源</label>
+            <label><input type="checkbox" name="clear_only_consumed_urls" value="1" {% if product_defaults.clear_only_consumed_urls %}checked{% endif %}> 只删除本次成功消费来源</label>
+            <label><input type="checkbox" name="clear_source_after_crawl" value="1" {% if product_defaults.clear_source_after_crawl %}checked{% endif %}> 爬完清空来源集合</label>
+        </div>
+    </div>
+
+    <div class="toolbar">
+        <button class="btn btn-warning" type="submit">开始单类目爬取</button>
+        <a class="btn btn-secondary" href="{{ url_for('tasks_list') }}">查看任务中心</a>
+    </div>
+</form>
+
+<form method="post" action="{{ url_for('scraper_start_nav_category_crawl') }}" class="stack" style="margin-top: 24px;">
+    <div>
+        <h3 class="section-title">导航分类商品爬取</h3>
+        <p class="muted">解析店铺导航栏获取两级分类，按集合逐类爬取商品。商品会使用导航栏的两级分类名作为 <code>source_category</code> 和 <code>source_subcategory</code>。</p>
+        <div class="form-grid">
+            <div class="field">
+                <label>来源模式</label>
+                <select name="task_source_mode" style="width: 100%; border: 1px solid #cfd9e6; border-radius: 10px; padding: 10px 12px; font-size: 14px;">
+                    <option value="1" {% if product_defaults.task_source_mode == '1' %}selected{% endif %}>Filtered_URLs</option>
+                    <option value="2" {% if product_defaults.task_source_mode == '2' %}selected{% endif %}>Unfiltered_URLs</option>
+                </select>
+            </div>
+            <div class="field">
+                <label>线程数</label>
+                <input type="number" name="max_workers" value="{{ product_defaults.max_workers }}">
+            </div>
+            <div class="field">
+                <label>单站最大重试</label>
+                <input type="number" name="max_retry_per_site" value="{{ product_defaults.max_retry_per_site }}">
+            </div>
+            <div class="field">
+                <label>最低价格</label>
+                <input type="number" step="0.01" name="min_price" value="{{ product_defaults.min_price }}">
+            </div>
+            <div class="field">
+                <label>每分类回投上限</label>
+                <input type="number" name="reuse_per_category_limit" value="{{ product_defaults.reuse_per_category_limit }}">
+            </div>
+            <div class="field">
+                <label>URL 最大复用次数</label>
+                <input type="number" name="reuse_max_use_count" value="{{ product_defaults.reuse_max_use_count }}">
+            </div>
+            <div class="field">
+                <label>Mode2 最大回投次数</label>
+                <input type="number" name="reuse_max_mode2_count" value="{{ product_defaults.reuse_max_mode2_count }}">
+            </div>
+            <div class="field">
+                <label>汇率文件</label>
+                <input type="text" value="{{ default_currency_path }}" readonly>
+            </div>
+            <div class="field">
+                <label>代理文件</label>
+                <input type="text" value="{{ default_proxies_path }}" readonly>
+            </div>
+        </div>
+        <div class="toolbar">
+            <label><input type="checkbox" name="reuse_requeue_before_crawl" value="1" {% if product_defaults.reuse_requeue_before_crawl %}checked{% endif %}> 爬取前自动回投复用池</label>
+            <label><input type="checkbox" name="skip_already_crawled_source_url" value="1" {% if product_defaults.skip_already_crawled_source_url %}checked{% endif %}> 跳过已爬来源</label>
+            <label><input type="checkbox" name="clear_only_consumed_urls" value="1" {% if product_defaults.clear_only_consumed_urls %}checked{% endif %}> 只删除本次成功消费来源</label>
+            <label><input type="checkbox" name="clear_source_after_crawl" value="1" {% if product_defaults.clear_source_after_crawl %}checked{% endif %}> 爬完清空来源集合</label>
+        </div>
+        <div class="info-box muted" style="margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 8px;">
+            <strong>说明：</strong>此模式会先访问店铺首页解析导航栏菜单，按导航中的集合分类逐页爬取商品。
+            商品保存时 <code>source_category</code> = 导航一级分类名，<code>source_subcategory</code> = 导航二级分类名。
+            若导航解析失败，会自动回退到 <code>collections.json</code> 用集合标题推断两级分类。
+        </div>
+    </div>
+
+    <div class="toolbar" style="margin-top: 12px;">
+        <button class="btn btn-primary" type="submit">开始导航分类爬取</button>
+        <a class="btn btn-secondary" href="{{ url_for('tasks_list') }}">查看任务中心</a>
+    </div>
+</form>
+
+<form method="post" action="{{ url_for('scraper_requeue_reuse') }}" class="stack" style="margin-top: 24px;">
+    <div>
+        <h3 class="section-title">复用池回投到任务池</h3>
+        <p class="muted">把 `_Reuse_Queue` 里已经到期、且满足次数规则的旧 URL 重新投放回任务池，用于补充后续爬取任务。</p>
+        <div class="form-grid">
+            <div class="field">
+                <label>来源模式</label>
+                <select name="task_source_mode" style="width: 100%; border: 1px solid #cfd9e6; border-radius: 10px; padding: 10px 12px; font-size: 14px;">
+                    <option value="1" {% if product_defaults.task_source_mode == '1' %}selected{% endif %}>Filtered_URLs</option>
+                    <option value="2" {% if product_defaults.task_source_mode == '2' %}selected{% endif %}>Unfiltered_URLs</option>
+                </select>
+            </div>
+            <div class="field">
+                <label>每分类回投上限</label>
+                <input type="number" name="reuse_per_category_limit" value="{{ product_defaults.reuse_per_category_limit }}">
+            </div>
+            <div class="field">
+                <label>URL 最大复用次数</label>
+                <input type="number" name="reuse_max_use_count" value="{{ product_defaults.reuse_max_use_count }}">
+            </div>
+            <div class="field">
+                <label>Mode2 最大回投次数</label>
+                <input type="number" name="reuse_max_mode2_count" value="{{ product_defaults.reuse_max_mode2_count }}">
+            </div>
+        </div>
+    </div>
+
+    <div class="toolbar">
+        <button class="btn btn-warning" type="submit">立即回投复用池</button>
+        <a class="btn btn-secondary" href="{{ url_for('tasks_list') }}">查看任务中心</a>
+    </div>
+</form>
+
+<form method="post" action="{{ url_for('scraper_export_products') }}" class="stack" style="margin-top: 24px;">
+    <div>
+        <h3 class="section-title">商品数据导出</h3>
+        <p class="muted">只导出你选中的一个集合，并在集合内部按商品的 `分类` 做小分类限制。小分类不足最小值会跳过，总量不够时优先保留商品数量更多的小分类，分类内再按标题质量优先导出。</p>
+        <div class="form-grid">
+            <div class="field">
+                <label>导出集合</label>
+                <select name="collection_name" style="width: 100%; border: 1px solid #cfd9e6; border-radius: 10px; padding: 10px 12px; font-size: 14px;">
+                    <option value="">请选择集合</option>
+                    {% for item in product_collections %}
+                    <option value="{{ item.name }}" {% if export_defaults.collection_name == item.name %}selected{% endif %}>
+                        {{ item.name }}（{{ item.count }}）
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="field">
+                <label>总导出数量</label>
+                <input type="number" name="total_limit" min="1" value="{{ export_defaults.total_limit }}">
+            </div>
+            <div class="field">
+                <label>每个小分类最小值</label>
+                <input type="number" name="min_per_category" min="1" value="{{ export_defaults.min_per_category }}">
+            </div>
+            <div class="field">
+                <label>每个小分类最大值</label>
+                <input type="number" name="max_per_category" min="1" value="{{ export_defaults.max_per_category }}">
+            </div>
+        </div>
+        <div class="toolbar">
+            <span class="muted">导出成功后会先备份到 `shopify_data_backup`，再从源集合删除本次导出的商品。</span>
+        </div>
+    </div>
+
+    <div class="toolbar">
+        <button class="btn btn-success" type="submit">开始导出商品</button>
+        <a class="btn btn-secondary" href="{{ url_for('tasks_list') }}">查看任务中心</a>
+    </div>
+</form>
+
+<form method="post" action="{{ url_for('scraper_direct_export_products') }}" class="stack" style="margin-top: 24px;">
+    <div>
+        <h3 class="section-title">数据库直接导出商品</h3>
+        <p class="muted">直接导出 `shopify_data_new` 数据库下的 `_clean` 集合。导出成功后会先备份到 `shopify_data_backup`，再从源集合删除本次导出的商品。</p>
+        <div class="form-grid">
+            <div class="field">
+                <label>_clean 集合</label>
+                <select name="collection_name" style="width: 100%; border: 1px solid #cfd9e6; border-radius: 10px; padding: 10px 12px; font-size: 14px;">
+                    <option value="">请选择 _clean 集合</option>
+                    {% for item in clean_product_collections %}
+                    <option value="{{ item.name }}" {% if direct_export_defaults.collection_name == item.name %}selected{% endif %}>
+                        {{ item.name }}（{{ item.count }}）
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="field">
+                <label>导出数量</label>
+                <input type="number" name="limit" min="0" value="{{ direct_export_defaults.limit }}">
+                <div class="muted">填 0 表示导出全部。</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="toolbar">
+        <button class="btn btn-success" type="submit">开始数据库直接导出</button>
+        <a class="btn btn-secondary" href="{{ url_for('tasks_list') }}">查看任务中心</a>
+    </div>
+</form>
+
+<div class="stack" style="margin-top: 24px;">
+    <div>
+        <h3 class="section-title">URL 导入 MongoDB</h3>
+        <form method="post" action="{{ url_for('scraper_import_urls') }}" enctype="multipart/form-data" class="stack">
+            <div class="form-grid">
+                <div class="field">
+                    <label>导入分类名</label>
+                    <input type="text" name="import_category" placeholder="可填已有分类，也可填新分类">
+                </div>
+                <div class="field">
+                    <label>txt 文件</label>
+                    <input type="file" name="txt_file" accept=".txt">
+                </div>
+            </div>
+            <div class="toolbar">
+                <button class="btn btn-primary" type="submit">开始导入 URL</button>
+            </div>
+        </form>
+    </div>
+
+    <div>
+        <h3 class="section-title">URL 导出 txt</h3>
+        <form method="get" action="{{ url_for('scraper_export_urls') }}" class="stack">
+            <div class="form-grid">
+                <div class="field">
+                    <label>选择分类</label>
+                    <select name="category" style="width: 100%; border: 1px solid #cfd9e6; border-radius: 10px; padding: 10px 12px; font-size: 14px;">
+                        <option value="">请选择分类</option>
+                        {% for item in mongo_categories %}
+                        <option value="{{ item }}">{{ item }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <div class="toolbar">
+                <button class="btn btn-secondary" type="submit">导出 txt</button>
+            </div>
+        </form>
+    </div>
+
+    <div>
+        <h3 class="section-title">最近导出的商品 Excel</h3>
+        {% if product_export_files %}
+            {% for item in product_export_files %}
+            <div class="task-card">
+                <div class="task-head">
+                    <div>
+                        <strong>{{ item.name }}</strong>
+                        <div class="muted">{{ item.path }}</div>
+                    </div>
+                    <div class="muted">更新时间: {{ item.mtime }}</div>
+                </div>
+            </div>
+            {% endfor %}
+        {% else %}
+            <div class="empty">当前还没有生成过商品导出 Excel。</div>
+        {% endif %}
+    </div>
+
+    <h3 class="section-title">最近生成的 Excel</h3>
+    {% if scraper_files %}
+        {% for item in scraper_files[:12] %}
+        <div class="task-card">
+            <div class="task-head">
+                <div>
+                    <strong>{{ item.name }}</strong>
+                    <div class="muted">{{ item.path }}</div>
+                </div>
+                <div class="muted">更新时间: {{ item.mtime }}</div>
+            </div>
+        </div>
+        {% endfor %}
+    {% else %}
+        <div class="empty">当前还没有生成过 Data 下的 Excel 文件。</div>
+    {% endif %}
+</div>
+{% endblock %}

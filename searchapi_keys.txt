@@ -1,0 +1,3 @@
+# SearchAPI Keys（每行一个 key，# 开头为注释）
+# 获取地址: https://www.searchapi.io/
+# 例如: abc123def456

@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+
+{% block title %}复用池统计 - 站群网页控制台{% endblock %}
+
+{% block content %}
+<h2 class="section-title">复用池统计</h2>
+<p class="muted">查看各分类 `_Reuse_Queue` 的库存、冷却状态和当前可回投数量，也可以展开看 URL 明细。</p>
+
+<div class="stats">
+    <div class="stat">
+        <div class="label">复用池分类数</div>
+        <div class="value">{{ total_collections }}</div>
+    </div>
+    <div class="stat">
+        <div class="label">URL 总量</div>
+        <div class="value">{{ total_urls }}</div>
+    </div>
+    <div class="stat">
+        <div class="label">当前可回投</div>
+        <div class="value">{{ total_reusable }}</div>
+    </div>
+    <div class="stat">
+        <div class="label">已排队</div>
+        <div class="value">{{ total_queued }}</div>
+    </div>
+    <div class="stat">
+        <div class="label">冷却中</div>
+        <div class="value">{{ total_cooldown }}</div>
+    </div>
+</div>
+
+<div class="toolbar">
+    <a class="btn btn-secondary" href="{{ url_for('scraper_page') }}">去数据爬取</a>
+    <a class="btn btn-warning" href="{{ url_for('reuse_queue_page') }}">刷新统计</a>
+</div>
+
+<h3 class="section-title">分类概览</h3>
+{% if summary_rows %}
+<div class="table-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th class="col-wide">分类</th>
+                <th class="col-medium">集合名</th>
+                <th class="col-status">总量</th>
+                <th class="col-status">可回投</th>
+                <th class="col-status">已排队</th>
+                <th class="col-status">冷却中</th>
+                <th class="col-status">新入池</th>
+                <th class="col-status">匹配成功</th>
+                <th class="col-status">未匹配</th>
+                <th class="col-action">操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in summary_rows %}
+            <tr>
+                <td class="cell-break"><strong>{{ item.category }}</strong></td>
+                <td class="cell-break muted">{{ item.collection }}</td>
+                <td>{{ item.total }}</td>
+                <td><span class="pill">{{ item.reusable }}</span></td>
+                <td>{{ item.queued }}</td>
+                <td>{{ item.cooldown }}</td>
+                <td>{{ item.new }}</td>
+                <td>{{ item.matched }}</td>
+                <td>{{ item.unmatched }}</td>
+                <td>
+                    <div class="actions">
+                        <a class="btn btn-primary" href="{{ url_for('reuse_queue_page', category=item.category) }}">查看明细</a>
+                        <a class="btn btn-secondary" href="{{ url_for('reuse_queue_page', category=item.category, status='queued') }}">仅看已排队</a>
+                        <a class="btn btn-warning" href="{{ url_for('reuse_queue_page', category=item.category, status='cooldown') }}">仅看冷却中</a>
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="empty">当前还没有任何 `_Reuse_Queue` 集合。</div>
+{% endif %}
+
+{% if selected %}
+<div class="stack" style="margin-top: 24px;">
+    <h3 class="section-title">分类明细: {{ selected.category }}</h3>
+    <form method="get" action="{{ url_for('reuse_queue_page') }}" class="toolbar">
+        <input type="hidden" name="category" value="{{ selected.category }}">
+        <div class="search">
+            <input type="text" name="q" value="{{ q }}" placeholder="搜索域名">
+            <select name="status" style="width: 180px; border: 1px solid #cfd9e6; border-radius: 10px; padding: 10px 12px; font-size: 14px;">
+                <option value="" {% if not selected_status %}selected{% endif %}>全部状态</option>
+                <option value="new" {% if selected_status == 'new' %}selected{% endif %}>new</option>
+                <option value="queued" {% if selected_status == 'queued' %}selected{% endif %}>queued</option>
+                <option value="cooldown" {% if selected_status == 'cooldown' %}selected{% endif %}>cooldown</option>
+            </select>
+            <input type="number" name="limit" value="{{ limit }}" placeholder="显示数量">
+            <button class="btn btn-primary" type="submit">筛选</button>
+            <a class="btn btn-secondary" href="{{ url_for('reuse_queue_page', category=selected.category) }}">清空</a>
+            <a class="btn btn-success" href="{{ url_for('reuse_queue_export_domains', category=selected.category, status=selected_status) }}">导出域名</a>
+        </div>
+    </form>
+    <div class="muted">当前集合：{{ selected.collection_name }}，命中 {{ selected.total }} 条，本页展示 {{ selected.rows|length }} 条。&nbsp;&nbsp;<a class="btn btn-success" href="{{ url_for('reuse_queue_export_domains', category=selected.category) }}" style="padding:4px 12px;font-size:13px;">导出全部域名</a></div>
+
+    {% if selected.rows %}
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th class="col-domain">域名</th>
+                    <th class="col-status">状态</th>
+                    <th class="col-status">当前可回投</th>
+                    <th class="col-status">UseCount</th>
+                    <th class="col-status">Mode2</th>
+                    <th class="col-medium">LastMatchSource</th>
+                    <th class="col-medium">LastMatched</th>
+                    <th class="col-medium">LastMatchedURL</th>
+                    <th class="col-wide">NextReusableAt</th>
+                    <th class="col-wide">LastUsedAt</th>
+                    <th class="col-wide">UpdatedAt</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in selected.rows %}
+                <tr>
+                    <td class="cell-break">{{ row.Domain or row.URL }}</td>
+                    <td>{{ row.Status or '' }}</td>
+                    <td>{% if row.reusable_now %}<span class="pill">可回投</span>{% else %}<span class="muted">等待中</span>{% endif %}</td>
+                    <td>{{ row.UseCount or 0 }}</td>
+                    <td>{{ row.Mode2SelectCount or 0 }}</td>
+                    <td>{{ row.LastMatchSource or '' }}</td>
+                    <td>{{ row.LastMatched }}</td>
+                    <td class="cell-break">{{ row.LastMatchedURL or '' }}</td>
+                    <td>{{ row.NextReusableAtText }}</td>
+                    <td>{{ row.LastUsedAtText }}</td>
+                    <td>{{ row.UpdatedAtText }}</td>
+                </tr>
+                <tr>
+                    <td colspan="11" style="background:#fbfdff;">
+                        <div class="detail-grid">
+                            <div class="detail-item">
+                                <div class="k">URL</div>
+                                <div class="v cell-break">{{ row.URL }}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="k">CreatedAt</div>
+                                <div class="v">{{ row.CreatedAtText }}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="k">FirstUsedAt</div>
+                                <div class="v">{{ row.FirstUsedAtText }}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="k">LastBatchId</div>
+                                <div class="v">{{ row.LastBatchId or '' }}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="k">LastMode</div>
+                                <div class="v">{{ row.LastMode or '' }}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="k">LastMatchedTitle</div>
+                                <div class="v">{{ row.LastMatchedTitle or '' }}</div>
+                            </div>
+                            <div class="detail-item">
+                                <div class="k">Category</div>
+                                <div class="v">{{ row.Category or selected.category }}</div>
+                            </div>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty">当前筛选条件下没有记录。</div>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}

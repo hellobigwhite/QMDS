@@ -1,0 +1,132 @@
+{
+  "home_garden": {
+    "domain_keywords": [
+      "garden","gardens","gardening","greenhouse","greenhouses","planter","planters",
+      "lawn","lawnmower","mower","seed","compost","soil","fertilizer","hydroponic",
+      "irrigation","sprinkler","trellis","arbor","pergola","home","household","decor",
+      "furniture","kitchen","bathroom","bedroom","living room","home improvement"
+    ],
+    "categories": {
+      "Home & Garden Ultimate": {
+        "Home Decor": {
+          "Wall Decor": [
+            "wall art","canvas print","wall poster","framed art","wall sticker","wall decal",
+            "wall clock","wall mirror","hanging wall decor","macrame wall hanging","wall shelf",
+            "floating shelf","wall sconce","wall planter","wooden wall decor","metal wall art",
+            "vintage wall decor","modern wall art","abstract wall art","nature wall decor"
+          ],
+          "Tabletop Decor": [
+            "table centerpiece","decorative bowl","vase","flower vase","ceramic vase","glass vase",
+            "candle holder","tealight holder","pillar candle holder","decorative figurine",
+            "statue decor","crystal decor","jewelry box","trinket dish","fruit bowl","placemat",
+            "napkin ring","tablecloth","decorative tray"
+          ],
+          "Lighting": [
+            "table lamp","floor lamp","desk lamp","bedside lamp","string lights","fairy lights",
+            "LED string lights","chandelier","pendant light","ceiling light","accent light",
+            "votive candle","pillar candle","scented candle","lantern","hurricane lantern","solar lantern"
+          ],
+          "Textiles": [
+            "throw pillow","decorative pillow","cushion cover","throw blanket","quilt","bedspread",
+            "duvet cover","sheet set","curtain","drape","window curtain","sheer curtain","area rug",
+            "rug","floor rug","bath mat","towels","hand towel","bath towel","napkin"
+          ],
+          "Seasonal Decor": [
+            "christmas decor","halloween decor","thanksgiving decor","easter decor","summer decor",
+            "winter decor","fall decor","spring decor","christmas tree","ornament","christmas ornament",
+            "halloween pumpkin","thanksgiving wreath","easter bunny","seasonal wreath","holiday garland","snow globe"
+          ]
+        },
+        "Kitchen Decoration": {
+          "Cookware": [
+            "frying pan","skillet","saucepan","stock pot","dutch oven","casserole dish",
+            "baking tray","cookie sheet","roasting pan","wok","steamer","grill pan",
+            "non-stick pan","cast iron pan","stainless steel pot"
+          ],
+          "Kitchen Gadgets": [
+            "cutting knife","knife set","can opener","blender","food processor","mixing bowl",
+            "measuring cup","measuring spoon","spatula","whisk","ladle","slotted spoon",
+            "colander","strainer","garlic press","cheese grater","vegetable peeler","bottle opener"
+          ],
+          "Kitchen Storage": [
+            "food storage container","glass storage container","spice rack","pantry organizer",
+            "cabinet organizer","drawer divider","canister","cookie jar","bread box","fruit basket"
+          ]
+        },
+        "Dining Decoration": {
+          "Dinnerware": [
+            "dinner plate","salad plate","cup","mug","dish set","tableware set","ceramic plate",
+            "glass bowl","melamine dish","silverware","flatware","knife fork spoon set"
+          ],
+          "Dining Decoration": [
+            "placemat","napkin","napkin ring","tablecloth","decorative tray","fruit bowl",
+            "dining centerpiece","water pitcher","wine glass","dining candle holder"
+          ]
+        },
+        "Bathroom Decoration": {
+          "Shower Decoration": [
+            "shower curtain","shower liner","shower caddy","shampoo bottle","conditioner bottle",
+            "shower niche","loofah","bath sponge","shower head","shower filter"
+          ],
+          "Bath Decoration": [
+            "bath mat","bath towel","hand towel","washcloth","bathrobe","bath brush",
+            "bathtub tray","bath pillow","bath salts","bath bombs"
+          ],
+          "Toiletries": [
+            "toothbrush holder","toothpaste","mouthwash","soap dish","hand soap","body wash",
+            "shampoo","conditioner","razor","shaving cream","toilet brush","toilet paper holder","tissue box"
+          ],
+          "Bathroom Storage": [
+            "bathroom cabinet","medicine cabinet","over toilet shelf","towel rack","towel bar",
+            "robe hook","bathroom organizer","drawer divider","toilet paper stand"
+          ]
+        },
+        "Garden": {
+          "Gardening Tools": [
+            "garden trowel","shovel","pruner","shears","lopper","garden fork","hand rake",
+            "weed puller","watering can","garden hose","spray nozzle","gardening gloves","pruning saw",
+            "seed starter tray"
+          ],
+          "Plants": [
+            "houseplant","indoor plant","outdoor plant","succulent","cactus","flower bulb",
+            "seed packet","herb seed","vegetable seed","flower plant","herb plant","shrub","tree seedling",
+            "bulb plant"
+          ],
+          "Planters": [
+            "flower pot","planter","ceramic planter","plastic planter","hanging planter",
+            "window box","herb planter","succulent planter","plant pot","garden bed","raised garden bed",
+            "hanging basket","wall planter","self-watering planter"
+          ],
+          "Garden Decor": [
+            "garden statue","bird bath","bird feeder","wind chime","garden flag","garden fountain",
+            "water feature","garden gnome","decorative stone","garden mirror","flower arrangement","garden wreath","garden lantern"
+          ]
+        },
+        "Outdoor Decoration": {
+          "Outdoor Decor": [
+            "outdoor lantern","solar light","path light","outdoor rug","string lights","outdoor curtain",
+            "canopy","gazebo","outdoor wind chime","outdoor statue"
+          ],
+          "Lawn": [
+            "lawn mower","leaf blower","hedge trimmer","lawn edger","weed killer","lawn fertilizer",
+            "grass seed","lawn rake","lawn aerator"
+          ],
+          "Patio": [
+            "patio umbrella","fire pit","grill","barbecue grill","patio heater","patio mat",
+            "patio lantern","patio candle holder","patio water feature"
+          ]
+        },
+        "Home Improvement": {
+          "Lighting": [
+            "LED bulb","light switch","ceiling fan","motion sensor light","solar light",
+            "battery operated light","recessed light","light fixture","dimmable bulb"
+          ],
+          "Storage": [
+            "shelving unit","storage bin","plastic bin","fabric bin","closet organizer","garage organizer",
+            "tool storage","cabinet organizer","drawer divider","hanging organizer","storage cabinet"
+          ]
+        }
+      }
+    }
+  }
+}

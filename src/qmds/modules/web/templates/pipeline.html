@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <h2>完整流水线</h2>
+    <p class="text-muted mb-4">端到端工作流：发现店铺 → 检测平台 → 提取商品 → 过滤清洗。</p>
+    <form method="POST">
+        <label for="query">搜索关键词</label>
+        <input type="text" id="query" name="query" value="inurl:collections/all" placeholder="例如: inurl:collections/all">
+        <label for="pages">最大页数</label>
+        <input type="number" id="pages" name="pages" value="2" min="1" max="10">
+        <button type="submit" class="btn btn-primary">运行流水线</button>
+    </form>
+</div>
+
+{% if result %}
+<div class="card">
+    <h2>流水线结果</h2>
+    <div class="grid-2" style="margin-bottom:16px;">
+        <div class="stat-card">
+            <div class="value" style="color:#1565c0;">{{ result.total_found }}</div>
+            <div class="label">发现店铺数</div>
+        </div>
+        <div class="stat-card">
+            <div class="value" style="color:#2e7d32;">{{ result.total_scraped }}</div>
+            <div class="label">提取商品数</div>
+        </div>
+    </div>
+    {% if result.data %}
+    <div style="overflow-x:auto;">
+        <table>
+            <thead>
+                <tr>
+                    <th>商品名称</th>
+                    <th>价格</th>
+                    <th>类型</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in result.data[:50] %}
+                <tr>
+                    <td><a href="{{ item.source_url }}" target="_blank" style="color:#1565c0;">{{ item.title[:60] }}{% if item.title|length > 60 %}...{% endif %}</a></td>
+                    <td>${{ "%.2f"|format(item.price) }}</td>
+                    <td><span class="text-muted">{{ item.product_type or '-' }}</span></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% if result.data|length > 50 %}
+        <p class="text-muted" style="margin-top:8px;">显示前 50 条，共 {{ result.data|length }} 个商品。</p>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}

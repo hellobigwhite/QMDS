@@ -1,0 +1,105 @@
+{
+  "electronics": {
+    "domain_keywords": [
+      "electronics","gadget","gadgets","device","devices","smartphone","tablet","laptop",
+      "desktop","computer","tv","television","headphones","earphones","earbuds","speaker",
+      "camera","smartwatch","wearable","home theater","gaming console","console","monitor",
+      "projector","printer","router","modem","accessory","charger","usb cable","hdmi cable"
+    ],
+    "categories": {
+      "Electronics Ultimate": {
+        "Mobile Devices": {
+          "Smartphones": [
+            "android smartphone","ios smartphone","iphone","samsung galaxy","pixel phone",
+            "oneplus phone","smartphone case","screen protector","wireless charger"
+          ],
+          "Tablets": [
+            "android tablet","ios tablet","ipad","samsung tablet","tablet case","stylus pen"
+          ],
+          "Wearables": [
+            "smartwatch","fitness tracker","activity tracker","health monitor","wearable accessory"
+          ]
+        },
+        "Computing": {
+          "Laptops": [
+            "gaming laptop","ultrabook","notebook","macbook","windows laptop","chromebook",
+            "laptop sleeve","laptop stand"
+          ],
+          "Desktops": [
+            "gaming desktop","all-in-one desktop","mini pc","workstation desktop","desktop monitor"
+          ],
+          "Computer Accessories": [
+            "keyboard","mouse","mouse pad","usb hub","external hard drive","ssd","ram","graphics card"
+          ]
+        },
+        "Audio & Headphones": {
+          "Headphones": [
+            "over-ear headphones","on-ear headphones","in-ear headphones","wireless headphones",
+            "noise cancelling headphones","gaming headset","earbuds","bluetooth earphones"
+          ],
+          "Speakers": [
+            "bluetooth speaker","smart speaker","portable speaker","home speaker","soundbar","subwoofer"
+          ],
+          "Audio Accessories": [
+            "audio cable","adapter","charging cable","headphone stand","ear pads","microphone","pop filter"
+          ]
+        },
+        "TV & Home Theater": {
+          "Televisions": [
+            "led tv","oled tv","smart tv","4k tv","8k tv","curved tv","qled tv","tv wall mount"
+          ],
+          "Projectors": [
+            "home projector","portable projector","led projector","4k projector","mini projector"
+          ],
+          "Home Theater": [
+            "soundbar","subwoofer","surround sound","home theater system","av receiver","projector screen"
+          ]
+        },
+        "Gaming": {
+          "Consoles": [
+            "playstation","xbox","nintendo switch","gaming console bundle","retro console"
+          ],
+          "Games": [
+            "ps5 game","xbox game","switch game","pc game","game disc","digital game code"
+          ],
+          "Gaming Accessories": [
+            "controller","joystick","gaming headset","charging dock","gaming chair","gaming mouse","gaming keyboard"
+          ]
+        },
+        "Photography & Video": {
+          "Cameras": [
+            "digital camera","dslr","mirrorless camera","action camera","camcorder","compact camera"
+          ],
+          "Camera Accessories": [
+            "tripod","camera bag","lens","lens cap","lens hood","memory card","camera strap","gimbal stabilizer"
+          ],
+          "Video Accessories": [
+            "microphone","ring light","led panel","softbox","camera mount","green screen","camera stabilizer"
+          ]
+        },
+        "Networking & Smart Home": {
+          "Networking": [
+            "wifi router","modem","ethernet cable","network switch","powerline adapter","mesh wifi"
+          ],
+          "Smart Home": [
+            "smart bulb","smart plug","smart camera","smart thermostat","home automation hub","smart lock"
+          ],
+          "Smart Home Accessories": [
+            "motion sensor","temperature sensor","smart button","smart hub","smart device mount"
+          ]
+        },
+        "Power & Charging": {
+          "Chargers": [
+            "phone charger","wireless charger","usb charger","car charger","power adapter","fast charger"
+          ],
+          "Power Banks": [
+            "portable power bank","usb-c power bank","solar power bank","high capacity power bank"
+          ],
+          "Batteries": [
+            "aa battery","aaa battery","lithium battery","rechargeable battery","battery pack"
+          ]
+        }
+      }
+    }
+  }
+}

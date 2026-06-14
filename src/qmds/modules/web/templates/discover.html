@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <h2>发现 Shopify 店铺</h2>
+    <p class="text-muted mb-4">通过 Google SERP API 搜索发现 Shopify 店铺。</p>
+    <form method="POST">
+        <label for="query">搜索关键词</label>
+        <input type="text" id="query" name="query" value="inurl:collections/all" placeholder="例如: inurl:collections/all">
+        <label for="pages">搜索页数</label>
+        <input type="number" id="pages" name="pages" value="3" min="1" max="20">
+        <button type="submit" class="btn btn-primary">搜索</button>
+    </form>
+</div>
+
+{% if result %}
+<div class="card">
+    <h2>搜索结果 <span class="badge">找到 {{ result.total_found }} 个</span></h2>
+    {% if result.data %}
+    <div style="overflow-x:auto;">
+        <table>
+            <thead>
+                <tr>
+                    <th style="width:60%;">URL</th>
+                    <th>来源</th>
+                    <th>搜索词</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in result.data[:50] %}
+                <tr>
+                    <td><a href="{{ item.url }}" target="_blank" style="color:#1565c0;">{{ item.url }}</a></td>
+                    <td><span class="text-muted">{{ item.source }}</span></td>
+                    <td><span class="text-muted">{{ item.query }}</span></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% if result.data|length > 50 %}
+        <p class="text-muted" style="margin-top:8px;">显示前 50 条，共 {{ result.data|length }} 条结果。</p>
+        {% endif %}
+    </div>
+    {% else %}
+    <p class="text-muted">未找到店铺，请尝试调整搜索词。</p>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}

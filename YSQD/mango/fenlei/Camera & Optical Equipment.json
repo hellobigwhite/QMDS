@@ -1,0 +1,94 @@
+{
+  "camera_optical": {
+    "domain_keywords": [
+      "camera","cameras","optics","optical","photography","photographic","digitalcamera",
+      "digitalcameras","mirrorless","mirrorlesscamera","mirrorlesscameras","dslr","dslrcamera",
+      "dslrcameras","compactcamera","compactcameras","actioncamera","actioncameras",
+      "polaroid","polaroidcamera","polaroidcameras","lens","lenses","camerlens","camerlenses",
+      "zoomlens","wideanglelens","telephotolens","macrolens","prime lens","primelens",
+      "filter","filters","camerafilter","camerafilters","uvfilter","polarizer","tripod",
+      "tripods","cameratripod","monopod","cameramonopod","flash","cameraflash","speedlight",
+      "cameraspeedlight","memorycard","memorycards","sdcard","sdcards","cfcard","cfcards",
+      "camerabag","camerabags","camera case","cameracase","cameralenshood","lenshood",
+      "lenscap","lenscaps","cameracleaning","lenscleaner","sensorcleaner","photostudio",
+      "photographygear","cameragear","opticalequipment","camerastore","photographystore",
+      "opticsstore","camerashop"
+    ],
+    "categories": {
+      "Camera & Optical Equipment Ultimate": {
+        "Digital Cameras": {
+          "Professional Cameras": [
+            "DSLR camera","mirrorless camera","medium format camera","film camera",
+            "rangefinder camera","action camera","360 camera","polaroid camera","instant camera"
+          ],
+          "Consumer Cameras": [
+            "compact camera","point-and-shoot camera","bridge camera","vlogging camera",
+            "webcam","toy camera","disposable camera","digital video camera","camcorder","sports camera"
+          ],
+          "Camera Bodies & Components": [
+            "camera body","camera shutter","image sensor","CMOS sensor","CCD sensor","viewfinder",
+            "LCD screen","EVF","mirror","shutter release","mode dial","ISO dial",
+            "exposure compensation dial","battery grip"
+          ]
+        },
+        "Lenses & Optics": {
+          "Camera Lenses": [
+            "prime lens","zoom lens","wide-angle lens","telephoto lens","macro lens",
+            "fisheye lens","portrait lens","standard lens","super telephoto lens","ultra-wide lens",
+            "tilt-shift lens","image-stabilized lens","fast aperture lens","fixed focal length lens"
+          ],
+          "Lens Accessories": [
+            "lens cap","lens hood","lens filter","UV filter","polarizing filter","ND filter",
+            "CPL filter","graduated filter","lens cleaning kit","lens cloth","lens tissue",
+            "lens pen","lens adapter","lens mount","lens cap keeper"
+          ],
+          "Optical Components": [
+            "optical lens","convex lens","concave lens","prism","filter","polarizer",
+            "optical coating","lens element"
+          ]
+        },
+        "Photography Accessories": {
+          "Mounting & Support": [
+            "tripod","monopod","tripod head","ball head","pan-tilt head","gimbal stabilizer",
+            "camera stabilizer","shoulder rig","camera mount","clamp mount","suction cup mount",
+            "flexible tripod","tripod quick release plate"
+          ],
+          "Lighting Equipment": [
+            "speedlight","studio flash","on-camera flash","off-camera flash","flash trigger",
+            "softbox","umbrella","reflector","diffuser","LED panel","ring light","studio light",
+            "continuous light","flash modifier","light stand"
+          ],
+          "Storage & Power": [
+            "SD card","CF card","XQD card","memory card","card reader","camera battery",
+            "battery charger","power bank","AC adapter","external hard drive","memory card case",
+            "battery case","storage bag"
+          ],
+          "Protective Gear": [
+            "camera bag","camera backpack","camera case","lens pouch","camera strap",
+            "neoprene camera cover","rain cover","screen protector","body cap","rear lens cap",
+            "camera cage","protective filter","waterproof housing"
+          ]
+        },
+        "Optical Instruments": {
+          "Microscopes": [
+            "biological microscope","fluorescence microscope","inverted microscope",
+            "polarizing microscope","student microscope","digital microscope","USB microscope"
+          ],
+          "Telescopes": [
+            "refractor telescope","reflector telescope","catadioptric telescope","binoculars",
+            "compact binoculars","roof prism binoculars","porro prism binoculars","spotting scope",
+            "monocular","night vision binoculars"
+          ],
+          "Specialized Optics": [
+            "reading magnifier","jeweler's loupe","microscope slide","coverslip"
+          ]
+        },
+        "Optical Equipment Accessories": {
+          "Optical Tools": [
+            "optical platform","sensor cleaning swab","blower bulb","dust blower"
+          ]
+        }
+      }
+    }
+  }
+}

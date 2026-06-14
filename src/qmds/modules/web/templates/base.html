@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title|default('QMDS 管理控制台') }} - QMDS</title>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: #f0f2f5; color: #1a1a2e; line-height: 1.6;
+        }
+        .navbar {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #fff; padding: 0 24px; display: flex; align-items: center;
+            height: 56px; box-shadow: 0 2px 8px rgba(0,0,0,.15); position: sticky; top: 0; z-index: 100;
+        }
+        .navbar .brand { font-size: 18px; font-weight: 700; margin-right: 32px; letter-spacing: .5px; }
+        .navbar .brand span { color: #4fc3f7; }
+        .navbar a { color: rgba(255,255,255,.7); text-decoration: none; padding: 8px 14px; border-radius: 6px; font-size: 14px; transition: .2s; }
+        .navbar a:hover, .navbar a.active { color: #fff; background: rgba(255,255,255,.1); }
+        .nav-links { display: flex; gap: 4px; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+        .card {
+            background: #fff; border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,.06);
+            padding: 20px; margin-bottom: 20px;
+        }
+        .card h2 { font-size: 18px; margin-bottom: 16px; color: #1a1a2e; display: flex; align-items: center; gap: 8px; }
+        .card h2 .badge {
+            font-size: 12px; background: #e8eaf6; color: #3f51b5; padding: 2px 8px;
+            border-radius: 10px; font-weight: 600;
+        }
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+        @media (max-width: 768px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } }
+        .stat-card {
+            background: #fff; border-radius: 10px; padding: 20px; text-align: center;
+            box-shadow: 0 1px 4px rgba(0,0,0,.06);
+        }
+        .stat-card .value { font-size: 32px; font-weight: 700; color: #1a1a2e; }
+        .stat-card .label { font-size: 13px; color: #666; margin-top: 4px; }
+        .stat-card .icon { font-size: 28px; margin-bottom: 8px; }
+        form label { display: block; font-size: 13px; font-weight: 600; color: #444; margin-bottom: 4px; }
+        form input, form select {
+            width: 100%; padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px;
+            font-size: 14px; transition: .2s; margin-bottom: 12px;
+        }
+        form input:focus { border-color: #4fc3f7; outline: none; box-shadow: 0 0 0 2px rgba(79,195,247,.2); }
+        .btn {
+            display: inline-flex; align-items: center; gap: 6px; padding: 8px 20px;
+            border: none; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer;
+            transition: .2s; text-decoration: none;
+        }
+        .btn-primary { background: #1a1a2e; color: #fff; }
+        .btn-primary:hover { background: #16213e; transform: translateY(-1px); }
+        .btn-success { background: #4caf50; color: #fff; }
+        .btn-success:hover { background: #43a047; }
+        .btn-info { background: #2196f3; color: #fff; }
+        .btn-info:hover { background: #1e88e5; }
+        .btn-sm { padding: 4px 12px; font-size: 12px; }
+        table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        th { text-align: left; padding: 10px 12px; border-bottom: 2px solid #eee; color: #666; font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
+        td { padding: 10px 12px; border-bottom: 1px solid #f0f0f0; }
+        tr:hover td { background: #f8f9ff; }
+        .badge-platform {
+            display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 600;
+        }
+        .badge-shopify { background: #e8f5e9; color: #2e7d32; }
+        .badge-woocommerce { background: #fff3e0; color: #e65100; }
+        .badge-magento { background: #fce4ec; color: #c62828; }
+        .badge-unknown { background: #f5f5f5; color: #999; }
+        .result-box {
+            background: #f8f9ff; border: 1px solid #e8eaf6; border-radius: 8px; padding: 16px;
+            margin-top: 16px; font-size: 14px;
+        }
+        .result-box .stat-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #eee; }
+        .result-box .stat-row:last-child { border-bottom: none; }
+        .result-box .stat-row .stat-label { color: #666; }
+        .result-box .stat-row .stat-value { font-weight: 600; }
+        .flash { padding: 12px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 14px; }
+        .flash-info { background: #e3f2fd; color: #1565c0; border: 1px solid #bbdefb; }
+        .flash-success { background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
+        .flash-error { background: #fce4ec; color: #c62828; border: 1px solid #f8bbd0; }
+        pre { background: #1a1a2e; color: #e0e0e0; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 12px; max-height: 400px; }
+        .text-muted { color: #999; font-size: 13px; }
+        .mt-4 { margin-top: 16px; }
+        .mb-4 { margin-bottom: 16px; }
+        .flex { display: flex; align-items: center; gap: 12px; }
+
+        .nav-dropdown { position: relative; display: inline-flex; }
+        .nav-dropdown > a { padding: 8px 14px; border-radius: 6px; font-size: 14px; color: rgba(255,255,255,.7); text-decoration: none; transition: .2s; cursor: pointer; }
+        .nav-dropdown > a:hover { color: #fff; background: rgba(255,255,255,.1); }
+        .nav-dropdown:hover .dropdown-menu { display: block; }
+        .dropdown-menu { display: none; position: absolute; top: 100%; left: 0; background: #1a1a2e; border: 1px solid rgba(255,255,255,.1); border-radius: 8px; min-width: 240px; padding: 6px; margin-top: 4px; box-shadow: 0 8px 24px rgba(0,0,0,.4); z-index: 200; }
+        .dropdown-menu a { display: block; padding: 10px 14px; color: rgba(255,255,255,.7); text-decoration: none; font-size: 13px; border-radius: 6px; transition: .2s; }
+        .dropdown-menu a:hover { color: #fff; background: rgba(79,195,247,.15); }
+        .dropdown-menu .sub-desc { font-size: 11px; color: rgba(255,255,255,.4); margin-top: 2px; }
+        .shopify-card { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border-radius: 12px; padding: 1.5rem; color: #fff; margin-bottom: 1.5rem; box-shadow: 0 4px 20px rgba(26,26,46,0.25); border: 1px solid rgba(255,255,255,0.08); }
+        .shopify-card h3 { font-size: 1rem; margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; color: #4fc3f7; }
+        .shopify-card .module-input { width: 100%; padding: 0.6rem 0.8rem; border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; font-size: 0.85rem; margin-bottom: 0.75rem; background: rgba(255,255,255,0.08); color: #fff; transition: all 0.2s; }
+        .shopify-card .module-input:focus { outline: none; border-color: #4fc3f7; background: rgba(255,255,255,0.12); }
+        .shopify-card .module-input::placeholder { color: rgba(255,255,255,0.4); }
+        .shopify-card .module-submit { padding: 0.5rem 1.2rem; background: #4fc3f7; color: #1a1a2e; border: none; border-radius: 6px; font-weight: 600; font-size: 0.85rem; cursor: pointer; transition: all 0.2s; }
+        .shopify-card .module-submit:hover { background: #81d4fa; transform: translateY(-1px); box-shadow: 0 2px 8px rgba(79,195,247,0.3); }
+        .shopify-card .module-result { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,0.08); font-size: 0.85rem; color: rgba(255,255,255,0.7); }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="brand">QMDS <span>管理控制台</span></div>
+        <div class="nav-links">
+            <a href="/" class="{% if request.path == '/' %}active{% endif %}">仪表盘</a>
+            <div class="nav-dropdown">
+                <a class="{% if request.path.startswith('/shopify') %}active{% endif %}">🛒 Shopify 店铺管理 ▾</a>
+                <div class="dropdown-menu">
+                    <a href="/shopify/fetch-urls">
+                        🔗 获取指定类目的Shopify店铺URL
+                        <div class="sub-desc">输入类目关键词，批量获取对应Shopify店铺链接</div>
+                    </a>
+                    <a href="/shopify/filter-categories">
+                        🔍 筛选精准类目
+                        <div class="sub-desc">根据关键词和规则筛选最匹配的精准类目</div>
+                    </a>
+                </div>
+            </div>
+            <a href="/product-data" class="{% if request.path == '/product-data' %}active{% endif %}">产品数据管理</a>
+            <a href="/site-management" class="{% if request.path == '/site-management' %}active{% endif %}">建站管理</a>
+            <a href="/tasks" class="{% if request.path == '/tasks' %}active{% endif %}">任务</a>
+        </div>
+    </nav>
+    <div class="container">
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for message in messages %}
+                <div style="padding:12px 16px;border-radius:8px;margin-bottom:16px;font-size:14px;background:#e8f5e9;color:#2e7d32;border:1px solid #c8e6c9;">
+                    {{ message }}
+                </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        {% block content %}{% endblock %}
+    </div>
+</body>
+</html>

@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card">
+    <h2>导入Excel</h2>
+    <div style="max-width: 600px; margin-top: 2rem;">
+        <form method="post" enctype="multipart/form-data">
+            <div class="form-group">
+                <label for="file">选择Excel文件</label>
+                <input type="file" id="file" name="file" accept=".xlsx,.xls" required>
+            </div>
+            <button type="submit" class="btn btn-success">导入</button>
+        </form>
+        
+        <div style="margin-top: 2rem; padding: 1rem; background: #f8f9fa; border-radius: 4px;">
+            <h3>Excel列映射说明：</h3>
+            <ul style="margin-top: 1rem;">
+                <li><strong>域名</strong> → 域名</li>
+                <li><strong>底板</strong> → 模板</li>
+                <li><strong>主分类数据码</strong> → 主数据源ID</li>
+                <li><strong>站群数据码</strong> → 补充数据源ID</li>
+                <li><strong>主分类</strong> → 主打类目</li>
+                <li><strong>大类</strong> → 大类</li>
+                <li><strong>SEO Title（最大58字符）</strong> → 标题</li>
+                <li><strong>Meta Description</strong> → 描述</li>
+                <li><strong>地址</strong> → 地址</li>
+                <li><strong>服务器</strong> → 服务器</li>
+            </ul>
+            <p style="margin-top: 1rem;"><strong>媒体文件：</strong>自动从 D:\logo\{域名}\ 目录下查找 logo.png、banner.jpg、icon.png</p>
+        </div>
+    </div>
+</div>
+{% endblock %}

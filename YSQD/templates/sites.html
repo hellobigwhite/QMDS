@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card">
+    <h2>站点列表</h2>
+    {% if sites %}
+    <div style="overflow-x: auto;">
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>域名</th>
+                    <th>模板</th>
+                    <th>主数据源ID</th>
+                    <th>补充数据源ID</th>
+                    <th>主打类目</th>
+                    <th>大类</th>
+                    <th>标题</th>
+                    <th>描述</th>
+                    <th>地址</th>
+                    <th>服务器</th>
+                    <th>上报状态</th>
+                    <th>建站状态</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for site in sites %}
+                <tr>
+                    <td>{{ site['id'] }}</td>
+                    <td>{{ site['domain'] or '-' }}</td>
+                    <td>{{ site['template'] or '-' }}</td>
+                    <td>{{ site['main_data_source_id'] or '-' }}</td>
+                    <td>{{ site['extra_data_source_id'] or '-' }}</td>
+                    <td>{{ site['main_category'] or '-' }}</td>
+                    <td>{{ site['category'] or '-' }}</td>
+                    <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">{{ site['title'] or '-' }}</td>
+                    <td style="max-width: 250px; overflow: hidden; text-overflow: ellipsis;">{{ site['description'] or '-' }}</td>
+                    <td style="max-width: 150px; overflow: hidden; text-overflow: ellipsis;">{{ site['address'] or '-' }}</td>
+                    <td>{{ site['server'] or '-' }}</td>
+                    <td>
+                        {% if site['report_status'] == '已报' %}
+                            <span style="color: green; font-weight: bold;">已报</span>
+                        {% else %}
+                            <span style="color: orange;">未报</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if site['build_status'] == '已建站' %}
+                            <span style="color: green; font-weight: bold;">已建站</span>
+                        {% else %}
+                            <span style="color: gray;">未建站</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if site['report_status'] != '已报' %}
+                        <form method="post" action="{{ url_for('report_site', site_id=site['id']) }}" style="display: inline;">
+                            <button type="submit" class="btn btn-primary" style="margin-right: 5px;">上报</button>
+                        </form>
+                        {% endif %}
+                        {% if site['report_status'] == '已报' and site['build_status'] != '已建站' %}
+                        <form method="post" action="{{ url_for('build_site', site_id=site['id']) }}" style="display: inline;">
+                            <button type="submit" class="btn btn-success" style="margin-right: 5px;">建站</button>
+                        </form>
+                        {% endif %}
+                        {% if site['build_status'] == '已建站' %}
+                        <form method="post" action="{{ url_for('health_check', site_id=site['id']) }}" style="display: inline;">
+                            <button type="submit" class="btn btn-primary" style="margin-right: 5px;">检查</button>
+                        </form>
+                        {% endif %}
+                        <form method="post" action="{{ url_for('delete_site', site_id=site['id']) }}" style="display: inline;">
+                            <button type="submit" class="btn btn-danger" onclick="return confirm('确定删除此站点？')">删除</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p>暂无站点数据，请先导入Excel文件。</p>
+    {% endif %}
+</div>
+{% endblock %}

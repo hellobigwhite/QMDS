@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <h2>产品数据管理</h2>
+    <p class="text-muted mb-4">管理商品数据：数据清洗、违禁词过滤、分类处理等。</p>
+</div>
+
+<div class="grid-2">
+    <div class="card">
+        <h2>数据统计</h2>
+        <div class="result-box">
+            <div class="stat-row">
+                <span class="stat-label">商品集合数</span>
+                <span class="stat-value">{{ total_collections|default(0) }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">非空集合</span>
+                <span class="stat-value">{{ non_empty_collections|default(0) }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">商品总量</span>
+                <span class="stat-value">{{ total_rows|default(0) }}</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>快速操作</h2>
+        <form method="POST" action="/product-data/clean">
+            <label for="collection">处理范围</label>
+            <select id="collection" name="collection" style="width:100%;margin-bottom:12px;">
+                <option value="__all__">全部集合</option>
+                {% for item in collections|default([]) %}
+                <option value="{{ item.name }}">{{ item.name }} ({{ item.count }})</option>
+                {% endfor %}
+            </select>
+            <button type="submit" class="btn btn-primary" style="width:100%;">执行数据清洗</button>
+        </form>
+    </div>
+</div>
+
+<div class="card">
+    <h2>集合概览</h2>
+    {% if collections %}
+    <div style="overflow-x:auto;">
+        <table>
+            <thead>
+                <tr>
+                    <th>集合名</th>
+                    <th>商品数</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in collections %}
+                <tr>
+                    <td>{{ item.name }}</td>
+                    <td>{{ item.count }}</td>
+                    <td>
+                        <a href="/product-data?collection={{ item.name }}" class="btn btn-sm btn-info">查看</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="text-muted">暂无商品集合数据。</p>
+    {% endif %}
+</div>
+{% endblock %}

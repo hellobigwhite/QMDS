@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <h2>提取商品数据</h2>
+    <p class="text-muted mb-4">通过 Shopify API 从店铺中提取商品数据。</p>
+    <form method="POST">
+        <label for="domain">Shopify 域名</label>
+        <input type="text" id="domain" name="domain" placeholder="example.myshopify.com" required>
+        <label for="pages">抓取页数（每页 200 个商品）</label>
+        <input type="number" id="pages" name="pages" value="5" min="1" max="50">
+        <button type="submit" class="btn btn-success">提取</button>
+    </form>
+</div>
+
+{% if result %}
+<div class="card">
+    <h2>提取结果 <span class="badge">{{ result.total_scraped }} 个商品</span></h2>
+    {% if result.data %}
+    <div style="overflow-x:auto;">
+        <table>
+            <thead>
+                <tr>
+                    <th>商品名称</th>
+                    <th>价格</th>
+                    <th>类型</th>
+                    <th>SKU</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in result.data[:50] %}
+                <tr>
+                    <td><a href="{{ item.source_url }}" target="_blank" style="color:#1565c0;">{{ item.title[:60] }}{% if item.title|length > 60 %}...{% endif %}</a></td>
+                    <td>${{ "%.2f"|format(item.price) }}</td>
+                    <td><span class="text-muted">{{ item.product_type or '-' }}</span></td>
+                    <td><span class="text-muted">{{ item.sku or '-' }}</span></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% if result.data|length > 50 %}
+        <p class="text-muted" style="margin-top:8px;">显示前 50 条，共 {{ result.data|length }} 个商品。</p>
+        {% endif %}
+    </div>
+    {% else %}
+    <p class="text-muted">未找到商品。</p>
+    {% endif %}
+    {% if result.errors %}
+    <details style="margin-top:12px;">
+        <summary style="cursor:pointer;color:#c62828;font-weight:600;">错误信息（{{ result.errors|length }} 条）</summary>
+        <pre>{% for err in result.errors %}{{ err }}
+{% endfor %}</pre>
+    </details>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}

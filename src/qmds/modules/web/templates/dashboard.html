@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="grid-3 mb-4">
+    <div class="stat-card">
+        <div class="icon">🔍</div>
+        <div class="value">4</div>
+        <div class="label">可执行操作</div>
+    </div>
+    <div class="stat-card">
+        <div class="icon">🛒</div>
+        <div class="value">Shopify</div>
+        <div class="label">主要目标平台</div>
+    </div>
+    <div class="stat-card">
+        <div class="icon">⚡</div>
+        <div class="value">Pipeline</div>
+        <div class="label">端到端流水线</div>
+    </div>
+</div>
+
+<div class="grid-2">
+    <div class="card">
+        <h2>快捷操作</h2>
+        <div style="display:flex;flex-direction:column;gap:10px;">
+            <a href="/discover" class="btn btn-primary">发现 Shopify 店铺</a>
+            <a href="/detect" class="btn btn-info">检测电商平台</a>
+            <a href="/extract" class="btn btn-success">提取商品数据</a>
+            <a href="/pipeline" class="btn btn-primary">运行完整流水线</a>
+        </div>
+    </div>
+    <div class="card">
+        <h2>关于 QMDS</h2>
+        <p class="text-muted" style="margin-bottom:12px;">QMDS - 模块化数据管理系统</p>
+        <div class="result-box">
+            <div class="stat-row"><span class="stat-label">版本</span><span class="stat-value">0.1.0</span></div>
+            <div class="stat-row"><span class="stat-label">运行环境</span><span class="stat-value">Python 3.12+</span></div>
+            <div class="stat-row"><span class="stat-label">数据库</span><span class="stat-value">MongoDB</span></div>
+            <div class="stat-row"><span class="stat-label">已安装模块</span><span class="stat-value">data_scraper, web</span></div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h2>工作流程</h2>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:150px;padding:16px;background:#e3f2fd;border-radius:8px;text-align:center;">
+            <div style="font-size:24px;margin-bottom:4px;">1</div>
+            <strong>发现店铺</strong>
+            <div class="text-muted">通过 Google 搜索发现 Shopify 店铺</div>
+        </div>
+        <div style="flex:1;min-width:150px;padding:16px;background:#e8f5e9;border-radius:8px;text-align:center;">
+            <div style="font-size:24px;margin-bottom:4px;">2</div>
+            <strong>检测平台</strong>
+            <div class="text-muted">识别目标使用的电商平台</div>
+        </div>
+        <div style="flex:1;min-width:150px;padding:16px;background:#fff3e0;border-radius:8px;text-align:center;">
+            <div style="font-size:24px;margin-bottom:4px;">3</div>
+            <strong>提取商品</strong>
+            <div class="text-muted">抓取 Shopify 商品数据</div>
+        </div>
+        <div style="flex:1;min-width:150px;padding:16px;background:#fce4ec;border-radius:8px;text-align:center;">
+            <div style="font-size:24px;margin-bottom:4px;">4</div>
+            <strong>过滤清洗</strong>
+            <div class="text-muted">数据清理与验证</div>
+        </div>
+    </div>
+</div>
+{% endblock %}

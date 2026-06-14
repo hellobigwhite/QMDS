@@ -1,0 +1,101 @@
+{
+  "toy": {
+    "domain_keywords": [
+      "toy","toys","kids toy","children toy","action figure","doll","puzzle","lego","building block",
+      "board game","card game","educational toy","learning toy","stuffed animal","plush toy",
+      "rc car","rc drone","remote control","train set","model kit","action figures","playset","pretend play"
+    ],
+    "categories": {
+      "Toy Ultimate": {
+        "Action Figures & Collectibles": {
+          "Superheroes": [
+            "marvel action figure","dc action figure","avengers toy","batman figure","spiderman figure"
+          ],
+          "Anime & Manga": [
+            "naruto figure","one piece figure","dragon ball figure","anime figurine","gundam model"
+          ],
+          "Movie & TV": [
+            "star wars figure","harry potter figure","disney character toy","pixar toy","tv show figure"
+          ]
+        },
+        "Dolls & Accessories": {
+          "Fashion Dolls": [
+            "barbie doll","bratz doll","monster high doll","fashion doll set","doll clothing"
+          ],
+          "Baby Dolls": [
+            "reborn doll","baby born","interactive baby doll","soft baby doll","doll stroller"
+          ],
+          "Doll Playsets": [
+            "dollhouse","doll furniture","doll accessories","doll kitchen set","doll bedroom set"
+          ]
+        },
+        "Building & Construction": {
+          "Building Blocks": [
+            "lego set","duplo set","mega bloks","building bricks","construction blocks"
+          ],
+          "Model Kits": [
+            "plastic model kit","airplane model kit","car model kit","ship model kit","robot kit"
+          ],
+          "STEM Toys": [
+            "engineering kit","robotics kit","science kit","math learning toy","building STEM set"
+          ]
+        },
+        "Vehicles & Remote Control": {
+          "RC Cars & Trucks": [
+            "rc car","rc truck","off-road rc car","drift car","monster truck"
+          ],
+          "RC Drones & Helicopters": [
+            "rc drone","mini drone","fpv drone","rc helicopter","quadcopter"
+          ],
+          "Trains & Tracks": [
+            "train set","electric train","wooden train set","train track","train accessories"
+          ]
+        },
+        "Puzzles & Games": {
+          "Jigsaw Puzzles": [
+            "jigsaw puzzle","3d puzzle","floor puzzle","wooden puzzle","puzzle mat"
+          ],
+          "Board Games": [
+            "chess","checkers","monopoly","strategy board game","family board game"
+          ],
+          "Card Games": [
+            "playing cards","trading card game","collectible card game","uno","pokemon card game"
+          ]
+        },
+        "Pretend Play & Role Play": {
+          "Kitchen & Food": [
+            "toy kitchen","play food","tea set","cooking set","pretend cooking toy"
+          ],
+          "Costumes & Dress Up": [
+            "princess dress","superhero costume","pirate costume","dress-up set","role play costume"
+          ],
+          "Tool & Workshop": [
+            "toy tool set","workbench toy","construction playset","doctor kit","mechanic kit"
+          ]
+        },
+        "Educational & Learning": {
+          "STEM Learning": [
+            "robot kit","engineering kit","coding toy","science kit","math learning toy"
+          ],
+          "Arts & Crafts": [
+            "painting set","craft kit","beading kit","coloring book","markers set"
+          ],
+          "Books & Audio": [
+            "story book","educational book","audio book","flash cards","alphabet learning toy"
+          ]
+        },
+        "Outdoor & Sports": {
+          "Sports Toys": [
+            "soccer ball","basketball","mini basketball hoop","frisbee","badminton set"
+          ],
+          "Outdoor Play": [
+            "swing set","slide","sandbox","trampoline","playhouse outdoor"
+          ],
+          "Ride-On Toys": [
+            "scooter","balance bike","tricycle","electric ride-on car","push car"
+          ]
+        }
+      }
+    }
+  }
+}

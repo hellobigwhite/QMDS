@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+
+{% block title %}计划上报 - 站群网页控制台{% endblock %}
+
+{% block content %}
+<h2 class="section-title">计划上报</h2>
+
+{% set ns = namespace(waiting=0) %}
+{% for site in scheduled_sites %}
+    {% if site.report_status != '已报' %}
+        {% set ns.waiting = ns.waiting + 1 %}
+    {% endif %}
+{% endfor %}
+
+<div class="stats">
+    <div class="stat">
+        <div class="label">计划站点数</div>
+        <div class="value">{{ scheduled_sites|length }}</div>
+    </div>
+    <div class="stat">
+        <div class="label">待上报</div>
+        <div class="value">{{ ns.waiting }}</div>
+    </div>
+</div>
+
+<form method="get" class="toolbar">
+    <div class="search">
+        <input type="text" name="q" value="{{ q }}" placeholder="搜索域名">
+        <button class="btn btn-primary" type="submit">搜索</button>
+        <a class="btn btn-secondary" href="{{ url_for('scheduled_list') }}">清空</a>
+    </div>
+</form>
+
+<form method="post" action="{{ url_for('schedule_clear') }}">
+    <input type="hidden" name="next_endpoint" value="scheduled_list">
+    <div class="toolbar">
+        <input type="datetime-local" name="schedule_time" step="60">
+        <button class="btn btn-secondary" type="submit" formaction="{{ url_for('schedule_set') }}">重新设置时间</button>
+        <button class="btn btn-primary" type="submit" formaction="{{ url_for('task_report_selected') }}">立即上报所选</button>
+        <button class="btn btn-danger" type="submit">清除计划</button>
+    </div>
+    {% set batch_form_id = 'scheduled' %}
+    {% include "_batch_update_controls.html" %}
+
+    {% if scheduled_sites %}
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th class="col-check"><input type="checkbox" onclick="toggleAll(this)"></th>
+                    <th class="col-domain">域名</th>
+                    <th class="col-medium">模板</th>
+                    <th class="col-medium">服务器</th>
+                    <th class="col-wide">计划时间</th>
+                    <th class="col-status">状态</th>
+                    <th class="col-detail">详情</th>
+                    <th class="col-action">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for site in scheduled_sites %}
+                <tr>
+                    <td><input type="checkbox" name="selected_ids" value="{{ site.id }}"></td>
+                    <td class="cell-break">{{ site.domain or '-' }}</td>
+                    <td class="cell-break">{{ site.template or '-' }}</td>
+                    <td class="cell-break">{{ site.server or '-' }}</td>
+                    <td>{{ format_schedule_text(site) }}</td>
+                    <td>{{ site.report_status or '未报' }}</td>
+                    <td>
+                        <details class="detail-box">
+                            <summary>展开详情</summary>
+                            <div class="detail-grid">
+                                <div class="detail-item"><div class="k">域名</div><div class="v">{{ site.domain or '-' }}</div></div>
+                                <div class="detail-item"><div class="k">模板</div><div class="v">{{ site.template or '-' }}</div></div>
+                                <div class="detail-item"><div class="k">服务器</div><div class="v">{{ site.server or '-' }}</div></div>
+                                <div class="detail-item"><div class="k">计划时间</div><div class="v">{{ format_schedule_text(site) }}</div></div>
+                                <div class="detail-item"><div class="k">主数据源</div><div class="v">{{ site.main_data_source_id or '-' }}</div></div>
+                                <div class="detail-item"><div class="k">补充数据源</div><div class="v">{{ site.extra_data_source_id or '-' }}</div></div>
+                                <div class="detail-item"><div class="k">主分类</div><div class="v">{{ site.main_category or '-' }}</div></div>
+                                <div class="detail-item"><div class="k">大类</div><div class="v">{{ site.category or '-' }}</div></div>
+                                <div class="detail-item"><div class="k">标题</div><div class="v">{{ site.title or '-' }}</div></div>
+                                <div class="detail-item"><div class="k">描述</div><div class="v">{{ site.description or '-' }}</div></div>
+                                <div class="detail-item"><div class="k">地址</div><div class="v">{{ site.address or '-' }}</div></div>
+                            </div>
+                        </details>
+                    </td>
+                    <td>
+                        <div class="actions">
+                            <a class="btn btn-secondary" href="{{ url_for('edit_site', site_id=site.id, next='scheduled_list') }}">编辑</a>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty">当前没有计划上报的站点。</div>
+    {% endif %}
+</form>
+
+<script>
+function toggleAll(source) {
+    document.querySelectorAll('input[name="selected_ids"]').forEach(item => {
+        item.checked = source.checked;
+    });
+}
+</script>
+{% endblock %}

@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+
+{% block title %}已报域名 - 站群网页控制台{% endblock %}
+
+{% block content %}
+<h2 class="section-title">已报域名</h2>
+
+{% set ns = namespace(resolved=0, built=0, wait_build=0) %}
+{% for site in reported_sites %}
+    {% if site.domain_status in ['3', 3] %}
+        {% set ns.resolved = ns.resolved + 1 %}
+    {% endif %}
+    {% if site.domain_status in ['4', 4] %}
+        {% set ns.built = ns.built + 1 %}
+    {% endif %}
+    {% if site.build_status != '已建站' %}
+        {% set ns.wait_build = ns.wait_build + 1 %}
+    {% endif %}
+{% endfor %}
+
+<div class="stats">
+    <div class="stat">
+        <div class="label">已报总数</div>
+        <div class="value">{{ reported_sites|length }}</div>
+    </div>
+    <div class="stat">
+        <div class="label">已解析</div>
+        <div class="value">{{ ns.resolved }}</div>
+    </div>
+    <div class="stat">
+        <div class="label">已建站状态</div>
+        <div class="value">{{ ns.built }}</div>
+    </div>
+    <div class="stat">
+        <div class="label">待建站</div>
+        <div class="value">{{ ns.wait_build }}</div>
+    </div>
+</div>
+
+<form method="get" class="toolbar">
+    <div class="search">
+        <input type="text" name="q" value="{{ q }}" placeholder="搜索域名">
+        <button class="btn btn-primary" type="submit">搜索</button>
+        <a class="btn btn-secondary" href="{{ url_for('reported_list') }}">清空</a>
+        <a class="btn btn-secondary" href="{{ url_for('export_reported_weekly', q=q) }}">导出本周 Excel</a>
+    </div>
+</form>
+
+<form method="post" action="{{ url_for('task_refresh_reported') }}">
+    <input type="hidden" name="next_endpoint" value="reported_list">
+    <div class="toolbar">
+        <button class="btn btn-primary" type="submit">刷新状态</button>
+        <button class="btn btn-success" type="submit" formaction="{{ url_for('task_build_selected') }}">批量建站</button>
+        <button class="btn btn-success" type="submit" formaction="{{ url_for('task_generate_logos_reported') }}">批量生成LOGO</button>
+        <button class="btn btn-danger" type="submit" formaction="{{ url_for('task_delete_reported') }}" onclick="return confirm('确定删除选中的上报记录吗？');">删除上报</button>
+    </div>
+    {% set batch_form_id = 'reported' %}
+    {% include "_batch_update_controls.html" %}
+
+    {% if reported_sites %}
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th class="col-check"><input type="checkbox" onclick="toggleAll(this)"></th>
+                    <th class="col-domain">域名</th>
+                    <th class="col-medium">模板</th>
+                    <th class="col-medium">服务器</th>
+                    <th class="col-status">域名状态</th>
+                    <th class="col-wide">上报 ID</th>
+                    <th class="col-wide">上报时间</th>
+                    <th class="col-detail">详情</th>
+                    <th class="col-action">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for site in reported_sites %}
+                <tr>
+                    <td><input type="checkbox" name="selected_ids" value="{{ site.id }}"></td>
+                    <td class="cell-break">{{ site.domain or '-' }}</td>
+                    <td class="cell-break">{{ site.template or '-' }}</td>
+                    <td class="cell-break">{{ site.server or '-' }}</td>
+                    <td>{{ domain_status_label(site.domain_status) }}</td>
+                    <td class="cell-break">{{ site.report_id or '-' }}</td>
+                    <td>{{ site.report_time or '-' }}</td>
+                    <td>
+                        <details class="detail-box">
+                            <summary>展开详情</summary>
+                            <div class="detail-grid">
+                                <div class="detail-item"><div class="k">域名</div><div class="v">{{ site.domain or '-' }}</div></div>
+                                <div class="detail-item"><div class="k">模板</div><div class="v">{{ site.template or '-' }}</div></div>
+                                <div class="detail-item"><div class="k">服务器</div><div class="v">{{ site.server or '-' }}</div></div>
+                                <div class="detail-item"><div class="k">上报ID</div><div class="v">{{ site.report_id or '-' }}</div></div>
+                                <div class="detail-item"><div class="k">域名状态</div><div class="v">{{ domain_status_label(site.domain_status) }}</div></div>
+                                <div class="detail-item"><div class="k">上报时间</div><div class="v">{{ site.report_time or '-' }}</div></div>
+                                <div class="detail-item"><div class="k">解析时间</div><div class="v">{{ site.domain_resolved_time or '-' }}</div></div>
+                                <div class="detail-item"><div class="k">建站状态</div><div class="v">{{ site.build_status or '-' }}</div></div>
+                                <div class="detail-item"><div class="k">建站时间</div><div class="v">{{ site.build_time or '-' }}</div></div>
+                                <div class="detail-item"><div class="k">标题</div><div class="v">{{ site.title or '-' }}</div></div>
+                                <div class="detail-item"><div class="k">描述</div><div class="v">{{ site.description or '-' }}</div></div>
+                                <div class="detail-item"><div class="k">地址</div><div class="v">{{ site.address or '-' }}</div></div>
+                            </div>
+                        </details>
+                    </td>
+                    <td>
+                        <div class="actions">
+                            <a class="btn btn-success" href="{{ url_for('build_site', site_id=site.id) }}">建站</a>
+                            <a class="btn btn-secondary" href="{{ url_for('edit_site', site_id=site.id, next='reported_list') }}">编辑</a>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty">当前没有匹配的已报域名。</div>
+    {% endif %}
+</form>
+
+<script>
+function toggleAll(source) {
+    document.querySelectorAll('input[name="selected_ids"]').forEach(item => {
+        item.checked = source.checked;
+    });
+}
+</script>
+{% endblock %}

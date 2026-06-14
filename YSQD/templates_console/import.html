@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+
+{% block title %}导入 Excel - 站群网页控制台{% endblock %}
+
+{% block content %}
+<h2 class="section-title">导入 Excel</h2>
+<p class="muted">支持按现有 Excel 列名导入；如果列名不标准，也会按前 10 列顺序兜底读取。</p>
+
+<form method="post" enctype="multipart/form-data" class="stack" style="max-width: 520px;">
+    <div class="field">
+        <label>选择 Excel 文件</label>
+        <input type="file" name="file" accept=".xlsx,.xls">
+    </div>
+    <div class="toolbar">
+        <button class="btn btn-primary" type="submit">开始导入</button>
+    </div>
+</form>
+{% endblock %}

@@ -1,0 +1,85 @@
+{
+  "Hardware": {
+    "domain_keywords": [
+      "hardware","tools","handtools","powertools","screwdriver","drill","hammer",
+      "wrench","pliers","saw","screws","nails","bolts","nuts","fasteners","drillbit",
+      "sanding","grinder","tape measure","level","chisel","socket","impact driver",
+      "toolbox","workbench","pliers","cutters","sander","drillpress","router","jigsaw"
+    ],
+    "categories": {
+      "Hardware Ultimate": {
+        "Hand Tools": {
+          "Cutting Tools": [
+            "hand saw","hacksaw","utility knife","chisel","pruning shears","scissors",
+            "wire cutters","snips","multi-tool","axe","hatchet","knife set"
+          ],
+          "Striking Tools": [
+            "hammer","mallet","sledgehammer","tack hammer","ball peen hammer",
+            "rubber mallet","claw hammer"
+          ],
+          "Measuring & Layout": [
+            "tape measure","ruler","caliper","level","square","angle finder",
+            "plumb bob","chalk line","marking gauge","laser measure"
+          ],
+          "Wrenches & Pliers": [
+            "adjustable wrench","socket wrench","open-end wrench","box-end wrench",
+            "combination wrench","plier","needle nose plier","locking plier",
+            "pipe wrench","crimping tool","snap ring plier"
+          ]
+        },
+        "Power Tools": {
+          "Drilling & Driving": [
+            "drill","impact driver","hammer drill","cordless drill","drill bit set",
+            "screw gun","rotary tool","drill press"
+          ],
+          "Cutting & Shaping": [
+            "circular saw","jigsaw","reciprocating saw","table saw","band saw",
+            "angle grinder","bench grinder","router","planer","belt sander","orbital sander"
+          ],
+          "Specialty Tools": [
+            "heat gun","demolition hammer","rotary hammer","tile cutter","wood lathe",
+            "metal shear","engraver","die grinder","polisher"
+          ]
+        },
+        "Fasteners & Hardware": {
+          "Screws & Nails": [
+            "wood screw","machine screw","sheet metal screw","drywall screw","deck screw",
+            "nail","finishing nail","framing nail","roofing nail","brad nail","pin nail"
+          ],
+          "Bolts & Nuts": [
+            "hex bolt","carriage bolt","lag bolt","machine bolt","wing nut","hex nut",
+            "lock nut","cap nut","square nut"
+          ],
+          "Anchors & Hooks": [
+            "wall anchor","toggle bolt","screw hook","cup hook","eye bolt","picture hook",
+            "mirror hanger","adhesive hook"
+          ],
+          "Other Hardware": [
+            "washer","spring","hinge","latch","hasp","bracket","corner brace",
+            "cabinet pull","drawer slide","door knob","door handle"
+          ]
+        },
+        "Plumbing & Electrical": {
+          "Plumbing Tools & Parts": [
+            "pipe wrench","plumber's snake","plumber's tape","pipe cutter","pipe bender",
+            "valve","faucet","drain","PVC pipe","copper pipe","water heater part"
+          ],
+          "Electrical Tools & Supplies": [
+            "wire stripper","circuit tester","multimeter","electrical tape","wire","cable",
+            "outlet","switch","junction box","light fixture","breaker"
+          ]
+        },
+        "Safety & Workshop": {
+          "Protective Gear": [
+            "safety goggles","gloves","ear protection","dust mask","respirator",
+            "helmet","work boots","knee pads","apron","safety vest"
+          ],
+          "Workshop Equipment": [
+            "toolbox","workbench","vise","clamp","bench grinder","shop fan","shelf",
+            "storage cabinet","pegboard","magnetic tool holder"
+          ]
+        }
+      }
+    }
+  }
+}

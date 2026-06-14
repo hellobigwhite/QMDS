@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+
+{% block title %}URL 健康检查 - 站群网页控制台{% endblock %}
+
+{% block content %}
+<h2 class="section-title">URL 健康检查</h2>
+<p class="muted">检查指定 URL 是否正常打开、是否发生跳转（跨域或路径改变）。</p>
+
+<form method="post" class="stack">
+    <div class="form-grid">
+        <div class="field" style="grid-column: 1 / -1;">
+            <label>输入 URL</label>
+            <input type="text" name="url" value="{{ result.input_url if result else '' }}" placeholder="例如 https://www.grillplateco.com/bbwllogin" style="width: 100%; border: 1px solid #cfd9e6; border-radius: 10px; padding: 10px 12px; font-size: 14px;">
+        </div>
+    </div>
+    <div class="toolbar">
+        <button class="btn btn-primary" type="submit">开始检查</button>
+        <a class="btn btn-secondary" href="{{ url_for('scraper_page') }}">返回爬取页面</a>
+    </div>
+</form>
+
+{% if result %}
+<div class="stack" style="margin-top: 24px;">
+    <h3 class="section-title">检查结果</h3>
+    <div class="task-card {% if result.ok %}status-ok{% else %}status-err{% endif %}">
+        <div class="task-head">
+            <div>
+                <strong>状态: 
+                    {% if result.ok %}
+                    <span style="color: #22c55e;">正常</span>
+                    {% else %}
+                    <span style="color: #ef4444;">异常</span>
+                    {% endif %}
+                </strong>
+                <div class="muted" style="margin-top: 8px;">代码: {{ result.status }}</div>
+            </div>
+        </div>
+        <div class="task-body" style="margin-top: 12px;">
+            <table style="width: 100%; border-collapse: collapse;">
+                <tr><td style="padding: 6px 12px; font-weight: 600;">输入 URL</td><td>{{ result.input_url }}</td></tr>
+                <tr><td style="padding: 6px 12px; font-weight: 600;">域名</td><td>{{ result.domain }}</td></tr>
+                <tr><td style="padding: 6px 12px; font-weight: 600;">检查路径</td><td>{{ result.path or '/' }}</td></tr>
+                <tr><td style="padding: 6px 12px; font-weight: 600;">最终 URL</td><td>{{ result.final_url }}</td></tr>
+                <tr><td style="padding: 6px 12px; font-weight: 600;">最终域名</td><td>{{ result.final_domain }}</td></tr>
+                <tr><td style="padding: 6px 12px; font-weight: 600;">最终路径</td><td>{{ result.final_path }}</td></tr>
+                <tr><td style="padding: 6px 12px; font-weight: 600;">HTTP 状态码</td><td>{{ result.status }}</td></tr>
+                <tr><td style="padding: 6px 12px; font-weight: 600;">页面标题</td><td>{{ result.page_title or '(无)' }}</td></tr>
+            </table>
+            {% if result.redirect_chain %}
+            <div style="margin-top: 12px;">
+                <strong>跳转链:</strong>
+                <ol style="margin: 8px 0 0 20px;">
+                    {% for url in result.redirect_chain %}
+                    <li style="word-break: break-all; margin-bottom: 4px;">{{ url }}</li>
+                    {% endfor %}
+                    <li style="word-break: break-all; font-weight: 600;">→ {{ result.final_url }}</li>
+                </ol>
+            </div>
+            {% endif %}
+            {% if not result.ok %}
+            <div style="margin-top: 12px; padding: 10px; background: #fef2f2; border-radius: 8px; color: #dc2626;">
+                <strong>异常原因:</strong>
+                {% if result.status == 'FINAL_HOST_CROSS_DOMAIN' %}
+                域名跳转到其他网站（{{ result.original_domain }} → {{ result.final_domain }}）
+                {% elif result.status == 'FINAL_PATH_CHANGED' %}
+                路径发生跳转（{{ result.original_path }} → {{ result.final_path }}）
+                {% elif result.status == 'SSL_ERROR' %}
+                SSL 证书错误
+                {% elif result.status == 'CONNECT_ERROR' %}
+                无法连接
+                {% else %}
+                {{ result.status }}
+                {% endif %}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

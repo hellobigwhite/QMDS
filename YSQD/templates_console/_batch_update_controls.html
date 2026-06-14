@@ -1,0 +1,72 @@
+<div class="toolbar">
+    <select name="batch_field" id="batch-field-{{ batch_form_id }}" style="min-width: 180px;">
+        <option value="">选择字段</option>
+        {% for field, label in batch_edit_fields %}
+        <option value="{{ field }}">{{ label }}</option>
+        {% endfor %}
+    </select>
+
+    <select name="batch_value_select" id="batch-value-select-{{ batch_form_id }}" style="min-width: 180px; display: none;"></select>
+    <input type="text" name="batch_value_text" id="batch-value-text-{{ batch_form_id }}" placeholder="输入要批量修改的内容" style="min-width: 220px;">
+
+    <label style="display: inline-flex; align-items: center; gap: 6px; color: #52627a; font-size: 13px;">
+        <input type="checkbox" name="clear_value" value="1" id="batch-clear-{{ batch_form_id }}">
+        清空字段
+    </label>
+
+    <button class="btn btn-secondary" type="submit" formaction="{{ url_for('batch_update_selected') }}">批量修改所选</button>
+</div>
+
+<script>
+(function() {
+    const optionsMap = {{ batch_edit_option_items|tojson }};
+    const formId = "{{ batch_form_id }}";
+    const fieldEl = document.getElementById(`batch-field-${formId}`);
+    const selectEl = document.getElementById(`batch-value-select-${formId}`);
+    const textEl = document.getElementById(`batch-value-text-${formId}`);
+    const clearEl = document.getElementById(`batch-clear-${formId}`);
+
+    if (!fieldEl || !selectEl || !textEl || !clearEl) {
+        return;
+    }
+
+    function renderOptions(field) {
+        const items = optionsMap[field] || [];
+        selectEl.innerHTML = "";
+        items.forEach(item => {
+            const option = document.createElement("option");
+            option.value = item.value;
+            option.textContent = item.label;
+            selectEl.appendChild(option);
+        });
+    }
+
+    function syncFieldMode() {
+        const field = fieldEl.value;
+        const hasSelectOptions = !!optionsMap[field];
+        const isTimeField = !!field && field.endsWith("_time");
+        selectEl.style.display = hasSelectOptions ? "" : "none";
+        textEl.style.display = hasSelectOptions ? "none" : "";
+        textEl.type = isTimeField ? "datetime-local" : "text";
+        if (isTimeField) {
+            textEl.step = "60";
+            textEl.placeholder = "";
+        } else {
+            textEl.step = "";
+            textEl.placeholder = "输入要批量修改的内容";
+        }
+        if (hasSelectOptions) {
+            renderOptions(field);
+        }
+    }
+
+    clearEl.addEventListener("change", function() {
+        const disabled = clearEl.checked;
+        selectEl.disabled = disabled;
+        textEl.disabled = disabled;
+    });
+
+    fieldEl.addEventListener("change", syncFieldMode);
+    syncFieldMode();
+})();
+</script>

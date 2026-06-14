@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}站群网页控制台{% endblock %}</title>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+        :root {
+            --bg: #f0e4cc;
+            --panel: #faf3e0;
+            --panel-inner: #f5ecd8;
+            --line: #d4c4a0;
+            --text: #4a3520;
+            --muted: #8b7355;
+            --brand: #c04028;
+            --brand-dark: #a03020;
+            --success: #4a8c2a;
+            --warn: #d4a030;
+            --danger: #b03020;
+            --pixel-border: #b8a078;
+            --dark-wood: #6b4c30;
+            --light-wood: #c4a47c;
+            --sky-top: #80b8d8;
+            --sky-bot: #b0d4e8;
+            --grass: #6a9c4a;
+            --gold-text: #f0c860;
+            --cream: #fff8e8;
+        }
+        @keyframes sway {
+            0%,100% { transform: rotate(-2deg); }
+            50% { transform: rotate(2deg); }
+        }
+        @keyframes float-up {
+            0% { transform: translateY(0) rotate(0deg); opacity: 0.4; }
+            100% { transform: translateY(-100px) rotate(20deg); opacity: 0; }
+        }
+        @keyframes twinkle {
+            0%,100% { opacity: 0.2; transform: scale(0.8); }
+            50% { opacity: 1; transform: scale(1.2); }
+        }
+        @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+        @keyframes bounce {
+            0%,100% { transform: translateY(0); }
+            50% { transform: translateY(-8px); }
+        }
+        @keyframes shimmer {
+            0% { background-position: -200% center; }
+            100% { background-position: 200% center; }
+        }
+
+        * { box-sizing: border-box; image-rendering: pixelated; }
+        body {
+            margin: 0;
+            font-family: "Microsoft YaHei", "PingFang SC", "Courier New", monospace;
+            background: var(--bg);
+            color: var(--text);
+            position: relative;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* Sky gradient */
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0; left: 0; right: 0; height: 250px;
+            background: linear-gradient(180deg, #80b8d8 0%, #a8cce0 35%, #d0dcc0 65%, transparent 100%);
+            pointer-events: none;
+            z-index: 0;
+            opacity: 0.3;
+        }
+
+        a { color: #c04028; text-decoration: none; }
+        a:hover { color: #e06040; text-decoration: underline; }
+        .wrap { max-width: 1600px; margin: 0 auto; padding: 24px; position: relative; z-index: 1; }
+
+        /* ===== STARDEW DECORATIONS ===== */
+        .sdv-art { position: fixed; pointer-events: none; z-index: 0; font-size: 0; line-height: 0; }
+        .sdv-sun { top: 8px; right: 36px; animation: twinkle 4s ease-in-out infinite; }
+        .sdv-sun::before { content: '🌞'; font-size: 20px; opacity: 0.35; }
+        .sdv-cloud1 { top: 28px; left: 12%; animation: sway 6s ease-in-out infinite; }
+        .sdv-cloud1::before { content: '☁️'; font-size: 18px; opacity: 0.35; }
+        .sdv-cloud2 { top: 45px; left: 45%; animation: sway 8s ease-in-out infinite; animation-delay: 1s; }
+        .sdv-cloud2::before { content: '☁️'; font-size: 14px; opacity: 0.25; }
+        .sdv-leaf1 { bottom: 120px; left: 6%; animation: float-up 8s linear infinite; }
+        .sdv-leaf1::before { content: '🌿'; font-size: 14px; opacity: 0.3; }
+        .sdv-leaf2 { bottom: 80px; left: 22%; animation: float-up 10s linear infinite; animation-delay: 3s; }
+        .sdv-leaf2::before { content: '🍃'; font-size: 12px; opacity: 0.25; }
+        .sdv-flower1 { bottom: 20px; left: 4%; animation: sway 3s ease-in-out infinite; }
+        .sdv-flower1::before { content: '🌻'; font-size: 16px; opacity: 0.2; }
+        .sdv-flower2 { bottom: 12px; right: 8%; animation: sway 4s ease-in-out infinite; animation-delay: 0.5s; }
+        .sdv-flower2::before { content: '🌸'; font-size: 14px; opacity: 0.18; }
+        .sdv-star { top: 55px; right: 16%; animation: twinkle 3s ease-in-out infinite; }
+        .sdv-star::before { content: '⭐'; font-size: 12px; opacity: 0.15; }
+        .sdv-animal { bottom: 30px; right: 18%; animation: bounce 5s ease-in-out infinite; }
+        .sdv-animal::before { content: '🐓'; font-size: 14px; opacity: 0.12; }
+
+        /* ===== STARDEW TITLE BAR (like in-game title screen) ===== */
+        .hero {
+            background: linear-gradient(135deg, #5a3c20 0%, #7a5030 50%, #5a3c20 100%);
+            color: var(--cream);
+            border: 4px solid var(--dark-wood);
+            padding: 24px 32px;
+            box-shadow: inset 0 0 0 2px #8a6040, 8px 8px 0 rgba(60,30,10,0.25);
+            position: relative;
+            overflow: hidden;
+        }
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0; height: 3px;
+            background: linear-gradient(90deg, transparent 10%, #f0c860 40%, #f0c860 60%, transparent 90%);
+            opacity: 0.5;
+        }
+        .hero::after {
+            content: '';
+            position: absolute;
+            bottom: 0; left: 0; right: 0; height: 3px;
+            background: linear-gradient(90deg, transparent 10%, var(--gold-text) 40%, var(--gold-text) 60%, transparent 90%);
+            opacity: 0.3;
+        }
+        .hero h1 {
+            margin: 0;
+            font-size: 18px;
+            font-family: 'Press Start 2P', monospace;
+            letter-spacing: 3px;
+            text-shadow: 3px 3px 0 rgba(40,20,10,0.5);
+            color: var(--gold-text);
+        }
+        .hero h1 .pixel-blip {
+            display: inline-block;
+            animation: blink 1s step-end infinite;
+            color: var(--cream);
+            font-size: 14px;
+            margin-right: 4px;
+        }
+        .hero p {
+            margin: 10px 0 0;
+            opacity: 0.85;
+            font-size: 11px;
+            color: var(--cream);
+            letter-spacing: 1px;
+        }
+        .hero .hero-stars {
+            position: absolute;
+            bottom: 8px; left: 50%;
+            transform: translateX(-50%);
+            font-size: 6px;
+            letter-spacing: 14px;
+            opacity: 0.12;
+            animation: bounce 3s ease-in-out infinite;
+            color: var(--gold-text);
+        }
+
+        /* ===== NAVIGATION ===== */
+        .nav { display: flex; gap: 5px; flex-wrap: wrap; margin: 18px 0 22px; }
+        .nav a {
+            padding: 10px 16px;
+            background: var(--cream);
+            color: var(--muted);
+            border: 2px solid var(--pixel-border);
+            font-size: 10px;
+            font-family: 'Press Start 2P', monospace;
+            letter-spacing: 0.8px;
+            text-transform: uppercase;
+            box-shadow: 3px 3px 0 rgba(80,50,30,0.12);
+            white-space: nowrap;
+            transition: none;
+        }
+        .nav a:hover {
+            background: #f8e8d0;
+            color: var(--brand);
+            border-color: var(--brand);
+            text-decoration: none;
+        }
+        .nav a.active {
+            background: var(--brand);
+            color: var(--cream);
+            border-color: #803020;
+            box-shadow: inset -2px -2px 0 #602818;
+        }
+        .nav a .nav-icon { margin-right: 5px; font-size: 12px; }
+
+        /* ===== MAIN PANEL ===== */
+        .panel {
+            background: linear-gradient(180deg, #faf3e0 0%, #f5ecd8 100%);
+            border: 3px solid var(--pixel-border);
+            padding: 22px;
+            box-shadow: inset 0 0 0 2px #e8dcc4, 6px 6px 0 rgba(80,50,30,0.1);
+            position: relative;
+        }
+
+        .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+        .toolbar form { display: contents; }
+
+        /* ===== BUTTONS ===== */
+        .btn, button.btn {
+            border: 2px solid transparent;
+            padding: 8px 14px;
+            cursor: pointer;
+            font-size: 9px;
+            font-family: 'Press Start 2P', monospace;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            white-space: nowrap;
+            line-height: 1.2;
+            letter-spacing: 0.5px;
+            box-shadow: 3px 3px 0 rgba(60,30,10,0.12);
+            text-transform: uppercase;
+            gap: 4px;
+            position: relative;
+        }
+        .btn:active, button.btn:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 rgba(60,30,10,0.12); }
+        .btn:focus-visible { outline: 2px solid var(--gold-text); outline-offset: 2px; }
+        .btn-primary { background: var(--brand); color: var(--cream); border-color: #803020; }
+        .btn-primary:hover { background: #d85038; }
+        .btn-success { background: var(--success); color: var(--cream); border-color: #307020; }
+        .btn-success:hover { background: #5aa838; }
+        .btn-warning { background: var(--warn); color: var(--text); border-color: #b88828; }
+        .btn-danger { background: var(--danger); color: var(--cream); border-color: #802818; }
+        .btn-danger:hover { background: #c84030; }
+        .btn-secondary { background: #d4c4a8; color: var(--text); border-color: #b8a078; }
+        .btn-secondary:hover { background: #e0d0b8; }
+
+        .search { display: flex; gap: 8px; flex-wrap: wrap; }
+        .search input, .field input, .field textarea, .field select {
+            width: 280px; max-width: 100%;
+            border: 2px solid var(--pixel-border);
+            padding: 8px 10px;
+            font-size: 13px;
+            font-family: "Courier New", monospace;
+            background: var(--cream);
+            color: var(--text);
+            outline: none;
+        }
+        .search input:focus, .field input:focus, .field textarea:focus, .field select:focus {
+            border-color: var(--success);
+            box-shadow: 0 0 0 3px rgba(74,140,42,0.12);
+        }
+        .field select { color: var(--text); }
+        .field select option { background: var(--cream); color: var(--text); }
+        .flash-list { margin-bottom: 14px; }
+        .flash { padding: 10px 14px; margin-bottom: 8px; border: 2px solid; font-size: 12px; }
+        .flash.success { background: #e0f0d0; color: #307020; border-color: #4a8c2a; }
+        .flash.error { background: #f0d8d0; color: #802818; border-color: #b03020; }
+        .flash.info { background: #d0e0f0; color: #285878; border-color: #4088a8; }
+
+        .table-wrap { overflow: auto; border: 3px solid var(--pixel-border); background: var(--cream); box-shadow: inset 0 0 0 2px #e8dcc4; }
+        table { width: 100%; border-collapse: collapse; min-width: 1100px; table-layout: fixed; }
+        th, td { padding: 10px 8px; border-bottom: 2px solid var(--pixel-border); font-size: 12px; text-align: left; vertical-align: top; }
+        th {
+            background: linear-gradient(180deg, #5a3c20 0%, #4a2c18 100%);
+            color: var(--gold-text);
+            position: sticky; top: 0; z-index: 1;
+            font-family: 'Press Start 2P', monospace;
+            font-size: 9px; letter-spacing: 1px;
+            text-transform: uppercase;
+            border-bottom: 3px solid #3a1c08;
+        }
+        tr:hover td { background: rgba(192,64,40,0.06); }
+        .muted { color: var(--muted); font-size: 11px; }
+
+        .empty {
+            padding: 48px 20px; text-align: center;
+            color: var(--muted); font-family: 'Press Start 2P', monospace; font-size: 11px;
+        }
+        .empty::before { content: '🌾 '; display: block; font-size: 32px; margin-bottom: 12px; }
+        .pill {
+            display: inline-block; padding: 3px 8px;
+            background: #e8dcc8; color: var(--text);
+            font-size: 9px; border: 1px solid var(--pixel-border);
+            font-family: 'Press Start 2P', monospace;
+        }
+        .cell-break { word-break: break-all; white-space: normal; }
+        .cell-clip { overflow: hidden; text-overflow: ellipsis; }
+        .col-check { width: 48px; }
+        .col-domain { width: 230px; }
+        .col-medium { width: 140px; }
+        .col-wide { width: 180px; }
+        .col-status { width: 90px; }
+        .col-action { width: 250px; }
+        .col-detail { width: 240px; }
+        .actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+        .actions .btn { min-width: 50px; padding: 6px 10px; font-size: 8px; }
+
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-bottom: 14px; }
+        .stat {
+            background: linear-gradient(180deg, #faf3e0 0%, #f0e4cc 100%);
+            border: 2px solid var(--pixel-border);
+            padding: 12px 14px;
+            box-shadow: inset 0 0 0 2px #e8dcc4, 4px 4px 0 rgba(80,50,30,0.08);
+            position: relative;
+        }
+        .stat::after {
+            content: '';
+            position: absolute;
+            bottom: 0; left: 0; right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--success), var(--brand), var(--warn));
+        }
+        .stat .label { color: var(--muted); font-size: 9px; margin-bottom: 4px; font-family: 'Press Start 2P', monospace; letter-spacing: 0.5px; }
+        .stat .value { font-size: 22px; font-weight: 700; color: var(--dark-wood); font-family: 'Press Start 2P', monospace; }
+
+        details.detail-box { border: 2px solid var(--pixel-border); background: var(--cream); overflow: hidden; }
+        details.detail-box summary {
+            list-style: none; cursor: pointer;
+            padding: 8px 10px; font-weight: 600;
+            color: var(--cream); background: linear-gradient(180deg, #5a3c20 0%, #4a2c18 100%);
+            font-size: 11px; font-family: 'Press Start 2P', monospace; letter-spacing: 0.5px;
+        }
+        details.detail-box summary::before { content: '📂 '; }
+        details.detail-box summary::-webkit-details-marker { display: none; }
+        details.detail-box summary:hover { background: linear-gradient(180deg, #6a4c30 0%, #5a3c20 100%); }
+        details.detail-box[open] summary::before { content: '📖 '; }
+        .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 6px; padding: 0 10px 10px; }
+        .detail-item { background: var(--panel-inner); border: 1px solid var(--pixel-border); padding: 6px 8px; }
+        .detail-item .k { color: var(--muted); font-size: 9px; margin-bottom: 2px; font-family: 'Press Start 2P', monospace; letter-spacing: 0.5px; }
+        .detail-item .v { font-size: 12px; word-break: break-all; white-space: normal; }
+
+        .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+        .field label { display: block; margin-bottom: 6px; font-weight: 600; font-size: 10px; color: var(--dark-wood); font-family: 'Press Start 2P', monospace; letter-spacing: 0.5px; }
+        .field label::before { content: '▸ '; color: var(--brand); }
+        .field input { width: 100%; }
+
+        .section-title {
+            margin: 0 0 12px;
+            font-family: 'Press Start 2P', monospace;
+            font-size: 12px;
+            letter-spacing: 1px;
+            color: var(--dark-wood);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .section-title::before { content: '🌿 '; font-size: 14px; }
+
+        .stack { display: grid; gap: 10px; }
+        .task-card { border: 2px solid var(--pixel-border); padding: 14px; background: var(--cream); box-shadow: inset 0 0 0 2px #e8dcc4, 4px 4px 0 rgba(80,50,30,0.08); }
+        .task-head { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+        .task-head strong { color: var(--dark-wood); }
+        .task-head strong::before { content: '🌾 '; }
+        .task-log { background: #1a1a1a; color: #80c860; padding: 10px; font-size: 11px; line-height: 1.5; white-space: pre-wrap; max-height: 260px; overflow: auto; font-family: "Courier New", monospace; border: 2px solid #3a3a2a; }
+        .task-focus { border-color: var(--gold); box-shadow: 4px 4px 0 rgba(244,162,97,0.2); }
+
+        .domain-paste-box textarea { width: 100%; min-height: 80px; background: var(--cream); color: var(--text); border: 2px solid var(--pixel-border); padding: 10px; font-family: "Courier New", monospace; font-size: 12px; }
+        .domain-paste-box strong::before { content: '📝 '; }
+
+        .chart-card { background: var(--cream); border: 2px solid var(--pixel-border); padding: 14px; box-shadow: inset 0 0 0 2px #e8dcc4, 3px 3px 0 rgba(80,50,30,0.08); }
+        .list-card { background: var(--cream); border: 2px solid var(--pixel-border); padding: 12px 14px; box-shadow: 3px 3px 0 rgba(80,50,30,0.08); }
+        .list-card .name { font-weight: 600; font-size: 13px; color: var(--dark-wood); }
+        .loading-bar { height: 4px; background: #d4c4a8; overflow: hidden; }
+        .loading-bar::after { content: ''; display: block; height: 100%; width: 30%; background: var(--success); animation: load 1.2s ease-in-out infinite; }
+        @keyframes load { 0% { transform: translateX(-100%); } 100% { transform: translateX(400%); } }
+
+        /* ===== CSS PIXEL ART ===== */
+        .pixel-tree { position: fixed; bottom: 100px; left: 8px; pointer-events: none; z-index: 0; opacity: 0.07; }
+        .pixel-tree-inner { display: block; width: 8px; height: 8px; }
+        .pixel-tree .pixel-tree-inner { box-shadow:
+            4px -24px 0 0 #4a3520, 4px -16px 0 0 #4a3520, 4px -8px 0 0 #4a3520,
+            0px -32px 0 0 #4a6c2a, 8px -32px 0 0 #4a6c2a, -4px -36px 0 0 #4a6c2a, 12px -36px 0 0 #4a6c2a,
+            -4px -40px 0 0 #5a8c3a, 0px -40px 0 0 #5a8c3a, 4px -40px 0 0 #5a8c3a, 8px -40px 0 0 #5a8c3a, 12px -40px 0 0 #5a8c3a,
+            0px -48px 0 0 #6a9c4a, 4px -48px 0 0 #6a9c4a, 8px -48px 0 0 #6a9c4a, 4px -56px 0 0 #6a9c4a; }
+        .pixel-tree2 { position: fixed; bottom: 140px; right: 12px; pointer-events: none; z-index: 0; opacity: 0.06; transform: scaleX(-1); }
+        .pixel-tree2 .pixel-tree-inner { box-shadow:
+            4px -24px 0 0 #4a3520, 4px -16px 0 0 #4a3520, 4px -8px 0 0 #4a3520,
+            0px -32px 0 0 #4a6c2a, 8px -32px 0 0 #4a6c2a, -4px -36px 0 0 #4a6c2a, 12px -36px 0 0 #4a6c2a,
+            -4px -40px 0 0 #5a8c3a, 0px -40px 0 0 #5a8c3a, 4px -40px 0 0 #5a8c3a, 8px -40px 0 0 #5a8c3a, 12px -40px 0 0 #5a8c3a,
+            0px -48px 0 0 #6a9c4a, 4px -48px 0 0 #6a9c4a, 8px -48px 0 0 #6a9c4a, 4px -56px 0 0 #6a9c4a; }
+
+        .pixel-pine1 { position: fixed; bottom: 160px; left: 5%; pointer-events: none; z-index: 0; opacity: 0.07; }
+        .pixel-pine2 { bottom: 130px; left: 2%; opacity: 0.05; transform: scale(0.7); }
+        .pixel-pine3 { bottom: 150px; right: 5%; opacity: 0.06; }
+        .pixel-pine-inner { display: block; width: 4px; height: 4px; }
+        .pixel-pine1 .pixel-pine-inner, .pixel-pine2 .pixel-pine-inner, .pixel-pine3 .pixel-pine-inner { box-shadow:
+            4px 0px 0 0 #4a3520, 4px -4px 0 0 #4a3520, 4px -8px 0 0 #4a3520, 4px -12px 0 0 #4a3520,
+            -4px -12px 0 0 #5a8c3a, 0px -12px 0 0 #5a8c3a, 4px -12px 0 0 #5a8c3a, 8px -12px 0 0 #5a8c3a, 12px -12px 0 0 #5a8c3a,
+            0px -16px 0 0 #4a6c2a, 4px -16px 0 0 #4a6c2a, 8px -16px 0 0 #4a6c2a,
+            -4px -20px 0 0 #5a8c3a, 0px -20px 0 0 #5a8c3a, 4px -20px 0 0 #5a8c3a, 8px -20px 0 0 #5a8c3a,
+            0px -24px 0 0 #6a9c4a, 4px -24px 0 0 #6a9c4a,
+            0px -28px 0 0 #6a9c4a, 4px -28px 0 0 #6a9c4a, 8px -28px 0 0 #6a9c4a, 4px -32px 0 0 #6a9c4a; }
+
+        .pixel-chicken { position: fixed; bottom: 75px; left: 80px; pointer-events: none; z-index: 0; opacity: 0.08; animation: bounce 6s ease-in-out infinite; }
+        .pixel-chicken-inner { display: block; width: 4px; height: 4px; }
+        .pixel-chicken .pixel-chicken-inner { box-shadow:
+            4px 0px 0 0 #f0d0a0, 8px 0px 0 0 #f0d0a0, 12px 0px 0 0 #f0d0a0,
+            0px -4px 0 0 #f0d0a0, 4px -4px 0 0 #f0d0a0, 8px -4px 0 0 #f0d0a0, 12px -4px 0 0 #f0d0a0, 16px -4px 0 0 #f0d0a0,
+            0px -8px 0 0 #f0d0a0, 4px -8px 0 0 #f0d0a0, 8px -8px 0 0 #f0d0a0, 12px -8px 0 0 #f0d0a0, 16px -8px 0 0 #f0d0a0,
+            4px -12px 0 0 #f0d0a0, 8px -12px 0 0 #f0d0a0, 12px -12px 0 0 #f0d0a0,
+            4px -16px 0 0 #c04028, 8px -16px 0 0 #c04028,
+            16px -8px 0 0 #e0a040, 20px -8px 0 0 #e0a040,
+            8px -12px 0 0 #2c1a08, 4px 4px 0 0 #e0a040, 8px 4px 0 0 #e0a040, 8px 8px 0 0 #e0a040, 12px 4px 0 0 #e0a040, 12px 8px 0 0 #e0a040; }
+
+        .pixel-flower-box { position: fixed; pointer-events: none; z-index: 0; }
+        .pixel-flower-red { bottom: 55px; left: 12%; opacity: 0.09; animation: sway 3.5s ease-in-out infinite; }
+        .pixel-flower-yellow { bottom: 45px; left: 20%; opacity: 0.07; animation: sway 4s ease-in-out infinite; animation-delay: 0.5s; }
+        .pixel-flower-purple { bottom: 60px; right: 18%; opacity: 0.08; animation: sway 3s ease-in-out infinite; animation-delay: 1s; }
+        .pixel-flower-blue { bottom: 40px; right: 25%; opacity: 0.06; animation: sway 4.5s ease-in-out infinite; animation-delay: 0.3s; }
+        .pixel-flower-inner { display: block; width: 4px; height: 4px; }
+
+        .pixel-flower-red .pixel-flower-inner { box-shadow:
+            4px 0px 0 0 #5a8c3a, 4px -4px 0 0 #5a8c3a, 4px -8px 0 0 #5a8c3a,
+            0px -12px 0 0 #c04028, 4px -12px 0 0 #c04028, 8px -12px 0 0 #c04028,
+            2px -16px 0 0 #c04028, 6px -16px 0 0 #c04028, 4px -14px 0 0 #e0a040; }
+        .pixel-flower-yellow .pixel-flower-inner { box-shadow:
+            4px 0px 0 0 #5a8c3a, 4px -4px 0 0 #5a8c3a, 4px -8px 0 0 #5a8c3a,
+            0px -12px 0 0 #d4a030, 4px -12px 0 0 #d4a030, 8px -12px 0 0 #d4a030,
+            2px -16px 0 0 #d4a030, 6px -16px 0 0 #d4a030, 4px -14px 0 0 #e0a040; }
+        .pixel-flower-purple .pixel-flower-inner { box-shadow:
+            4px 0px 0 0 #5a8c3a, 4px -4px 0 0 #5a8c3a, 4px -8px 0 0 #5a8c3a,
+            0px -12px 0 0 #9060b8, 4px -12px 0 0 #9060b8, 8px -12px 0 0 #9060b8,
+            2px -16px 0 0 #9060b8, 6px -16px 0 0 #9060b8, 4px -14px 0 0 #e0a040; }
+        .pixel-flower-blue .pixel-flower-inner { box-shadow:
+            4px 0px 0 0 #5a8c3a, 4px -4px 0 0 #5a8c3a, 4px -8px 0 0 #5a8c3a,
+            0px -12px 0 0 #60a0c8, 4px -12px 0 0 #60a0c8, 8px -12px 0 0 #60a0c8,
+            2px -16px 0 0 #60a0c8, 6px -16px 0 0 #60a0c8, 4px -14px 0 0 #e0a040; }
+
+        .pixel-cat { position: fixed; bottom: 62px; right: 14%; pointer-events: none; z-index: 0; opacity: 0.07; animation: bounce 7s ease-in-out infinite; }
+        .pixel-cat-inner { display: block; width: 4px; height: 4px; }
+        .pixel-cat .pixel-cat-inner { box-shadow:
+            4px 0px 0 0 #6c5ce7, 8px 0px 0 0 #6c5ce7, 12px 0px 0 0 #6c5ce7,
+            0px -4px 0 0 #6c5ce7, 4px -4px 0 0 #6c5ce7, 8px -4px 0 0 #6c5ce7, 12px -4px 0 0 #6c5ce7, 16px -4px 0 0 #6c5ce7,
+            0px -8px 0 0 #6c5ce7, 4px -8px 0 0 #6c5ce7, 8px -8px 0 0 #6c5ce7, 12px -8px 0 0 #6c5ce7, 16px -8px 0 0 #6c5ce7,
+            4px -12px 0 0 #6c5ce7, 8px -12px 0 0 #6c5ce7, 12px -12px 0 0 #6c5ce7,
+            0px -16px 0 0 #6c5ce7, 16px -16px 0 0 #6c5ce7,
+            4px -12px 0 0 #f0d0a0, 12px -12px 0 0 #f0d0a0, 8px -12px 0 0 #c04028,
+            16px -4px 0 0 #6c5ce7, 20px -4px 0 0 #6c5ce7, 20px 0px 0 0 #6c5ce7; }
+
+        .pixel-scarecrow { position: fixed; bottom: 82px; left: 18%; pointer-events: none; z-index: 0; opacity: 0.07; }
+        .pixel-scarecrow-inner { display: block; width: 4px; height: 4px; }
+        .pixel-scarecrow .pixel-scarecrow-inner { box-shadow:
+            4px 0px 0 0 #8b7355, 4px -4px 0 0 #8b7355, 4px -8px 0 0 #8b7355, 4px -12px 0 0 #8b7355,
+            4px -16px 0 0 #8b7355, 4px -20px 0 0 #8b7355, 4px -24px 0 0 #8b7355, 4px -28px 0 0 #8b7355,
+            -4px -20px 0 0 #8b7355, 0px -20px 0 0 #8b7355, 8px -20px 0 0 #8b7355, 12px -20px 0 0 #8b7355,
+            0px -32px 0 0 #f0d0a0, 4px -32px 0 0 #f0d0a0, 8px -32px 0 0 #f0d0a0,
+            0px -36px 0 0 #f0d0a0, 4px -36px 0 0 #f0d0a0, 8px -36px 0 0 #f0d0a0, 4px -40px 0 0 #f0d0a0,
+            -4px -44px 0 0 #4a3520, 0px -44px 0 0 #4a3520, 4px -44px 0 0 #4a3520, 8px -44px 0 0 #4a3520, 12px -44px 0 0 #4a3520,
+             0px -48px 0 0 #4a3520, 4px -48px 0 0 #4a3520, 8px -48px 0 0 #4a3520; }
+
+        /* ===== NEW STARDEW PIXEL ART ===== */
+
+        /* Red Mushroom */
+        .pixel-mushroom-box {
+            position: fixed; bottom: 60px; left: 35%;
+            pointer-events: none; z-index: 0; opacity: 0.08;
+            animation: sway 4s ease-in-out infinite;
+        }
+        .pixel-mushroom-inner { display: block; width: 4px; height: 4px; }
+        .pixel-mushroom-box .pixel-mushroom-inner { box-shadow:
+            /* Stem */
+            4px 0px 0 0 #f0e0c0, 4px -4px 0 0 #f0e0c0, 4px -8px 0 0 #f0e0c0,
+            /* Cap (red) */
+            0px -12px 0 0 #c04028, 4px -12px 0 0 #c04028, 8px -12px 0 0 #c04028,
+            -4px -16px 0 0 #c04028, 0px -16px 0 0 #c04028, 4px -16px 0 0 #c04028, 8px -16px 0 0 #c04028, 12px -16px 0 0 #c04028,
+            -4px -20px 0 0 #c04028, 0px -20px 0 0 #c04028, 4px -20px 0 0 #c04028, 8px -20px 0 0 #c04028, 12px -20px 0 0 #c04028,
+            0px -24px 0 0 #c04028, 4px -24px 0 0 #c04028, 8px -24px 0 0 #c04028,
+            /* White spots */
+            0px -16px 0 0 #f0e0c0, 8px -20px 0 0 #f0e0c0, 4px -24px 0 0 #f0e0c0; }
+
+        /* Pumpkin */
+        .pixel-pumpkin-box {
+            position: fixed; bottom: 55px; left: 42%;
+            pointer-events: none; z-index: 0; opacity: 0.07;
+        }
+        .pixel-pumpkin-inner { display: block; width: 4px; height: 4px; }
+        .pixel-pumpkin-box .pixel-pumpkin-inner { box-shadow:
+            /* Body */
+            0px 0px 0 0 #e08030, 4px 0px 0 0 #e08030, 8px 0px 0 0 #e08030, 12px 0px 0 0 #e08030,
+            -4px -4px 0 0 #e08030, 0px -4px 0 0 #e08030, 4px -4px 0 0 #e08030, 8px -4px 0 0 #e08030, 12px -4px 0 0 #e08030, 16px -4px 0 0 #e08030,
+            -4px -8px 0 0 #e08030, 0px -8px 0 0 #e08030, 4px -8px 0 0 #e08030, 8px -8px 0 0 #e08030, 12px -8px 0 0 #e08030, 16px -8px 0 0 #e08030,
+            -4px -12px 0 0 #e08030, 0px -12px 0 0 #e08030, 4px -12px 0 0 #e08030, 8px -12px 0 0 #e08030, 12px -12px 0 0 #e08030, 16px -12px 0 0 #e08030,
+            0px -16px 0 0 #e08030, 4px -16px 0 0 #e08030, 8px -16px 0 0 #e08030, 12px -16px 0 0 #e08030,
+            /* Stem */
+            4px -20px 0 0 #4a6c2a, 8px -20px 0 0 #4a6c2a,
+            /* Ridges */
+            4px -8px 0 0 #d07020, 4px -12px 0 0 #d07020,
+            12px -8px 0 0 #d07020, 12px -12px 0 0 #d07020; }
+
+        /* Junimo */
+        .pixel-junimo-box {
+            position: fixed; bottom: 120px; left: 45%;
+            pointer-events: none; z-index: 0; opacity: 0.07;
+            animation: bounce 6s ease-in-out infinite;
+        }
+        .pixel-junimo-inner { display: block; width: 4px; height: 4px; }
+        .pixel-junimo-box .pixel-junimo-inner { box-shadow:
+            /* Body (green apple shape) */
+            0px 0px 0 0 #5a8c3a, 4px 0px 0 0 #5a8c3a, 8px 0px 0 0 #5a8c3a,
+            -4px -4px 0 0 #5a8c3a, 0px -4px 0 0 #5a8c3a, 4px -4px 0 0 #5a8c3a, 8px -4px 0 0 #5a8c3a, 12px -4px 0 0 #5a8c3a,
+            -4px -8px 0 0 #5a8c3a, 0px -8px 0 0 #5a8c3a, 4px -8px 0 0 #5a8c3a, 8px -8px 0 0 #5a8c3a, 12px -8px 0 0 #5a8c3a,
+            0px -12px 0 0 #5a8c3a, 4px -12px 0 0 #5a8c3a, 8px -12px 0 0 #5a8c3a,
+            /* Eyes */
+            0px -8px 0 0 #f0e0c0, 8px -8px 0 0 #f0e0c0,
+            /* Arms */
+            -8px -4px 0 0 #5a8c3a, -8px -8px 0 0 #5a8c3a,
+            16px -4px 0 0 #5a8c3a, 16px -8px 0 0 #5a8c3a,
+            /* Legs */
+            0px 4px 0 0 #5a8c3a, 8px 4px 0 0 #5a8c3a; }
+
+        /* Starfruit */
+        .pixel-starfruit-box {
+            position: fixed; bottom: 90px; right: 35%;
+            pointer-events: none; z-index: 0; opacity: 0.07;
+            animation: sway 3.5s ease-in-out infinite;
+        }
+        .pixel-starfruit-inner { display: block; width: 4px; height: 4px; }
+        .pixel-starfruit-box .pixel-starfruit-inner { box-shadow:
+            0px 0px 0 0 #f0c040, 4px 0px 0 0 #f0c040, 8px 0px 0 0 #f0c040,
+            -4px -4px 0 0 #f0c040, 0px -4px 0 0 #f0c040, 4px -4px 0 0 #f0c040, 8px -4px 0 0 #f0c040, 12px -4px 0 0 #f0c040,
+            -4px -8px 0 0 #f0c040, 0px -8px 0 0 #f0c040, 4px -8px 0 0 #f0c040, 8px -8px 0 0 #f0c040, 12px -8px 0 0 #f0c040,
+            0px -12px 0 0 #f0c040, 4px -12px 0 0 #f0c040, 8px -12px 0 0 #f0c040,
+            4px -16px 0 0 #f0c040; }
+
+        /* Blueberry Bush */
+        .pixel-blueberry-box {
+            position: fixed; bottom: 50px; right: 32%;
+            pointer-events: none; z-index: 0; opacity: 0.06;
+        }
+        .pixel-blueberry-inner { display: block; width: 4px; height: 4px; }
+        .pixel-blueberry-box .pixel-blueberry-inner { box-shadow:
+            /* Leaves */
+            0px 0px 0 0 #5a8c3a, 4px 0px 0 0 #5a8c3a, 8px 0px 0 0 #5a8c3a,
+            0px -4px 0 0 #5a8c3a, 4px -4px 0 0 #5a8c3a, 8px -4px 0 0 #5a8c3a,
+            -4px -8px 0 0 #5a8c3a, 0px -8px 0 0 #5a8c3a, 4px -8px 0 0 #5a8c3a, 8px -8px 0 0 #5a8c3a, 12px -8px 0 0 #5a8c3a,
+            0px -12px 0 0 #5a8c3a, 4px -12px 0 0 #5a8c3a, 8px -12px 0 0 #5a8c3a,
+            /* Blueberries */
+            -4px -8px 0 0 #4080b0, 12px -4px 0 0 #4080b0,
+            0px -12px 0 0 #4080b0, 8px -12px 0 0 #4080b0,
+            4px 0px 0 0 #4080b0; }
+
+        /* Fishing Bobber */
+        .pixel-bobber-box {
+            position: fixed; top: 28%; right: 22%;
+            pointer-events: none; z-index: 0; opacity: 0.07;
+            animation: bounce 3s ease-in-out infinite;
+        }
+        .pixel-bobber-inner { display: block; width: 4px; height: 4px; }
+        .pixel-bobber-box .pixel-bobber-inner { box-shadow:
+            /* Line */
+            0px 8px 0 0 #8b7355, 0px 4px 0 0 #8b7355,
+            /* Bobber top (red/white) */
+            0px 0px 0 0 #c04028, 4px 0px 0 0 #c04028,
+            0px -4px 0 0 #f0e0c0, 4px -4px 0 0 #f0e0c0,
+            -4px -8px 0 0 #c04028, 0px -8px 0 0 #c04028, 4px -8px 0 0 #c04028, 8px -8px 0 0 #c04028,
+            -4px -12px 0 0 #c04028, 0px -12px 0 0 #c04028, 4px -12px 0 0 #c04028, 8px -12px 0 0 #c04028,
+            0px -16px 0 0 #c04028, 4px -16px 0 0 #c04028; }
+
+        /* Actual sprite decorations - static display with subtle motion */
+        .sdv-sprite {
+            position: fixed;
+            pointer-events: none;
+            z-index: 0;
+            image-rendering: pixelated;
+            opacity: 0.30;
+        }
+        .sdv-crop {
+            position: fixed;
+            pointer-events: none;
+            z-index: 0;
+            image-rendering: pixelated;
+            opacity: 0.35;
+        }
+
+        .sprite-chicken {
+            top: 8%; left: 1%;
+            width: 56px; height: 56px;
+            background: url('/static/stardew/animals/White_Chicken.png') no-repeat -56px 0 / 224px auto;
+            animation: bounce 3.5s ease-in-out infinite;
+        }
+        .sprite-cow {
+            top: 45%; right: 1%;
+            width: 80px; height: 80px;
+            background: url('/static/stardew/animals/White_Cow.png') no-repeat 0 0 / 320px auto;
+            animation: sway 5s ease-in-out infinite;
+        }
+        .sprite-goat {
+            bottom: 25%; left: 4%;
+            width: 64px; height: 64px;
+            background: url('/static/stardew/animals/Goat.png') no-repeat 0 0 / 256px auto;
+            animation: bounce 4.5s ease-in-out infinite;
+        }
+        .sprite-dog {
+            top: 22%; right: 2%;
+            width: 72px; height: 72px;
+            background: url('/static/stardew/animals/dog.png') no-repeat 0 0 / 288px auto;
+            animation: sway 6s ease-in-out infinite;
+        }
+        .sprite-pig {
+            bottom: 35%; right: 4%;
+            width: 64px; height: 64px;
+            background: url('/static/stardew/animals/Pig.png') no-repeat 0 0 / 256px auto;
+            animation: sway 4s ease-in-out infinite;
+        }
+        .sprite-duck {
+            top: 60%; left: 2%;
+            width: 48px; height: 48px;
+            background: url('/static/stardew/animals/Duck.png') no-repeat 0 0 / 192px auto;
+            animation: bounce 3.5s ease-in-out infinite;
+        }
+        .sprite-sheep {
+            bottom: 55%; right: 2%;
+            width: 72px; height: 72px;
+            background: url('/static/stardew/animals/Sheep.png') no-repeat 0 0 / 288px auto;
+            animation: sway 5.5s ease-in-out infinite;
+        }
+        .sprite-rabbit {
+            top: 15%; right: 6%;
+            width: 40px; height: 40px;
+            background: url('/static/stardew/animals/Rabbit.png') no-repeat 0 0 / 160px auto;
+            animation: bounce 2.5s ease-in-out infinite;
+        }
+        .sprite-cat {
+            bottom: 15%; left: 2%;
+            width: 56px; height: 56px;
+            background: url('/static/stardew/animals/cat.png') no-repeat 0 0 / 224px auto;
+            animation: sway 4.5s ease-in-out infinite;
+        }
+
+        /* Crops - mature fruit stage from game */
+        .crop-parsnip {
+            bottom: 8%; left: 10%;
+            width: 32px; height: 32px;
+            background: url('/static/stardew/crops/parsnip_ripe_2x.png') no-repeat 0 0 / 32px auto;
+            animation: sway 4s ease-in-out infinite;
+        }
+        .crop-cauliflower {
+            bottom: 18%; left: 16%;
+            width: 32px; height: 32px;
+            background: url('/static/stardew/crops/cauliflower_ripe_2x.png') no-repeat 0 0 / 32px auto;
+            animation: sway 4.5s ease-in-out infinite;
+            animation-delay: 0.5s;
+        }
+        .crop-pumpkin {
+            bottom: 5%; right: 12%;
+            width: 32px; height: 32px;
+            background: url('/static/stardew/crops/pumpkin_ripe_2x.png') no-repeat 0 0 / 32px auto;
+            animation: sway 5s ease-in-out infinite;
+            animation-delay: 1s;
+        }
+        .crop-melon {
+            bottom: 22%; right: 20%;
+            width: 32px; height: 32px;
+            background: url('/static/stardew/crops/melon_ripe_2x.png') no-repeat 0 0 / 32px auto;
+            animation: sway 3.5s ease-in-out infinite;
+            animation-delay: 0.3s;
+        }
+        .crop-tomato {
+            top: 28%; left: 6%;
+            width: 32px; height: 32px;
+            background: url('/static/stardew/crops/tomato_ripe_2x.png') no-repeat 0 0 / 32px auto;
+            animation: bounce 4s ease-in-out infinite;
+        }
+        .crop-corn {
+            top: 55%; left: 4%;
+            width: 32px; height: 32px;
+            background: url('/static/stardew/crops/corn_ripe_2x.png') no-repeat 0 0 / 32px auto;
+            animation: sway 4.5s ease-in-out infinite;
+            animation-delay: 0.7s;
+        }
+        .crop-wheat {
+            top: 72%; left: 3%;
+            width: 32px; height: 32px;
+            background: url('/static/stardew/crops/wheat_ripe_2x.png') no-repeat 0 0 / 32px auto;
+            animation: sway 3s ease-in-out infinite;
+        }
+        .crop-berry {
+            top: 12%; left: 5%;
+            width: 32px; height: 32px;
+            background: url('/static/stardew/crops/blueberry_ripe_2x.png') no-repeat 0 0 / 32px auto;
+            animation: bounce 3s ease-in-out infinite;
+            animation-delay: 0.2s;
+        }
+
+        @media (max-width: 900px) {
+            .wrap { padding: 12px; }
+            .panel { padding: 12px; }
+            .btn, button.btn { padding: 7px 10px; font-size: 8px; }
+            .actions .btn { min-width: 44px; padding: 6px 8px; }
+            table { min-width: 980px; }
+            .hero h1 { font-size: 13px; }
+            .nav a { font-size: 8px; padding: 7px 10px; }
+            .sdv-sun, .sdv-cloud1, .sdv-cloud2, .sdv-leaf1, .sdv-leaf2,
+            .sdv-flower1, .sdv-flower2, .sdv-star, .sdv-animal,
+            .pixel-tree, .pixel-tree2, .pixel-pine1, .pixel-pine2, .pixel-pine3,
+            .pixel-chicken, .pixel-flower-box, .pixel-cat, .pixel-scarecrow,
+            .pixel-mushroom-box, .pixel-pumpkin-box, .pixel-junimo-box,
+            .pixel-starfruit-box, .pixel-blueberry-box, .pixel-bobber-box,
+            .sdv-sprite, .sdv-crop { display: none; }
+        }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #e0d4c0; }
+        ::-webkit-scrollbar-thumb { background: var(--pixel-border); border: 2px solid #e0d4c0; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+        input[type="checkbox"] { accent-color: var(--brand); width: 16px; height: 16px; }
+        tfoot td { font-family: 'Press Start 2P', monospace; font-size: 9px; }
+        .btn .btn-icon { font-size: 12px; margin-right: 2px; }
+        .quick-tools select { background: var(--cream); color: var(--text); border: 2px solid var(--pixel-border); padding: 6px 8px; font-family: "Courier New", monospace; font-size: 12px; }
+        {% block extra_styles %}{% endblock %}
+    </style>
+</head>
+<body>
+    <div class="sdv-art sdv-sun"></div>
+    <div class="sdv-art sdv-cloud1"></div>
+    <div class="sdv-art sdv-cloud2"></div>
+    <div class="sdv-art sdv-leaf1"></div>
+    <div class="sdv-art sdv-leaf2"></div>
+    <div class="sdv-art sdv-flower1"></div>
+    <div class="sdv-art sdv-flower2"></div>
+    <div class="sdv-art sdv-star"></div>
+    <div class="sdv-art sdv-animal"></div>
+
+    <div class="pixel-tree"><span class="pixel-tree-inner"></span></div>
+    <div class="pixel-tree2"><span class="pixel-tree-inner"></span></div>
+    <div class="pixel-pine1"><span class="pixel-pine-inner"></span></div>
+    <div class="pixel-pine2"><span class="pixel-pine-inner"></span></div>
+    <div class="pixel-pine3"><span class="pixel-pine-inner"></span></div>
+    <div class="pixel-chicken"><span class="pixel-chicken-inner"></span></div>
+    <div class="pixel-flower-box pixel-flower-red"><span class="pixel-flower-inner"></span></div>
+    <div class="pixel-flower-box pixel-flower-yellow"><span class="pixel-flower-inner"></span></div>
+    <div class="pixel-flower-box pixel-flower-purple"><span class="pixel-flower-inner"></span></div>
+    <div class="pixel-flower-box pixel-flower-blue"><span class="pixel-flower-inner"></span></div>
+    <div class="pixel-cat"><span class="pixel-cat-inner"></span></div>
+    <div class="pixel-scarecrow"><span class="pixel-scarecrow-inner"></span></div>
+    <div class="pixel-mushroom-box"><span class="pixel-mushroom-inner"></span></div>
+    <div class="pixel-pumpkin-box"><span class="pixel-pumpkin-inner"></span></div>
+    <div class="pixel-junimo-box"><span class="pixel-junimo-inner"></span></div>
+    <div class="pixel-starfruit-box"><span class="pixel-starfruit-inner"></span></div>
+    <div class="pixel-blueberry-box"><span class="pixel-blueberry-inner"></span></div>
+    <div class="pixel-bobber-box"><span class="pixel-bobber-inner"></span></div>
+
+    <!-- Actual game sprites (loaded via CSS background) -->
+    <div class="sdv-sprite sprite-chicken"></div>
+    <div class="sdv-sprite sprite-cow"></div>
+    <div class="sdv-sprite sprite-goat"></div>
+    <div class="sdv-sprite sprite-dog"></div>
+    <div class="sdv-sprite sprite-pig"></div>
+    <div class="sdv-sprite sprite-duck"></div>
+    <div class="sdv-sprite sprite-sheep"></div>
+    <div class="sdv-sprite sprite-rabbit"></div>
+    <div class="sdv-sprite sprite-cat"></div>
+
+    <!-- Crops -->
+    <div class="sdv-crop crop-parsnip"></div>
+    <div class="sdv-crop crop-cauliflower"></div>
+    <div class="sdv-crop crop-pumpkin"></div>
+    <div class="sdv-crop crop-melon"></div>
+    <div class="sdv-crop crop-tomato"></div>
+    <div class="sdv-crop crop-corn"></div>
+    <div class="sdv-crop crop-wheat"></div>
+    <div class="sdv-crop crop-berry"></div>
+
+    <div class="wrap">
+        <div class="hero">
+            <h1><span class="pixel-blip">▶</span> 站群网页控制台</h1>
+            <p>🌻 在浏览器里种植你的站点 — 上报·建站·上传·配置 🌻</p>
+            <div class="hero-stars">★ ☆ ★ ☆ ★</div>
+        </div>
+        <div class="nav">
+            <a href="{{ url_for('sites_list') }}" class="{% if request.endpoint == 'sites_list' %}active{% endif %}"><span class="nav-icon">🌾</span>本地站点</a>
+            <a href="{{ url_for('reported_list') }}" class="{% if request.endpoint == 'reported_list' %}active{% endif %}"><span class="nav-icon">📡</span>已报域名</a>
+            <a href="{{ url_for('scheduled_list') }}" class="{% if request.endpoint == 'scheduled_list' %}active{% endif %}"><span class="nav-icon">⏰</span>计划上报</a>
+            <a href="{{ url_for('built_list') }}" class="{% if request.endpoint == 'built_list' %}active{% endif %}"><span class="nav-icon">🏡</span>已建站</a>
+            <a href="{{ url_for('scraper_page') }}" class="{% if request.endpoint == 'scraper_page' %}active{% endif %}"><span class="nav-icon">🕸️</span>数据爬取</a>
+            <a href="{{ url_for('product_processing_page') }}" class="{% if request.endpoint == 'product_processing_page' %}active{% endif %}"><span class="nav-icon">⚙️</span>商品处理</a>
+            <a href="{{ url_for('reuse_queue_page') }}" class="{% if request.endpoint == 'reuse_queue_page' %}active{% endif %}"><span class="nav-icon">♻️</span>复用池</a>
+            <a href="{{ url_for('tasks_list') }}" class="{% if request.endpoint == 'tasks_list' %}active{% endif %}"><span class="nav-icon">📋</span>任务中心</a>
+            <a href="{{ url_for('import_excel') }}" class="{% if request.endpoint == 'import_excel' %}active{% endif %}"><span class="nav-icon">📥</span>导入 Excel</a>
+            <a href="{{ url_for('orders_page') }}" class="{% if request.endpoint == 'orders_page' %}active{% endif %}"><span class="nav-icon">📊</span>订单分析</a>
+            <a href="{{ url_for('config') }}" class="{% if request.endpoint == 'config' %}active{% endif %}"><span class="nav-icon">🔧</span>网页配置</a>
+        </div>
+        <div class="panel">
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    <div class="flash-list">
+                        {% for category, message in messages %}
+                            <div class="flash {{ category }}">{{ message }}</div>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+            {% endwith %}
+            {% block content %}{% endblock %}
+        </div>
+    </div>
+</body>
+</html>

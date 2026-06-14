@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}编辑站点 - 站群网页控制台{% endblock %}
+
+{% block content %}
+<div class="toolbar" style="justify-content: space-between;">
+    <div>
+        <h2 class="section-title" style="margin-bottom: 6px;">编辑站点</h2>
+        <div class="muted">{{ site.domain or '-' }}</div>
+    </div>
+    <a class="btn btn-secondary" href="{{ url_for(next_endpoint) }}">返回列表</a>
+</div>
+
+<form method="post" class="stack">
+    <input type="hidden" name="next_endpoint" value="{{ next_endpoint }}">
+
+    {% for section_title, fields in edit_sections %}
+    <div>
+        <h3 class="section-title">{{ section_title }}</h3>
+        <div class="form-grid">
+            {% for field_name, field_label in fields %}
+            <div class="field">
+                <label>{{ field_label }}</label>
+                {% if field_name in edit_select_options %}
+                <select name="{{ field_name }}" style="width: 100%; border: 1px solid #cfd9e6; border-radius: 10px; padding: 10px 12px; font-size: 14px;">
+                    {% for option in edit_select_options[field_name] %}
+                    <option value="{{ option }}" {% if (site[field_name] or '') == option %}selected{% endif %}>
+                        {% if field_name == 'domain_status' %}
+                            {{ domain_status_label(option) if option else '空' }}
+                        {% elif field_name == 'schedule_enabled' %}
+                            {{ '开启' if option == '1' else '关闭' }}
+                        {% else %}
+                            {{ option or '空' }}
+                        {% endif %}
+                    </option>
+                    {% endfor %}
+                </select>
+                {% elif field_name.endswith('_time') %}
+                <input type="text" name="{{ field_name }}" value="{{ site[field_name] or '' }}" placeholder="例如 2026-04-09 18:30">
+                {% else %}
+                <input type="text" name="{{ field_name }}" value="{{ site[field_name] or '' }}">
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endfor %}
+
+    <div class="toolbar">
+        <button class="btn btn-primary" type="submit">保存修改</button>
+        <a class="btn btn-secondary" href="{{ url_for(next_endpoint) }}">返回</a>
+    </div>
+</form>
+{% endblock %}

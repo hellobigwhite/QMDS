@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+
+{% block title %}网页配置 - 站群网页控制台{% endblock %}
+
+{% block content %}
+<h2 class="section-title">网页配置</h2>
+
+<form method="post" class="stack">
+    <div>
+        <h3 class="section-title">上报配置</h3>
+        <div class="form-grid">
+            <div class="field">
+                <label>上报账号</label>
+                <input type="text" name="report_username" value="{{ settings.report_username }}">
+            </div>
+            <div class="field">
+                <label>上报密码</label>
+                <input type="password" name="report_password" value="{{ settings.report_password }}">
+            </div>
+        </div>
+    </div>
+
+    <div>
+        <h3 class="section-title">ERP 配置</h3>
+        <div class="form-grid">
+            <div class="field">
+                <label>ERP 账号</label>
+                <input type="text" name="erp_username" value="{{ settings.erp_username }}">
+            </div>
+            <div class="field">
+                <label>ERP 密码</label>
+                <input type="password" name="erp_password" value="{{ settings.erp_password }}">
+            </div>
+        </div>
+    </div>
+
+    <div>
+        <h3 class="section-title">WordPress 配置</h3>
+        <div class="form-grid">
+            <div class="field">
+                <label>WordPress 密码</label>
+                <input type="password" name="wp_password" value="{{ settings.wp_password }}">
+            </div>
+            <div class="field">
+                <label>素材根目录</label>
+                <input type="text" name="media_root" value="{{ settings.media_root or 'D:\\logo' }}" style="width:100%">
+            </div>
+        </div>
+    </div>
+
+    <div class="toolbar">
+        <button class="btn btn-primary" type="submit">保存配置</button>
+    </div>
+</form>
+{% endblock %}

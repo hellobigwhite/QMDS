@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card">
+    <h2>系统配置</h2>
+    <div style="max-width: 800px; margin-top: 2rem;">
+        <form method="post">
+            <div class="grid">
+                <div class="form-group">
+                    <label for="report_username">上报账号</label>
+                    <input type="text" id="report_username" name="report_username" value="{{ settings.get('report_username', '') }}">
+                </div>
+                <div class="form-group">
+                    <label for="report_password">上报密码</label>
+                    <input type="password" id="report_password" name="report_password" value="{{ settings.get('report_password', '') }}">
+                </div>
+                <div class="form-group">
+                    <label for="erp_username">ERP账号</label>
+                    <input type="text" id="erp_username" name="erp_username" value="{{ settings.get('erp_username', '') }}">
+                </div>
+                <div class="form-group">
+                    <label for="erp_password">ERP密码</label>
+                    <input type="password" id="erp_password" name="erp_password" value="{{ settings.get('erp_password', '') }}">
+                </div>
+                <div class="form-group">
+                    <label for="erp_admin_id">ERP管理员ID</label>
+                    <input type="text" id="erp_admin_id" name="erp_admin_id" value="{{ settings.get('erp_admin_id', '') }}">
+                </div>
+                <div class="form-group">
+                    <label for="wp_password">WP密码</label>
+                    <input type="password" id="wp_password" name="wp_password" value="{{ settings.get('wp_password', '') }}">
+                </div>
+                <div class="form-group">
+                    <label for="main_data_concurrency">主数据并发数</label>
+                    <input type="text" id="main_data_concurrency" name="main_data_concurrency" value="{{ settings.get('main_data_concurrency', '2') }}">
+                </div>
+            </div>
+            <div style="margin-top: 1rem;">
+                <button type="submit" class="btn btn-primary">保存配置</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

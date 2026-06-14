@@ -1,0 +1,309 @@
+{
+  "sports_goods": {
+    "domain_keywords": [
+      "sports", "sport", "fitness", "exercise", "gym", "outdoor", "indoor", "equipment", "supplies", "gear"
+    ],
+    "categories": {
+      "Sports Goods Ultimate": {
+        "Indoor Games": {
+          "Table Tennis Supplies": [
+            "table tennis balls", "table tennis ball machines", "table tennis ball machine accessories",
+            "table tennis rackets", "table tennis racket accessories", "table tennis tables",
+            "table tennis nets & net posts"
+          ],
+          "Bowling Supplies": [
+            "bowling balls", "bowling gloves", "bowling wrist guards", "bowling pins", "bowling bags"
+          ],
+          "Billiards Supplies": [
+            "billiard balls", "billiard ball racks", "billiard gloves", "billiard cues & cue racks",
+            "billiard cue cases", "billiard cue stands", "billiard cue chalk", "billiard tables",
+            "billiard table lights", "billiard table cloth", "billiard table brushes",
+            "billiard table covers", "billiard pockets"
+          ],
+          "Multi-Functional Game Tables": [
+            "multi-functional game tables"
+          ],
+          "Table Football": [
+            "table football tables", "table football balls", "table football accessories"
+          ],
+          "Shuffleboard": [
+            "shuffleboard pucks", "shuffleboard tables", "shuffleboard sand"
+          ],
+          "Air Hockey": [
+            "air hockey tables", "air hockey table accessories", "air hockey equipment"
+          ],
+          "Darts": [
+            "dart arrows", "dartboard surrounds", "dart flights", "dart tips", "dart shafts", "dartboards"
+          ]
+        },
+        "Outdoor Leisure": {
+          "Winter Sports & Activities": {
+            "Skiing & Snowboarding": [
+              "snowboard bindings", "snowboard boots", "ski helmets", "snowboard helmets", "ski goggle lenses",
+              "alpine skis", "cross-country skis", "downhill skis", "ski carry straps", "snowboard carry straps",
+              "ski bindings", "ski binding parts", "ski goggles", "ski poles", "snowboards",
+              "ski maintenance tools", "snowboard maintenance tools", "snowboard binding parts", "ski storage racks", "snowboard storage racks",
+              "ski waxing tools", "snowboard waxing tools", "ski boots", "ski bags", "snowboard bags"
+            ],
+            "Avalanche Safety Equipment": [
+              "avalanche airbags", "avalanche beacons"
+            ],
+            "Sleds": [
+              "sleds"
+            ],
+            "Snowshoeing": [
+              "snowshoes", "snowshoe bindings", "snowshoe straps"
+            ]
+          },
+          "Boating/Water Sports": {
+            "Surfing Supplies": [
+              "surfboard traction pads", "surf gloves", "surfboards", "surfboard bags", "surfboard fins",
+              "surfboard leashes", "surfboard wax", "stand-up paddleboards", "bodyboards",
+              "soft-top surfboards"
+            ],
+            "Water Sports Apparel": [
+              "rash guards", "drysuits", "life jackets", "personal flotation devices", "life jacket accessories", "water sports helmets",
+              "wetsuits", "diving suits", "diving jacket tops", "diving pants", "diving hoods", "diving gloves", "diving boots"
+            ],
+            "Windsurfing": [
+              "windsurfing masts", "windsurfing fins", "windsurfing sails", "windsurfing boards"
+            ],
+            "Swimming Supplies": [
+              "kids' swim aids", "swim caps", "swim goggles", "swim goggle accessories", "snorkel mask accessories",
+              "kickboards", "swim paddles", "mermaid fins", "training fins",
+              "swim spas", "pull buoys", "swim weights", "nose clips", "leg floats", "figure-8 floats"
+            ],
+            "Water Skiing Supplies": [
+              "inflatable towable tubes", "wakeboard parts", "wakeboards", "kiteboards", "wakeboard bindings",
+              "water sports tow ropes", "kneeboards", "water skis", "water ski bindings", "water ski bags", "water ski carriers",
+              "water skiing gloves", "towable gloves"
+            ],
+            "Diving Supplies": [
+              "snorkels", "dive regulators", "buoyancy control devices", "snorkeling gear sets", "diving gear sets",
+              "snorkeling fins", "diving fins", "snorkeling masks", "diving masks", "dive knives", "dive shears", "dive computers",
+              "dive weight belts"
+            ],
+            "Watercraft Storage Racks": [
+              "water sports board racks", "boat storage racks"
+            ],
+            "Rowing Supplies": [
+              "rowing gloves", "kayaks", "rowboats", "rafts", "canoes", "kayak accessories", "canoe accessories",
+              "pedal boats", "oars", "paddles", "oar leashes"
+            ],
+            "Kitesurfing": [
+              "kitesurfing waist harnesses", "windsurfing waist harnesses", "kiteboards", "kiteboard covers", "kiteboard parts",
+              "kitesurfing kites"
+            ]
+          },
+          "Hang Gliding/Parachuting": [
+            "hang gliders", "air sports flight suits", "parachutes"
+          ],
+          "Outdoor Games": {
+            "Pickleball": [
+              "pickleball paddles", "pickleball balls"
+            ],
+            "Platform Tennis": [
+              "platform tennis paddles", "platform tennis balls"
+            ],
+            "Cricket Sets": [
+              "cricket sets"
+            ],
+            "Deck Shuffleboard": [
+              "deck shuffleboard pucks", "deck shuffleboard cues"
+            ],
+            "Tetherball": [
+              "tetherball sets", "tetherball balls", "tetherball poles"
+            ],
+            "Badminton": [
+              "badminton rackets", "badminton sets", "badminton shuttlecocks", "badminton nets"
+            ],
+            "Lawn Games": [
+              "lawn games"
+            ],
+            "Disc Golf": [
+              "disc golf baskets", "disc golf bags"
+            ]
+          },
+          "Hunting & Shooting": {
+            "Shooting & Range Accessories": [
+              "shooting rests", "targets", "shooting sticks", "bipods"
+            ],
+            "Archery": [
+              "archery gloves", "archery release aids", "archery arm guards", "bows", "crossbows",
+              "recurve bows", "longbows", "compound bows", "bow accessories", "crossbow accessories", "arrows", "arrow quivers",
+              "arrowheads", "broadheads", "arrow nocks", "arrow vanes", "archery targets"
+            ],
+            "Paintball/Airsoft": [
+              "paintball harnesses", "paintball pods", "paintball grenades", "paintball markers", "paintball regulators",
+              "paintball barrels", "paintball co2 tanks", "paintball loaders", "paintball grenade launchers",
+              "paintballs", "paintball gloves", "airsoft gloves", "paintball pads", "airsoft pads", "paintball goggles", "paintball masks", "airsoft goggles", "airsoft masks",
+              "paintball vests", "airsoft vests", "airsoft rifles", "airsoft pistols", "airsoft bbs", "airsoft batteries"
+            ],
+            "Hunting/Shooting Protective Clothing": [
+              "hunting jackets", "shooting jackets", "hunting gloves", "shooting gloves"
+            ],
+            "Hunting Supplies": [
+              "hearing enhancement devices", "hunting traps", "tree stands", "hunting blinds",
+              "scent eliminators", "scent attractants", "hunting baits", "game calls", "survival whistles",
+              "wildlife baits", "wildlife feeds", "wildlife minerals", "hunting dog gear", "wildlife automatic feeders"
+            ],
+            "Clay Pigeon Shooting": [
+              "clay pigeons", "clay pigeon throwers"
+            ]
+          },
+          "Climbing Supplies": [
+            "protection devices", "ice screws", "indoor climbing holds", "ice climbing tools", "climbing ascenders",
+            "climbing belay devices", "climbing quickdraws", "climbing slings", "climbing helmets",
+            "climbing gloves", "climbing crampons", "climbing ropes", "climbing rope bags", "mountaineering rope bags",
+            "climbing crash pads", "bouldering pads", "climbing chalk bags", "climbing harnesses", "carabiners"
+          ],
+          "Hydration Systems": [
+            "hydration systems", "hydration system accessories"
+          ],
+          "Skateboarding": [
+            "skate ramps", "skate rails", "skate helmets", "skate gloves", "skate pads", "skateboard hardware",
+            "skateboard trucks", "skateboard decks", "skateboard wheels", "longboards"
+          ],
+          "Scooters": [
+            "scooters"
+          ],
+          "Inline Skating/Roller Skating": [
+            "roller skate parts", "inline skates", "inline skating protective gear", "roller skating protective gear", "roller skate pads",
+            "inline skate parts", "roller skates", "roller skis"
+          ],
+          "Cycling Supplies": {
+            "Tricycles": [
+              "tricycles", "tricycle accessories"
+            ],
+            "Unicycles": [
+              "unicycles", "unicycle accessories"
+            ],
+            "Bicycles": [
+              "bicycles", "electric bike conversion kits", "bike racks", "child bike seats", "child bike seat accessories",
+              "bike front racks", "bike rear racks", "bike mirrors", "bike rear shock pumps", "bike saddles", "bike seat covers",
+              "bike tools", "bike pumps", "bike grips", "bike handlebar tape", "bike trailers", "bike fenders",
+              "bike travel bags", "bike baskets", "bike water bottle cages", "bike computers",
+              "bike computer accessories", "bike covers", "bike trainers", "bike training wheels",
+              "bike pedal straps", "bike tire repair kits", "bike spoke beads", "bike bells", "bike horns",
+              "bike locks", "bike bags"
+            ],
+            "Bicycle Components": [
+              "bike derailleurs", "bike shifters", "bike cranksets", "bike pedals", "bike bottom brackets",
+              "bike chains", "bike cassettes", "bike freewheels", "bike chainrings", "bike inner tubes",
+              "bike brake cables", "bike brake cable housing", "bike brake kits", "bike brake levers",
+              "bike brake pads", "bike brake calipers", "bike forks", "bike outer tires", "bike groupsets",
+              "bike small parts", "bike seat posts", "bike seat post clamps", "bike handlebars", "bike stems",
+              "bike kickstands", "bike frames", "bike valve adapters", "bike headsets", "bike headset spacers",
+              "bike headset bearings", "bike wheels", "bike valve caps", "bike axle nuts", "bike spokes",
+              "bike spoke nipples", "bike rims", "bike hubs", "bike hub parts", "bike axles", "bike quick releases",
+              "handlebar extensions"
+            ],
+            "Cycling Apparel & Accessories": [
+              "bike helmets", "bike helmet parts", "bike gloves", "bike protective gear", "bike cleat wedges",
+              "bike cleat bolts", "bike shoe covers", "bike pedal cleats"
+            ]
+          },
+          "Camping & Hiking": [
+            "portable water filters", "portable water purifiers", "hand warmers", "compression sacks", "tents", "inner tents",
+            "tent vestibules", "tent stakes", "tent footprints", "compasses", "wind screens", "trekking poles",
+            "trekking pole accessories", "sleeping pads", "sleeping bags", "sleeping bag liners",
+            "portable showers", "privacy screens", "portable toilets", "portable urinals", "camping lanterns", "camping lights",
+            "inflatable mattresses", "inflatable mattress accessories", "cots", "camping beds", "multi-tools", "swiss army knives",
+            "hunting knives", "camping cookware", "camping tableware", "mosquito nets", "mosquito curtains", "mosquito window screens"
+          ],
+          "Fishing": [
+            "fishing traps", "live bait", "waders", "fishing nets", "fishing tackle bags", "fishing tackle boxes",
+            "fishing lines", "fishing leaders", "fishing beads", "fishing reel spare spools", "fishing reel bags", "fishing reel boxes",
+            "fishing reel lubricants", "sinkers", "fishing swivels", "fishing floats", "fishing bobbers",
+            "fishing hooks", "fishing baits", "fishing lures", "fishing rod rests", "fishing rod holders", "fishing rod bags", "fishing rod tube",
+            "fishing bite alarms", "fish finders", "fishing spears", "fishing rods", "fishing reels",
+            "hook removers", "bait containers"
+          ],
+          "Kite Buggy Supplies": [
+            "kite buggies", "kite buggy accessories"
+          ],
+          "Equestrian Supplies": {
+            "Horse Tack": [
+              "lead ropes", "reins", "saddles", "bits", "horse harnesses", "horse halters", "horse bridles",
+              "horse girths", "horse stirrups", "horse nail kits", "saddle bags", "saddle panniers", "saddle pads",
+              "saddle racks", "saddle covers"
+            ],
+            "Horse Grooming Supplies": [
+              "horse vitamins", "horse supplements", "horse boots", "horse wraps", "horse clippers", "horse brushes", "horse combs", "horse gloves",
+              "horse blankets", "horse sheets", "horse fly masks", "horse treats", "horse feed", "horse dewormers"
+            ],
+            "Riding Gear": [
+              "equestrian helmets", "equestrian gloves", "equestrian whips", "riding breeches"
+            ]
+          },
+          "Golf Supplies": [
+            "divot tools", "golf gloves", "golf towels", "golf balls", "golf ball markers", "golf bags",
+            "golf bag rain covers", "golf bag travel cases", "golf bag carts", "golf tees", "golf flags",
+            "golf club grips", "golf club headcovers", "golf club shafts", "golf clubs", "golf training aids",
+            "golf accessory sets"
+          ]
+        },
+        "Athletics": {
+          "Gymnastics": [
+            "horizontal bars", "balance beams", "gymnastic rings", "gymnastics hand grips", "springboards",
+            "vaulting horses", "pommel horses"
+          ],
+          "Fencing": [
+            "fencing gloves", "fencing jackets", "fencing masks", "fencing swords"
+          ],
+          "Cheerleading Supplies": [
+            "cheerleading pom-poms"
+          ],
+          "Rounders Equipment": [
+            "rounders gloves", "rounders bats"
+          ],
+          "Wall Volleyball Equipment": [
+            "wall volleyball equipment"
+          ],
+          "Handball": [
+            "handballs"
+          ],
+          "Broomball Equipment": [
+            "broomball equipment"
+          ],
+          "Boxing/Martial Arts": {
+            "Boxing/Martial Arts Protective Gear": [
+              "boxing helmets", "martial arts helmets", "boxing gloves", "martial arts gloves", "boxing chest guards", "martial arts chest guards",
+              "boxing arm guards", "martial arts arm guards", "mma shin guards"
+            ],
+            "Boxing/Martial Arts Training Equipment": [
+              "boxing focus mitts", "mma focus mitts", "punching bags", "training bags", "strike shields", "grappling dummies",
+              "punching bag accessories", "training bag accessories"
+            ],
+            "Boxing Rings": [
+              "boxing ring parts", "boxing rings"
+            ],
+            "Martial Arts Supplies": [
+              "martial arts weapons", "martial arts belts"
+            ]
+          },
+          "Volleyball Supplies": [
+            "volleyballs", "volleyball knee pads", "volleyball nets", "volleyball training aids"
+          ],
+          "Wrestling Supplies": [
+            "wrestling headgear", "wrestling knee pads"
+          ],
+          "Coaching & Refereeing Supplies": [
+            "field markers", "court markers", "linesman flags", "pitch counters", "coin tosses", "red cards", "yellow cards", "referee flags",
+            "referee stands", "referee chairs", "referee whistles", "referee indicators", "referee tool belts", "scoreboards",
+            "sports whistles", "safety whistles", "captain armbands"
+          ],
+          "Cricket Supplies": [
+            "cricket balls", "cricket helmets", "cricket gloves", "cricket pads", "cricket bats",
+            "cricket bat grips", "cricket equipment sets", "cricket wickets"
+          ],
+          "Baseball/Softball Supplies": [
+            "softballs", "softball bats", "pitching machines", "baseballs", "baseball gloves", "softball gloves",
+            "baseball pitcher's mounds", "softball pitcher's mounds", "baseball pitching mats", "softball pitching mats", "catcher's helmets",
+            "catcher's gear sets", "baseball chest protectors", "baseball back protectors", "softball chest protectors", "softball back protectors", "baseball leg guards", "softball leg guards"
+          ]
+        }
+      }
+    }
+  }
+}

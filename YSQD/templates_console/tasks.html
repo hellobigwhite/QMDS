@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+
+{% block title %}任务中心 - 站群网页控制台{% endblock %}
+
+{% block content %}
+<div class="toolbar" style="justify-content: space-between;">
+    <h2 class="section-title" style="margin: 0;">任务中心</h2>
+    <button class="btn btn-secondary" type="button" onclick="loadTasks()">立即刷新</button>
+</div>
+
+<div id="taskList" class="stack"></div>
+
+<script>
+const currentTaskId = "{{ current_task_id }}";
+const initialTasks = {{ tasks|tojson }};
+const taskScrollState = {};
+
+function captureTaskScrollState() {
+    document.querySelectorAll("[data-task-log]").forEach(logEl => {
+        const taskId = logEl.getAttribute("data-task-log");
+        taskScrollState[taskId] = {
+            scrollTop: logEl.scrollTop,
+            nearBottom: logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 24,
+        };
+    });
+}
+
+function escapeHtml(text) {
+    return String(text || "").replace(/[&<>"]/g, function (c) {
+        return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c];
+    });
+}
+
+function renderTasks(tasks) {
+    const root = document.getElementById("taskList");
+    captureTaskScrollState();
+    if (!tasks.length) {
+        root.innerHTML = '<div class="empty">当前还没有任务。</div>';
+        return;
+    }
+    root.innerHTML = tasks.map(task => {
+        const focusClass = currentTaskId && currentTaskId === task.id ? ' task-focus' : '';
+        const logs = (task.logs || []).join("\n");
+        return `
+            <div class="task-card${focusClass}">
+                <div class="task-head">
+                    <div>
+                        <div><strong>${escapeHtml(task.title)}</strong> <span class="pill">${escapeHtml(task.status)}</span></div>
+                        <div class="muted">任务ID: ${escapeHtml(task.id)} | 站点数: ${task.site_count} | 成功: ${task.success_count} | 失败: ${task.failed_count}</div>
+                    </div>
+                    <div style="text-align: right;">
+                        <div class="muted">创建: ${escapeHtml(task.created_at)}<br>更新: ${escapeHtml(task.updated_at)}</div>
+                        ${(task.status === 'running' || task.status === 'queued' || task.status === 'stopping') ? `<button class="btn btn-danger" type="button" onclick="stopTask('${escapeHtml(task.id)}')" ${task.status === 'stopping' ? 'disabled' : ''}>${task.status === 'stopping' ? '停止中' : '停止任务'}</button>` : ''}
+                    </div>
+                </div>
+                <div class="task-log" data-task-log="${escapeHtml(task.id)}">${escapeHtml(logs || '暂无日志')}</div>
+            </div>
+        `;
+    }).join("");
+
+    document.querySelectorAll("[data-task-log]").forEach(logEl => {
+        const taskId = logEl.getAttribute("data-task-log");
+        const task = tasks.find(item => item.id === taskId);
+        if (!task) {
+            return;
+        }
+
+        logEl.removeEventListener("scroll", handleLogScroll);
+        logEl.addEventListener("scroll", handleLogScroll);
+
+        const savedState = taskScrollState[taskId];
+        if (savedState && savedState.nearBottom) {
+            logEl.scrollTop = logEl.scrollHeight;
+            return;
+        }
+        if (savedState) {
+            const maxScrollTop = Math.max(logEl.scrollHeight - logEl.clientHeight, 0);
+            logEl.scrollTop = Math.min(savedState.scrollTop || 0, maxScrollTop);
+        }
+    });
+}
+
+function handleLogScroll(event) {
+    const logEl = event.currentTarget;
+    const taskId = logEl.getAttribute("data-task-log");
+    taskScrollState[taskId] = {
+        scrollTop: logEl.scrollTop,
+        nearBottom: logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 24,
+    };
+}
+
+async function stopTask(taskId) {
+    const resp = await fetch(`/tasks/${encodeURIComponent(taskId)}/stop`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+    });
+    const data = await resp.json();
+    if (!resp.ok || !data.ok) {
+        alert(data.error || "停止任务失败");
+        return;
+    }
+    loadTasks();
+}
+
+async function loadTasks() {
+    const resp = await fetch("{{ url_for('api_tasks') }}", { cache: "no-store" });
+    const data = await resp.json();
+    renderTasks(data.tasks || []);
+}
+
+renderTasks(initialTasks || []);
+setInterval(loadTasks, 3000);
+</script>
+{% endblock %}

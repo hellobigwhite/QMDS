@@ -1,0 +1,106 @@
+{
+  "office_supplies": {
+    "domain_keywords": [
+      "officesupplies","office","stationery","stationary","pen","pencil","notebook",
+      "printerpaper","filefolder","binder","deskorganizer","officeequipment","printer",
+      "scanner","toner","inkcartridge","officestore"
+    ],
+    "categories": {
+      "Office Supplies Ultimate": {
+        "Writing Tools": {
+          "All Pens": [
+            "ballpoint pen","gel pen","fountain pen","rollerball pen","retractable pen",
+            "disposable pen","premium pen","custom pen","marker pen","permanent marker",
+            "whiteboard marker","dry erase marker","highlighter","pastel highlighter",
+            "metallic marker","sharpie","fine tip pen","bold tip pen","mini pen","pen set"
+          ],
+          "Pencils": [
+            "wooden pencil","mechanical pencil","colored pencil","watercolor pencil",
+            "graphite pencil","HB pencil","2B pencil","6B pencil","pencil set",
+            "pencil sharpener","manual sharpener","electric sharpener","pencil eraser",
+            "kneaded eraser","eraser stick","pencil case","pencil pouch"
+          ],
+          "Writing Accessories": [
+            "pen refills","pencil lead","erasable pen","correction pen","correction tape",
+            "whiteout","stapler","staples","staple remover","paper clip","binder clip",
+            "push pin","thumbtack","glue stick","liquid glue","double sided tape","masking tape",
+            "scotch tape","adhesive dots"
+          ]
+        },
+        "Paper Products": {
+          "Notebooks & Pads": [
+            "notebook","spiral notebook","composition notebook","journal","diary","sketchbook",
+            "memo pad","sticky note","post it note","legal pad","graph paper notebook","lined notebook",
+            "blank notebook","mini notebook","large notebook","notebook set","desk pad","writing pad"
+          ],
+          "Printer & Copy Paper": [
+            "A4 paper","letter size paper","copy paper","printer paper","recycled paper","colored paper",
+            "construction paper","cardstock","photo paper","glossy paper","matte paper","tissue paper",
+            "wrapping paper","kraft paper","receipt paper"
+          ],
+          "Envelopes & Mailing Supplies": [
+            "envelope","business envelope","letter envelope","bubble envelope","padded envelope",
+            "manila envelope","self-sealing envelope","return envelope","mailing label","shipping label",
+            "packing tape","packing peanut","bubble wrap","shipping box"
+          ]
+        },
+        "Office Equipment": {
+          "Printing & Scanning": [
+            "inkjet printer","laser printer","all-in-one printer","printer ink","toner cartridge",
+            "ink cartridge","scanner paper","print head"
+          ],
+          "Computing Accessories": [
+            "laptop","desktop computer","tablet","keyboard","mouse","computer monitor",
+            "laptop stand","mouse pad","USB drive","external hard drive","charger","power cord",
+            "headphones","speaker","HDMI cable","USB cable"
+          ],
+          "Other Equipment": [
+            "shredder","paper cutter","hole puncher","binding machine","laminator","laminating pouch",
+            "stapler machine","electric stapler","calculator","desk lamp","office fan","humidifier","dehumidifier"
+          ]
+        },
+        "Office Organization": {
+          "Desk Organization": [
+            "desk organizer","pen holder","paper tray","file organizer","document tray",
+            "desk caddy","cable organizer","cord manager","mouse pad with storage","sticky note holder",
+            "business card holder","tape dispenser"
+          ],
+          "File Storage": [
+            "file folder","manila folder","colored folder","binder","3-ring binder","divider tab",
+            "file cabinet","filing cabinet","storage box","document bag","file label","binder clip","paper clip holder"
+          ],
+          "Office Storage": [
+            "bookshelf","storage cabinet","office cabinet","shelf organizer","stackable bin","plastic bin",
+            "fabric bin","drawer divider","closet organizer","supply closet","storage rack","wall shelf","floating shelf"
+          ]
+        },
+        "Meeting & Presentation Supplies": {
+          "Presentation Tools": [
+            "projector","projector screen","presentation clicker","laser pointer","whiteboard",
+            "dry erase board","chalkboard","marker set","chalk","eraser","whiteboard cleaner","presentation folder"
+          ],
+          "Meeting Supplies": [
+            "meeting notebook","agenda template","name tag","name badge","lanyard","clipboard",
+            "sticky notes","highlighters","pen set","notepad","water bottle","coffee mug","snack container"
+          ]
+        },
+        "Desk Accessories": {
+          "Functional Accessories": [
+            "desk calendar","wall calendar","planner","organizer planner","to-do list pad","desk clock",
+            "alarm clock","stopwatch","calculator","usb hub","charging station"
+          ],
+          "Decorative Accessories": [
+            "desk plant","succulent planter","small figurine","desk decor","photo frame","desktop mirror",
+            "mouse pad","desk pad cover","cable management box"
+          ]
+        },
+        "Break Room Supplies": {
+          "Cleaning Supplies": [
+            "hand soap","hand sanitizer","disinfectant spray","wipes","paper towel roll","trash bag",
+            "trash can","dustpan","cleaning cloth","sponge","dish soap","surface cleaner","toilet cleaner"
+          ]
+        }
+      }
+    }
+  }
+}

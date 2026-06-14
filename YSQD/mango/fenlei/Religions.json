@@ -1,0 +1,85 @@
+{
+  "Religious": {
+    "domain_keywords": [
+      "religious","religion","church","temple","mosque","synagogue","altar","prayer","bible",
+      "quran","torah","scripture","cross","crucifix","rosary","prayer beads","statue","idol",
+      "candle","incense","religiousgift","spiritual","worship","sacrament","religiousitem",
+      "holybook","religiousartifact","meditation","religiousjewelry"
+    ],
+    "categories": {
+      "Religious Supplies Ultimate": {
+        "Books & Scriptures": {
+          "Holy Books": [
+            "bible","quran","torah","vedas","sutras","gita","buddhist scripture","tao te ching"
+          ],
+          "Religious Literature": [
+            "prayer book","devotional book","hymn book","religious study guide","spiritual book",
+            "sermon book","meditation guide","religious biography","catechism","religious journal"
+          ]
+        },
+        "Religious Jewelry & Accessories": {
+          "Necklaces & Pendants": [
+            "cross necklace","star of david necklace","om pendant","buddha pendant",
+            "saint medal","religious charm","chakra necklace","spiritual pendant"
+          ],
+          "Bracelets & Rings": [
+            "rosary bracelet","prayer bead bracelet","religious ring","buddhist mala bracelet",
+            "cross bracelet","star of david ring"
+          ],
+          "Other Accessories": [
+            "religious scarf","kippah","tallit","prayer shawl","headcover","religious pin",
+            "brooch","belt buckle","religious keychain"
+          ]
+        },
+        "Icons, Statues & Idols": {
+          "Christian": [
+            "cross","crucifix","jesus statue","virgin mary statue","saint statue","angel figurine",
+            "holy water font","nativity set"
+          ],
+          "Buddhist & Hindu": [
+            "buddha statue","ganesha statue","krishna statue","shiva statue","hindu deity figurine",
+            "prayer wheel","thangka painting","mandala decoration"
+          ],
+          "Islamic": [
+            "allah plaque","mosque decor","islamic calligraphy","quran stand","tasbih beads"
+          ],
+          "Other Religions": [
+            "taoist statue","shinto figurine","sikh symbol","jain idol","pagan altar item"
+          ]
+        },
+        "Prayer & Worship Items": {
+          "Candles & Holders": [
+            "prayer candle","votive candle","candle holder","altar candle","incense candle",
+            "tea light candle","pillar candle","ceremonial candle"
+          ],
+          "Incense & Burners": [
+            "incense stick","incense cone","incense holder","incense burner","smudge stick",
+            "sage bundle","frankincense","myrrh"
+          ],
+          "Altar & Ritual Supplies": [
+            "altar cloth","altar bell","censer","holy water","offering bowl","prayer mat",
+            "kneeling pad","ritual chalice","religious incense set","holy oil"
+          ]
+        },
+        "Religious Art & Decor": {
+          "Wall Art & Posters": [
+            "religious painting","scripture wall art","icon painting","calligraphy poster",
+            "spiritual poster","stained glass art","canvas print","religious wall decal"
+          ],
+          "Home Decor": [
+            "altar decoration","prayer corner set","holy statue display","religious shelf",
+            "spiritual figurine","temple decoration","meditation corner decor","religious banner"
+          ]
+        },
+        "Religious Music & Media": {
+          "Music": [
+            "hymn CD","spiritual music","chant CD","buddhist chant","meditation music","religious songs"
+          ],
+          "Audio/Video": [
+            "religious DVD","sermon recording","prayer audio","meditation audio","scripture audio"
+          ]
+        }
+      }
+    }
+  }
+}

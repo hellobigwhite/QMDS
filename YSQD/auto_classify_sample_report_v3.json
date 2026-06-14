@@ -1,0 +1,406 @@
+{
+  "rows": [
+    {
+      "index": 1,
+      "url": "https://anandigreens.com",
+      "source_collection": "家居与园艺_Unfiltered_URLs",
+      "old_status": "classified",
+      "status": "low_confidence",
+      "best_category": "garden",
+      "best_score": 27,
+      "second_category": "hardware",
+      "second_score": 27,
+      "matched_signals": [
+        "title:conditioner, flower bulb, garden",
+        "handle:conditioner, flowerbulb, garden"
+      ]
+    },
+    {
+      "index": 2,
+      "url": "https://ukulelepuapua.com",
+      "source_collection": "乐器_Unfiltered_URLs",
+      "old_status": "no_match",
+      "status": "no_match",
+      "best_category": "",
+      "best_score": 0,
+      "second_category": "",
+      "second_score": 0,
+      "matched_signals": []
+    },
+    {
+      "index": 3,
+      "url": "https://popcollectibles.store",
+      "source_collection": "toy_Unfiltered_URLs",
+      "old_status": "classified",
+      "status": "classified",
+      "best_category": "art_entertainment",
+      "best_score": 100,
+      "second_category": "",
+      "second_score": 0,
+      "matched_signals": [
+        "domain_direct:collectibles"
+      ]
+    },
+    {
+      "index": 4,
+      "url": "https://alps-outdoors.com",
+      "source_collection": "露营产品_Unfiltered_URLs",
+      "old_status": "low_confidence",
+      "status": "low_confidence",
+      "best_category": "garden",
+      "best_score": 27,
+      "second_category": "bag",
+      "second_score": 27,
+      "matched_signals": [
+        "title:cookware, dinnerware, grill",
+        "handle:cookware, dinnerware, grill"
+      ]
+    },
+    {
+      "index": 5,
+      "url": "https://officialdoghouse.com",
+      "source_collection": "测试_Unfiltered_URLs",
+      "old_status": "classified",
+      "status": "classified",
+      "best_category": "pet",
+      "best_score": 35,
+      "second_category": "garden",
+      "second_score": 12,
+      "matched_signals": [
+        "meta:dog crate, dog supplies",
+        "title:dog bed, dog carrier, dog collar",
+        "handle:dogbed, dogcarrier, dogcollar"
+      ]
+    },
+    {
+      "index": 6,
+      "url": "https://petriotics.com",
+      "source_collection": "pet_Unfiltered_URLs",
+      "old_status": "low_confidence",
+      "status": "low_confidence",
+      "best_category": "garden",
+      "best_score": 27,
+      "second_category": "pet",
+      "second_score": 27,
+      "matched_signals": [
+        "title:bath brush, conditioner, shampoo",
+        "handle:bathbrush, conditioner, shampoo"
+      ]
+    },
+    {
+      "index": 7,
+      "url": "https://unipawspro.com",
+      "source_collection": "pet_Unfiltered_URLs",
+      "old_status": "classified",
+      "status": "classified",
+      "best_category": "pet",
+      "best_score": 27,
+      "second_category": "furniture1",
+      "second_score": 18,
+      "matched_signals": [
+        "title:cat litter, dog crate, playpen",
+        "handle:catlitter, dogcrate, playpen"
+      ]
+    },
+    {
+      "index": 8,
+      "url": "https://banzaihobby.com",
+      "source_collection": "toy_Unfiltered_URLs",
+      "old_status": "classified",
+      "status": "low_confidence",
+      "best_category": "toy",
+      "best_score": 27,
+      "second_category": "electronics",
+      "second_score": 27,
+      "matched_signals": [
+        "title:drone, puzzle, rc car",
+        "handle:drone, puzzle, rccar"
+      ]
+    },
+    {
+      "index": 9,
+      "url": "https://babylonleather.com",
+      "source_collection": "包_Unfiltered_URLs",
+      "old_status": "low_confidence",
+      "status": "classified",
+      "best_category": "religious",
+      "best_score": 27,
+      "second_category": "bag",
+      "second_score": 9,
+      "matched_signals": [
+        "title:cross, decor, gifts",
+        "handle:cross, decor, gifts"
+      ]
+    },
+    {
+      "index": 10,
+      "url": "https://deesidecountrystore.ie",
+      "source_collection": "测试_Unfiltered_URLs",
+      "old_status": "low_confidence",
+      "status": "low_confidence",
+      "best_category": "pet",
+      "best_score": 9,
+      "second_category": "electronics",
+      "second_score": 9,
+      "matched_signals": [
+        "title:bedding",
+        "handle:bedding"
+      ]
+    },
+    {
+      "index": 11,
+      "url": "https://pandamusicmall.com",
+      "source_collection": "乐器_Unfiltered_URLs",
+      "old_status": "classified",
+      "status": "classified",
+      "best_category": "art_entertainment",
+      "best_score": 27,
+      "second_category": "electronics",
+      "second_score": 9,
+      "matched_signals": [
+        "title:bass drum, clarinet, cymbals",
+        "handle:bassdrum, cello, clarinet"
+      ]
+    },
+    {
+      "index": 12,
+      "url": "https://booubakery.ca",
+      "source_collection": "测试_Unfiltered_URLs",
+      "old_status": "classified",
+      "status": "classified",
+      "best_category": "pet",
+      "best_score": 27,
+      "second_category": "Office",
+      "second_score": 9,
+      "matched_signals": [
+        "title:cat food, cat treats, dog treats",
+        "handle:catfood, cattreats, dogtreats"
+      ]
+    },
+    {
+      "index": 13,
+      "url": "https://bigbarker.com",
+      "source_collection": "pet_Unfiltered_URLs",
+      "old_status": "classified",
+      "status": "classified",
+      "best_category": "pet",
+      "best_score": 15,
+      "second_category": "toy",
+      "second_score": 9,
+      "matched_signals": [
+        "title:crate bed",
+        "handle:cratebed, dogbed, orthopedicdogbed"
+      ]
+    },
+    {
+      "index": 14,
+      "url": "https://maktabakw.com",
+      "source_collection": "办公_Unfiltered_URLs",
+      "old_status": "arabic_content",
+      "status": "arabic_content",
+      "best_category": "",
+      "best_score": 0,
+      "second_category": "",
+      "second_score": 0,
+      "matched_signals": []
+    },
+    {
+      "index": 15,
+      "url": "https://e-petsplus.com",
+      "source_collection": "测试_Unfiltered_URLs",
+      "old_status": "low_confidence",
+      "status": "classified",
+      "best_category": "pet",
+      "best_score": 100,
+      "second_category": "",
+      "second_score": 0,
+      "matched_signals": [
+        "domain_direct:pets"
+      ]
+    },
+    {
+      "index": 16,
+      "url": "https://ikegaku.co.jp",
+      "source_collection": "乐器_Unfiltered_URLs",
+      "old_status": "classified",
+      "status": "low_confidence",
+      "best_category": "art_entertainment",
+      "best_score": 9,
+      "second_category": "",
+      "second_score": 0,
+      "matched_signals": [
+        "handle:cello, guitar, musicalinstruments"
+      ]
+    },
+    {
+      "index": 17,
+      "url": "https://cattreeking.com",
+      "source_collection": "pet_Unfiltered_URLs",
+      "old_status": "classified",
+      "status": "classified",
+      "best_category": "pet",
+      "best_score": 16,
+      "second_category": "",
+      "second_score": 0,
+      "matched_signals": [
+        "meta:cat tree",
+        "title:cat tree",
+        "handle:catcondo, cattree"
+      ]
+    },
+    {
+      "index": 18,
+      "url": "https://supcase.com",
+      "source_collection": "手柄_Unfiltered_URLs",
+      "old_status": "classified",
+      "status": "classified",
+      "best_category": "electronics",
+      "best_score": 35,
+      "second_category": "religious",
+      "second_score": 26,
+      "matched_signals": [
+        "meta:earbuds, phones",
+        "title:accessories, cables, earbuds",
+        "handle:accessories, cables, casefan"
+      ]
+    },
+    {
+      "index": 19,
+      "url": "https://silverpawdog.com",
+      "source_collection": "测试_Unfiltered_URLs",
+      "old_status": "classified",
+      "status": "classified",
+      "best_category": "pet",
+      "best_score": 27,
+      "second_category": "electronics",
+      "second_score": 18,
+      "matched_signals": [
+        "title:cat bed, cat collar, dog bed",
+        "handle:catbed, catcollar, dogbed"
+      ]
+    },
+    {
+      "index": 20,
+      "url": "https://pawshpupco.com",
+      "source_collection": "pet_Unfiltered_URLs",
+      "old_status": "classified",
+      "status": "classified",
+      "best_category": "pet",
+      "best_score": 27,
+      "second_category": "auto",
+      "second_score": 6,
+      "matched_signals": [
+        "title:dog collar, leather collar, leather leash",
+        "handle:dogcollar, leathercollar, leatherleash"
+      ]
+    },
+    {
+      "index": 21,
+      "url": "https://ellie-bo.com",
+      "source_collection": "测试_Unfiltered_URLs",
+      "old_status": "classified",
+      "status": "classified",
+      "best_category": "pet",
+      "best_score": 28,
+      "second_category": "electronics",
+      "second_score": 9,
+      "matched_signals": [
+        "meta:dog crate",
+        "title:cage, cage stand, crate bed",
+        "handle:cagestand, cratebed"
+      ]
+    },
+    {
+      "index": 22,
+      "url": "https://wildone.com",
+      "source_collection": "pet_Unfiltered_URLs",
+      "old_status": "classified",
+      "status": "classified",
+      "best_category": "pet",
+      "best_score": 27,
+      "second_category": "religious",
+      "second_score": 18,
+      "matched_signals": [
+        "title:dog collar, dog harness, dog leash",
+        "handle:dogcollar, dogharness, dogleash"
+      ]
+    },
+    {
+      "index": 23,
+      "url": "https://dollsphere.com",
+      "source_collection": "toy_Unfiltered_URLs",
+      "old_status": "classified",
+      "status": "classified",
+      "best_category": "toy",
+      "best_score": 100,
+      "second_category": "",
+      "second_score": 0,
+      "matched_signals": [
+        "domain_direct:doll"
+      ]
+    },
+    {
+      "index": 24,
+      "url": "https://blueridgefarmerscoop.com",
+      "source_collection": "测试_Unfiltered_URLs",
+      "old_status": "classified",
+      "status": "classified",
+      "best_category": "garden",
+      "best_score": 19,
+      "second_category": "pet",
+      "second_score": 4,
+      "matched_signals": [
+        "meta:plants",
+        "title:garden, lawn",
+        "handle:garden"
+      ]
+    },
+    {
+      "index": 25,
+      "url": "https://owens-pro.com",
+      "source_collection": "pet_Unfiltered_URLs",
+      "old_status": "low_confidence",
+      "status": "classified",
+      "best_category": "electronics",
+      "best_score": 35,
+      "second_category": "Office",
+      "second_score": 27,
+      "matched_signals": [
+        "meta:accessories, storage",
+        "title:accessories, battery, printer",
+        "handle:accessories, battery, printer"
+      ]
+    },
+    {
+      "index": 26,
+      "url": "https://dog-go.co",
+      "source_collection": "pet_Unfiltered_URLs",
+      "old_status": "low_confidence",
+      "status": "low_confidence",
+      "best_category": "pet",
+      "best_score": 9,
+      "second_category": "electronics",
+      "second_score": 9,
+      "matched_signals": [
+        "title:dog bed",
+        "handle:dogbed"
+      ]
+    },
+    {
+      "index": 27,
+      "url": "https://fussbudget.com",
+      "source_collection": "测试_Unfiltered_URLs",
+      "old_status": "low_confidence",
+      "status": "classified",
+      "best_category": "religious",
+      "best_score": 39,
+      "second_category": "garden",
+      "second_score": 31,
+      "matched_signals": [
+        "meta:decor, gifts, jewelry",
+        "title:crystal, decor, gifts",
+        "handle:decor, gifts, jewelry"
+      ]
+    }
+  ]
+}

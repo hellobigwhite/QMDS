@@ -1,0 +1,92 @@
+{
+  "art_entertainment": {
+    "domain_keywords": [
+      "art","entertainment","music","instrument","concert","performance","handicraft","collectible","magic","juggling","brewing","model","hobby"
+    ],
+    "categories": {
+      "Event Tickets": {
+        "Tickets": [
+          "event ticket", "concert ticket", "show ticket", "performance ticket"
+        ]
+      },
+      "Musical Instruments": {
+        "Strings": [
+          "viola", "double bass", "guitar", "cello", "violin", "harp"
+        ],
+        "Keyboard & Electronic": [
+          "MIDI controller", "keyboard instrument", "sound synthesizer", "audio sampler", "piano"
+        ],
+        "Percussion": [
+          "bass drum", "snare drum", "practice pad", "triangle", "claves", "castanets", "guiro", "ratchet",
+          "handbells", "choir chimes", "tabla", "tambourine", "conga", "cajon", "darbuka", "frame drum",
+          "talking drum", "finger cymbals", "hand cymbals", "wood block", "maracas", "cowbell", "tuning fork",
+          "drum kit", "jazz drum set", "electronic drum kit", "tom tom", "glockenspiel", "xylophone", "cymbals", "gong", "hi hats", "cymbal pads"
+        ],
+        "Wind & Brass": [
+          "bassoon", "recorder", "six hole whistle", "clarinet", "oboe", "jaw harp", "harmonica", "melodica", "pan flute",
+          "train whistle", "saxophone", "flute", "ocarina", "euphonium", "french horn", "tuba", "trumpet", "cornet",
+          "tenor horn", "trombone", "bagpipes"
+        ]
+      },
+      "Instrument Accessories": {
+        "Strings Accessories": [
+          "guitar strings", "guitar capo", "guitar picks", "guitar strap", "guitar stand", "guitar case", "guitar humidifier", "guitar pickup", "guitar slide", "rosin", "bow", "string mute", "orchestral strings"
+        ],
+        "Percussion Accessories": [
+          "drumsticks", "drum brushes", "drum key", "drumhead", "cymbal case", "cymbal mute"
+        ],
+        "General Accessories": [
+          "instrument amplifier", "sheet music folder", "music stand", "music stand light", "music stand clip", "music stand bag",
+          "electronic tuner", "metronome", "conductor baton",
+          "brass mouthpiece", "brass mute", "brass care kit", "brass lubricant",
+          "woodwind reed", "reed knife", "reed case", "clarinet mouthpiece", "saxophone mouthpiece", "flute headjoint"
+        ]
+      },
+      "Handicrafts": {
+        "Craft Kits": [
+          "scrapbooking kit", "fabric craft kit", "jewelry making kit", "painting kit", "candle making kit", "aromatherapy kit", "mosaic kit"
+        ],
+        "Tools & Materials": [
+          "felting mold", "beading pattern", "sewing pattern", "embroidery pattern", "cutting mat", "hot glue gun", "craft knife", "scissors", "seam ripper", "wood burning tool", "palette", "palette knife", "art brush", "sewing machine", "spinning wheel", "loom", "needle", "knitting needle", "crochet hook", "thimble", "thread storage", "sewing basket"
+        ],
+        "Paper & Fabric": [
+          "origami paper", "cardstock", "drawing paper", "kraft paper", "craft paint", "ink pad", "art ink", "glaze", "craft glue", "decorative tape", "floral tape", "yarn", "sewing thread", "beading cord", "fabric", "canvas", "leather", "beads", "sequins", "ribbon", "feather", "patch", "jewelry findings", "modeling clay", "pottery clay", "papier mache", "plaster gauze"
+        ]
+      },
+      "Collectibles": {
+        "Sports & Entertainment": [
+          "sports memorabilia", "fan merchandise", "autographed sports equipment", "signed memorabilia"
+        ],
+        "Stamps & Coins": [
+          "stamps", "seals", "commemorative coins", "banknotes"
+        ],
+        "Fossils & Stones": [
+          "rare stones", "fossils"
+        ],
+        "Models & Swords": [
+          "vintage advertisements", "celebrity autograph", "collectible swords", "sword display stand", "collectible guns", "collectible knives", "scale models", "model accessories", "trading cards"
+        ]
+      },
+      "Model Making": {
+        "Model Kits": [
+          "model train", "train set", "model train accessories", "scale model kit", "rocket model"
+        ]
+      },
+      "Juggling": {
+        "Juggling Items": [
+          "juggling balls", "juggling clubs", "juggling rings"
+        ]
+      },
+      "Brewing Equipment": {
+        "Home Brewing": [
+          "brew bottle", "homebrew kit", "brewing grains", "brewing malt"
+        ]
+      },
+      "Magic Tricks & Props": {
+        "Magic Items": [
+          "magic trick", "magic prop", "illusion prop"
+        ]
+      }
+    }
+  }
+}

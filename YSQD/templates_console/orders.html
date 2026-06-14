@@ -1,0 +1,305 @@
+{% extends "base.html" %}
+
+{% block title %}订单分析 - 站群网页控制台{% endblock %}
+
+{% block extra_styles %}
+.chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px; }
+.chart-card { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
+.chart-card h4 { margin: 0 0 12px; font-size: 14px; color: var(--muted); }
+.chart-card canvas { max-height: 280px; }
+.list-card { border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; background: #fbfdff; }
+.list-card .name { font-weight: 600; font-size: 15px; }
+.list-card .meta { color: var(--muted); font-size: 12px; margin-top: 4px; }
+@media (max-width: 900px) { .chart-grid { grid-template-columns: 1fr; } }
+#analysisResult { display: none; }
+.loading-bar { height: 4px; background: #e5edf6; border-radius: 2px; overflow: hidden; margin: 12px 0; }
+.loading-bar::after { content: ''; display: block; height: 100%; width: 30%; background: #2463eb; border-radius: 2px; animation: load 1.5s ease-in-out infinite; }
+@keyframes load { 0% { transform: translateX(-100%); } 100% { transform: translateX(400%); } }
+{% endblock %}
+
+{% block content %}
+<h2 class="section-title">订单分析</h2>
+
+<div class="stack" style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+    <div class="panel" style="border: 1px solid var(--line);">
+        <h3 class="section-title">新建域名列表</h3>
+        <form method="post" action="{{ url_for('orders_save_list') }}" class="stack">
+            <div class="form-grid">
+                <div class="field">
+                    <label>列表名称</label>
+                    <input type="text" name="list_name" placeholder="如：已建站站点" style="width: 100%;">
+                </div>
+            </div>
+            <div class="field">
+                <label>域名（一行一个，或逗号/空格分隔）</label>
+                <textarea name="domains" rows="8" placeholder="example.com&#10;shop-demo.com&#10;camergait.com" style="width: 100%; border: 1px solid #cfd9e6; border-radius: 10px; padding: 10px 12px; font-size: 14px;"></textarea>
+            </div>
+            <div class="toolbar">
+                <button class="btn btn-primary" type="submit">保存列表</button>
+            </div>
+        </form>
+    </div>
+
+    <div class="panel" style="border: 1px solid var(--line);">
+        <h3 class="section-title">已保存的列表</h3>
+        {% if lists %}
+            {% for lid, ldata in lists.items() %}
+            <div class="list-card" style="margin-bottom: 10px;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <div class="name">{{ ldata.name }}</div>
+                        <div class="meta">{{ ldata.domains|length }} 个域名</div>
+                    </div>
+                    <div style="display: flex; gap: 6px;">
+                        <form method="post" action="{{ url_for('orders_check') }}" style="display: inline;">
+                            <input type="hidden" name="list_id" value="{{ lid }}">
+                            <button class="btn btn-success" type="submit" style="font-size: 12px; padding: 6px 12px;">查询</button>
+                        </form>
+                        <form method="post" action="{{ url_for('orders_delete_list') }}" style="display: inline;" onsubmit="return confirm('确定删除此列表？')">
+                            <input type="hidden" name="list_id" value="{{ lid }}">
+                            <button class="btn btn-danger" type="submit" style="font-size: 12px; padding: 6px 12px;">删除</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        {% else %}
+            <div class="empty">还没有保存的域名列表。</div>
+        {% endif %}
+    </div>
+</div>
+
+<div id="analysisResult" class="stack" style="margin-top: 24px; {% if not task_result and not loading %}display: none;{% endif %}">
+    {% if loading %}
+    <div class="panel" style="border: 1px solid var(--line);">
+        <div style="display: flex; align-items: center; gap: 12px;">
+            <div class="loading-bar" style="flex: 1; max-width: 300px;"></div>
+            <span class="muted">分析中... <span id="progressText">{{ loading }}</span></span>
+        </div>
+    </div>
+    {% endif %}
+
+    {% if task_result %}
+    <h2 class="section-title">分析结果</h2>
+    <div class="panel" style="border: 1px solid var(--line);">
+        <p class="muted">{{ task_result.summary }}</p>
+    </div>
+
+    <div class="chart-grid">
+        <div class="chart-card">
+            <h4>每月订单数</h4>
+            <canvas id="monthlyCountChart"></canvas>
+        </div>
+        <div class="chart-card">
+            <h4>每月有效金额</h4>
+            <canvas id="monthlyRevenueChart"></canvas>
+        </div>
+        <div class="chart-card">
+            <h4>订单状态分布</h4>
+            <canvas id="statusChart"></canvas>
+        </div>
+        <div class="chart-card">
+            <h4>Top 站点有效订单</h4>
+            <canvas id="topSitesChart"></canvas>
+        </div>
+    </div>
+
+    {% if task_result.monthly %}
+    <div class="panel" style="border: 1px solid var(--line); margin-top: 20px;">
+        <h4 style="margin: 0 0 12px;">导出取消单</h4>
+        <form method="post" action="{{ url_for('orders_export_cancelled') }}" style="display: flex; gap: 12px; align-items: center;">
+            <input type="hidden" name="task_id" value="{{ request.args.get('task_id', '') }}">
+            <select name="month" style="padding: 6px 10px; border: 1px solid #cfd9e6; border-radius: 8px; font-size: 14px;">
+                {% for row in task_result.monthly %}
+                <option value="{{ row.m }}">{{ row.m }}（取消 {{ row.cl }} 单）</option>
+                {% endfor %}
+            </select>
+            <button type="submit" class="btn btn-primary" style="font-size: 13px;">导出取消单站点 TXT</button>
+        </form>
+    </div>
+
+    <div class="panel" style="border: 1px solid var(--line); margin-top: 20px;">
+        <h4 style="margin: 0 0 12px;">月度明细</h4>
+        <div class="table-wrap">
+            <table style="min-width: auto;">
+                <thead>
+                    <tr>
+                        <th>时间</th>
+                        <th style="text-align:right;">总单</th>
+                        <th style="text-align:right;">有效单</th>
+                        <th style="text-align:right;">失败单</th>
+                        <th style="text-align:right;">取消单</th>
+                        <th style="text-align:right;">取消率</th>
+                        <th style="text-align:right;">金额 ($)</th>
+                        <th style="text-align:right;">预计成功单 (13%)</th>
+                        <th style="text-align:right;">预计金额 (¥)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% set rate = exchange_rate|default(7.2) %}
+                    {% for row in task_result.monthly %}
+                    <tr>
+                        <td>{{ row.m }}</td>
+                        <td style="text-align:right;">{{ row.c }}</td>
+                        <td style="text-align:right;">{{ row.v }}</td>
+                        <td style="text-align:right;">{{ row.fd|default(0) }}</td>
+                        <td style="text-align:right;">{{ row.cl|default(0) }}</td>
+                        <td style="text-align:right;">{{ "%.1f"|format((row.cl|default(0) / row.c * 100) if row.c > 0 else 0) }}%</td>
+                        <td style="text-align:right;">${{ "%.2f"|format(row.r) }}</td>
+                        <td style="text-align:right;">{{ (row.v * 0.13)|round|int }}</td>
+                        <td style="text-align:right;">¥{{ "%.2f"|format(row.r * rate * 0.13 * 1.8) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    {% if task_result.cancel_sites %}
+    <div class="panel" style="border: 1px solid var(--line); margin-top: 20px;">
+        <h4 style="margin: 0 0 12px;">⚠️ 取消单过高站点（取消率 > 30%）</h4>
+        <div class="table-wrap">
+            <table style="min-width: auto;">
+                <thead>
+                    <tr>
+                        <th>站点</th>
+                        <th style="text-align:right;">总订单</th>
+                        <th style="text-align:right;">取消数</th>
+                        <th style="text-align:right;">取消率</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for s in task_result.cancel_sites %}
+                    <tr>
+                        <td>{{ s.domain }}</td>
+                        <td style="text-align:right;">{{ s.total }}</td>
+                        <td style="text-align:right;">{{ s.cancelled }}</td>
+                        <td style="text-align:right; color: var(--danger);">{{ s.rate }}%</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+    {% endif %}
+</div>
+
+{% if history_monthly %}
+<div class="stack" style="margin-top: 24px;">
+    <h2 class="section-title">累计月度汇总</h2>
+    <div class="table-wrap">
+        <table style="min-width: auto;">
+            <thead>
+                <tr>
+                    <th>月份</th>
+                    <th style="text-align:right;">总单</th>
+                    <th style="text-align:right;">有效单</th>
+                    <th style="text-align:right;">失败单</th>
+                    <th style="text-align:right;">取消单</th>
+                    <th style="text-align:right;">金额 ($)</th>
+                    <th style="text-align:right;">预计成功单 (13%)</th>
+                    <th style="text-align:right;">预计金额 (¥)</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% set rate = exchange_rate|default(7.2) %}
+                {% for row in history_monthly %}
+                <tr>
+                    <td>{{ row.m }}</td>
+                    <td style="text-align:right;">{{ row.c|default(0) }}</td>
+                    <td style="text-align:right;">{{ row.v }}</td>
+                    <td style="text-align:right;">{{ row.fd|default(0) }}</td>
+                    <td style="text-align:right;">{{ row.cl|default(0) }}</td>
+                    <td style="text-align:right;">${{ "%.2f"|format(row.r) }}</td>
+                    <td style="text-align:right;">{{ (row.v * 0.13)|round|int }}</td>
+                    <td style="text-align:right;">¥{{ "%.2f"|format(row.r * rate * 0.13 * 1.8) }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+{% if loading %}
+<script>
+setInterval(function() {
+    fetch("{{ url_for('api_tasks') }}", { cache: "no-store" })
+        .then(r => r.json())
+        .then(data => {
+            var tasks = data.tasks || [];
+            var t = tasks.find(function(item) { return item.action === 'order_analysis' && item.status === 'running'; });
+            if (!t) {
+                // Check if completed
+                var done = tasks.find(function(item) { return item.action === 'order_analysis' && item.status === 'completed'; });
+                if (done) {
+                    window.location.href = "{{ url_for('orders_page') }}?task_id=" + done.id;
+                } else {
+                    document.getElementById('progressText').textContent = '任务已完成，刷新中...';
+                }
+            } else {
+                var logs = t.logs || [];
+                var last = logs.length > 0 ? logs[logs.length - 1] : '';
+                document.getElementById('progressText').textContent = last.slice(-60);
+            }
+        });
+}, 2000);
+</script>
+{% endif %}
+
+{% if task_result %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script>
+(function() {
+    const colors = ['#2463eb','#22c55e','#f59f00','#ef4444','#8b5cf6','#ec4899','#14b8a6','#f97316'];
+
+    {% if task_result.monthly %}
+    new Chart(document.getElementById('monthlyCountChart'), {
+        type: 'bar',
+        data: {
+            labels: {{ task_result.monthly|map(attribute='m')|list|tojson }},
+            datasets: [
+                { label: '全部订单', data: {{ task_result.monthly|map(attribute='c')|list|tojson }}, backgroundColor: '#2463eb80' },
+                { label: '有效订单', data: {{ task_result.monthly|map(attribute='v')|list|tojson }}, backgroundColor: '#22c55e' },
+            ]
+        },
+        options: { responsive: true, plugins: { legend: { position: 'top' } } }
+    });
+
+    new Chart(document.getElementById('monthlyRevenueChart'), {
+        type: 'line',
+        data: {
+            labels: {{ task_result.monthly|map(attribute='m')|list|tojson }},
+            datasets: [{ label: '有效金额 ($)', data: {{ task_result.monthly|map(attribute='r')|list|tojson }}, borderColor: '#f59f00', backgroundColor: '#f59f0020', fill: true, tension: 0.3 }]
+        },
+        options: { responsive: true, plugins: { legend: { position: 'top' } } }
+    });
+    {% endif %}
+
+    {% if task_result.statuses %}
+    new Chart(document.getElementById('statusChart'), {
+        type: 'doughnut',
+        data: {
+            labels: {{ task_result.statuses|map(attribute='l')|list|tojson }},
+            datasets: [{ data: {{ task_result.statuses|map(attribute='c')|list|tojson }}, backgroundColor: colors.slice(0, task_result.statuses|length) }]
+        },
+        options: { responsive: true, plugins: { legend: { position: 'right' } } }
+    });
+    {% endif %}
+
+    {% if task_result.top_sites %}
+    new Chart(document.getElementById('topSitesChart'), {
+        type: 'bar',
+        data: {
+            labels: {{ task_result.top_sites|map(attribute='d')|list|tojson }},
+            datasets: [{ label: '有效订单数', data: {{ task_result.top_sites|map(attribute='c')|list|tojson }}, backgroundColor: '#8b5cf6' }]
+        },
+        options: { responsive: true, indexAxis: 'y', plugins: { legend: { display: false } } }
+    });
+    {% endif %}
+})();
+</script>
+{% endif %}
+{% endblock %}

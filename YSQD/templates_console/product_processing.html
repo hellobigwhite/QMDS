@@ -1,0 +1,258 @@
+﻿{% extends "base.html" %}
+
+{% block title %}商品处理 - 站群网页控制台{% endblock %}
+
+{% block content %}
+<h2 class="section-title">商品处理</h2>
+<p class="muted">对 `shopify_data_new` 中的商品执行提取清洗，好数据放入 `{类目}_clean` 集合，脏数据直接删除。所有操作都会进入任务中心后台执行。</p>
+
+<div class="stats">
+    <div class="stat">
+        <div class="label">商品集合数</div>
+        <div class="value">{{ total_collections }}</div>
+    </div>
+    <div class="stat">
+        <div class="label">非空集合</div>
+        <div class="value">{{ non_empty_collections }}</div>
+    </div>
+    <div class="stat">
+        <div class="label">商品总量</div>
+        <div class="value">{{ total_rows }}</div>
+    </div>
+</div>
+
+<form method="post" action="{{ url_for('product_processing_run') }}" class="stack" enctype="multipart/form-data">
+    <div class="form-grid">
+        <div class="field">
+            <label>处理范围</label>
+            <select name="collection" style="width: 100%; border: 1px solid #cfd9e6; border-radius: 10px; padding: 10px 12px; font-size: 14px;">
+                <option value="__all__" {% if selected_collection == '__all__' %}selected{% endif %}>全部集合</option>
+                {% for item in collections %}
+                <option value="{{ item.name }}" {% if selected_collection == item.name %}selected{% endif %}>{{ item.name }} ({{ item.count }})</option>
+                {% endfor %}
+            </select>
+        </div>
+    </div>
+
+    <div class="task-card">
+        <div class="task-head">
+            <div>
+                <strong>一键数据清洗</strong>
+                <div class="muted">按顺序自动执行：基础数据清洗 -> 异常图片处理 -> 英文数据过滤 -> 分类清洗，好数据写入 `{类目}_clean`，脏数据直接删除。</div>
+            </div>
+        </div>
+        <div class="toolbar">
+            <button class="btn btn-primary" type="submit" name="action" value="all">执行数据清洗</button>
+            <a class="btn btn-secondary" href="{{ url_for('tasks_list') }}">查看任务中心</a>
+        </div>
+    </div>
+
+    <div class="task-card">
+        <div class="task-head">
+            <div>
+                <strong>clean集合违禁词过滤</strong>
+                <div class="muted">仅扫描 `shopify_data_new` 中 `_clean` 结尾的集合，命中现有违禁词规则的数据会直接从 `_clean` 集合删除，并在任务日志记录命中字段、关键词、标题、分类和 URL。</div>
+            </div>
+        </div>
+        <div class="form-grid">
+            <div class="field">
+                <label>_clean 处理范围</label>
+                <select name="clean_collection" style="width: 100%; border: 1px solid #cfd9e6; border-radius: 10px; padding: 10px 12px; font-size: 14px;">
+                    <option value="__all__">全部 _clean 集合</option>
+                    {% for item in clean_collections %}
+                    <option value="{{ item.name }}">{{ item.name }} ({{ item.count }})</option>
+                    {% endfor %}
+                </select>
+            </div>
+        </div>
+        <div class="toolbar">
+            <button class="btn btn-primary" type="submit" name="action" value="clean_forbidden" onclick="return confirm('确定要过滤 _clean 集合中的违禁词命中数据吗？命中数据会直接删除。');">执行clean违禁词过滤</button>
+            <a class="btn btn-secondary" href="{{ url_for('tasks_list') }}">查看任务中心</a>
+        </div>
+    </div>
+
+    <div class="task-card">
+        <div class="task-head">
+            <div>
+                <strong>Excel分类处理</strong>
+                <div class="muted">固定处理你上传的 Excel 表格，保持原表结构和样式，新建一个处理后的 Excel 文件。只修改“分类”列中所属分类数量小于阈值的数据，并随机改为公共类：Best Seller、Featured、Accessories、Other、New Arrival、Exclusive、Limited Edition、Hot Sale、Most Popular、Trending、Special Offer、Flash Sale。</div>
+            </div>
+        </div>
+        <div class="form-grid">
+            <div class="field">
+                <label>Excel 文件</label>
+                <input type="file" name="excel_file" accept=".xlsx,.xlsm,.xltx,.xltm" style="width: 100%; border: 1px solid #cfd9e6; border-radius: 10px; padding: 10px 12px; font-size: 14px;">
+            </div>
+            <div class="field">
+                <label>小分类阈值</label>
+                <input type="number" name="excel_threshold" value="30" min="1" style="width: 100%; border: 1px solid #cfd9e6; border-radius: 10px; padding: 10px 12px; font-size: 14px;">
+            </div>
+        </div>
+        <div class="toolbar">
+            <button class="btn btn-primary" type="submit" name="action" value="excel_category_merge">执行Excel分类处理</button>
+            <a class="btn btn-secondary" href="{{ url_for('tasks_list') }}">查看任务中心</a>
+        </div>
+    </div>
+
+    <div class="task-card">
+        <div class="task-head">
+            <div>
+                <strong>快速分类扫描与直删</strong>
+                <div class="muted">只扫描你选中的单个集合，只看快速分类结果。快速放行的商品保留，不通过快速分类的商品可导出查看，或先备份后直接删除。</div>
+            </div>
+        </div>
+        <div class="toolbar">
+            <button class="btn btn-warning" type="submit" name="action" value="mismatch">快速扫描并导出不匹配</button>
+            <button class="btn btn-primary" type="submit" name="action" value="mismatch_move" onclick="return confirm('确定按快速分类规则删除不匹配商品吗？删除前会先写入回收备份。');">快速分类直删不匹配</button>
+            <a class="btn btn-secondary" href="{{ url_for('tasks_list') }}">查看任务中心</a>
+        </div>
+    </div>
+
+    </form>
+
+    <form method="post" action="{{ url_for('product_processing_run') }}" class="stack">
+    <div class="task-card" style="border-left: 4px solid #8B5CF6;">
+        <div class="task-head">
+            <div>
+                <strong>域名分类匹配</strong>
+                <div class="muted">根据域名和网站分类（如 电子产品|||耳机），从指定集合模糊匹配商品并导出Excel。二级分类匹配阈值95%，若匹配数低于50000则启用一级分类兜底（阈值80%），上限60000条。</div>
+            </div>
+        </div>
+        <div style="display: flex; gap: 12px; flex-wrap: wrap; padding: 8px 0;">
+            <input type="text" name="domain" placeholder="输入域名 (如 example.com)"
+                   style="flex:1; min-width:160px; padding:10px 12px; border:1px solid #cfd9e6; border-radius:10px; font-size:14px;" required>
+            <textarea name="category" rows="5" placeholder="一行一个分类 (如 电子产品|||耳机)"
+                      style="flex:1.5; min-width:220px; padding:10px 12px; border:1px solid #cfd9e6; border-radius:10px; font-size:14px; resize:vertical;" required></textarea>
+            <select name="collection" style="flex:0.7; min-width:140px; padding:10px 12px; border:1px solid #cfd9e6; border-radius:10px; font-size:14px;">
+                <option value="__all__">全部集合</option>
+                {% for item in collections %}
+                <option value="{{ item.name }}">{{ item.name }} ({{ item.count }})</option>
+                {% endfor %}
+            </select>
+            <button class="btn btn-primary" type="submit" name="action" value="domain_match">开始匹配</button>
+        </div>
+    </div>
+
+    <div class="detail-grid">
+        <div class="detail-item">
+            <div class="k">架构说明</div>
+            <div class="v">数据存入 `shopify_data_new.<分类>`，一键清洗后好数据写入 `<分类>_clean`，脏数据直接删除，原始集合保留。</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">基础数据清洗</div>
+            <div class="v">删除标题/描述为空、标题少于 15 个字符、纯数字标题、价格异常的商品。</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">异常图片处理</div>
+            <div class="v">删除图片为空，或图片链接包含 `coming-soon / noimage / default / .svg` 的商品。</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">英文数据过滤</div>
+            <div class="v">删除标题、描述、分类中带有明显非拉丁文字，或英文字符占比过低的商品，尽量只保留英文站数据。</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">分类清洗与合并</div>
+            <div class="v">清理主要为中文的分类，标准化分类路径，并把数量过少的小分类尽量合并到更合适的大分类。</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">快速分类扫描</div>
+            <div class="v">只看快速分类结果，导出未通过快速分类的商品，方便你先核对一遍。</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">快速分类直删</div>
+            <div class="v">扫描后直接删除未通过快速分类的商品。删除前会先备份到 `recycle.products_mismatch_deleted`，这样后面还能回查和恢复。</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">域名分类匹配</div>
+            <div class="v">遍历集合中的商品，先用二级分类模糊匹配（95%）商品的分类和标题；匹配数&lt;50000时再用一级分类兜底（80%）。匹配结果导出为以域名命名的Excel，第一列为"网站分类"。</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">结构网站数据获取</div>
+            <div class="v">用分类关键词搜索Google，发现Shopify站点后直接爬取商品并实时匹配。每个分类至少获取20条，达标后冲刺60000条上限。使用Redis中间存储防止数据丢失。</div>
+        </div>
+    </div>
+
+    <div class="toolbar">
+        <a class="btn btn-secondary" href="{{ url_for('product_processing_page') }}">刷新页面</a>
+    </div>
+</form>
+
+<form method="post" action="{{ url_for('structured_crawl_run') }}" class="stack" style="margin-top: 20px;">
+    <div class="task-card" style="border-left: 4px solid #10B981;">
+        <div class="task-head">
+            <div>
+                <strong>结构网站数据获取</strong>
+                <div class="muted">用分类关键词搜索Google → 发现Shopify站点 → 爬取商品时实时匹配（二级分类95%），每个分类至少20条，达标后冲刺60000条。分类不足时用一级分类兜底（80%）。</div>
+            </div>
+        </div>
+        <div style="display: flex; gap: 12px; flex-wrap: wrap; padding: 8px 0;">
+            <input type="text" name="domain" placeholder="输入域名 (用于输出文件名)"
+                   style="flex:1; min-width:160px; padding:10px 12px; border:1px solid #cfd9e6; border-radius:10px; font-size:14px;" required>
+            <select name="api_mode" style="flex:0.5; min-width:120px; padding:10px 12px; border:1px solid #cfd9e6; border-radius:10px; font-size:14px;">
+                <option value="5">5-XCrawl</option>
+                <option value="4">4-Crawlbase</option>
+                <option value="3">3-BestProxy</option>
+                <option value="2">2-ScraperAPI</option>
+                <option value="1">1-SearchAPI</option>
+            </select>
+        </div>
+        <div style="padding: 4px 0;">
+            <textarea name="category" rows="5" placeholder="一行一个分类 (如 电子产品|||耳机)"
+                      style="width:100%; padding:10px 12px; border:1px solid #cfd9e6; border-radius:10px; font-size:14px; resize:vertical; box-sizing:border-box;" required></textarea>
+        </div>
+        <div style="padding: 4px 0;">
+            <button class="btn btn-primary" type="submit">开始结构获取</button>
+            <span class="muted" style="margin-left:12px;font-size:12px;">⚠ 会消耗Google搜索API配额</span>
+        </div>
+    </div>
+</form>
+
+<h3 class="section-title" style="margin-top: 24px;">最近快速分类扫描结果</h3>
+{% if mismatch_reports %}
+<div class="stack">
+    {% for item in mismatch_reports %}
+    <div class="task-card">
+        <div class="task-head">
+            <div>
+                <strong>{{ item.name }}</strong>
+                <div class="muted">{{ item.path }}</div>
+            </div>
+            <div class="muted">更新时间: {{ item.mtime }}</div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="empty">当前还没有生成过快速分类扫描结果。</div>
+{% endif %}
+
+<h3 class="section-title" style="margin-top: 24px;">集合概览</h3>
+{% if collections %}
+<div class="table-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th class="col-wide">集合名</th>
+                <th class="col-status">商品数</th>
+                <th class="col-action">快捷操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in collections %}
+            <tr>
+                <td class="cell-break">{{ item.name }}</td>
+                <td>{{ item.count }}</td>
+                <td>
+                    <div class="actions">
+                        <a class="btn btn-secondary" href="{{ url_for('product_processing_page', collection=item.name) }}">选中</a>
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="empty">当前 `shopify_data_new` 里还没有商品集合。</div>
+{% endif %}
+{% endblock %}

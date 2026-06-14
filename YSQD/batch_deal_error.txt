@@ -1,0 +1,42 @@
+2026-04-13T17:36:29.994055+0800 - https://www.heirloomcx.com上传失败 断点为0 错误代码为200  错误信息为  <br />
+<b>Fatal error</b>:  Uncaught Exception: Error: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near ''24432,24446,24068,24448,24406,24450) ORDER BY erp_products_id DESC' at line 1&lt;br /&gt;Error No: 1064&lt;br /&gt;SELECT COUNT(u_code) as epall FROM ep WHERE yz IN (24062,24442,24064,24444,24066'24432,24446,24068,24448,24406,24450) ORDER BY erp_products_id DESC in /www/wwwroot/heirloomcx.com/cf-updata/locoyapi/erpdb.php:42
+Stack trace:
+#0 /www/wwwroot/heirloomcx.com/cf-updata/dan_duopsot.php(20): erpMySQLi-&gt;query()
+#1 {main}
+  thrown in <b>/www/wwwroot/heirloomcx.com/cf-updata/locoyapi/erpdb.php</b> on line <b>42</b><br />
+   站点对应id为24062%2C24442%2C24064%2C24444%2C24066'24432%2C24446%2C24068%2C24448%2C24406%2C24450 成功数量0  失败数量0   重复数量0  名牌数量0
+2026-04-14T09:11:22.363644+0800 - https://www.heirloomcx.com上传失败 断点为0 错误代码为200  错误信息为  <br />
+<b>Fatal error</b>:  Uncaught Exception: Error: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near ''24432,24446,24068,24448,24406,24450) ORDER BY erp_products_id DESC' at line 1&lt;br /&gt;Error No: 1064&lt;br /&gt;SELECT COUNT(u_code) as epall FROM ep WHERE yz IN (24062,24442,24064,24444,24066'24432,24446,24068,24448,24406,24450) ORDER BY erp_products_id DESC in /www/wwwroot/heirloomcx.com/cf-updata/locoyapi/erpdb.php:42
+Stack trace:
+#0 /www/wwwroot/heirloomcx.com/cf-updata/dan_duopsot.php(20): erpMySQLi-&gt;query()
+#1 {main}
+  thrown in <b>/www/wwwroot/heirloomcx.com/cf-updata/locoyapi/erpdb.php</b> on line <b>42</b><br />
+   站点对应id为24062%2C24442%2C24064%2C24444%2C24066'24432%2C24446%2C24068%2C24448%2C24406%2C24450 成功数量0  失败数量0   重复数量0  名牌数量0
+2026-04-14T09:14:42.606182+0800 - https://www.heirloomcx.com上传失败 断点为0 错误代码为200  错误信息为  <br />
+<b>Fatal error</b>:  Uncaught Exception: Error: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near ''24432,24446,24068,24448,24406,24450) ORDER BY erp_products_id DESC' at line 1&lt;br /&gt;Error No: 1064&lt;br /&gt;SELECT COUNT(u_code) as epall FROM ep WHERE yz IN (24062,24442,24064,24444,24066'24432,24446,24068,24448,24406,24450) ORDER BY erp_products_id DESC in /www/wwwroot/heirloomcx.com/cf-updata/locoyapi/erpdb.php:42
+Stack trace:
+#0 /www/wwwroot/heirloomcx.com/cf-updata/dan_duopsot.php(20): erpMySQLi-&gt;query()
+#1 {main}
+  thrown in <b>/www/wwwroot/heirloomcx.com/cf-updata/locoyapi/erpdb.php</b> on line <b>42</b><br />
+   站点对应id为24062%2C24442%2C24064%2C24444%2C24066'24432%2C24446%2C24068%2C24448%2C24406%2C24450 成功数量0  失败数量0   重复数量0  名牌数量0
+2026-04-14T09:15:43.631348+0800 - https://www.heirloomcx.com上传失败 断点为0 错误代码为200  错误信息为  <br />
+<b>Fatal error</b>:  Uncaught Exception: Error: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near ''24432,24446,24068,24448,24406,24450) ORDER BY erp_products_id DESC' at line 1&lt;br /&gt;Error No: 1064&lt;br /&gt;SELECT COUNT(u_code) as epall FROM ep WHERE yz IN (24062,24442,24064,24444,24066'24432,24446,24068,24448,24406,24450) ORDER BY erp_products_id DESC in /www/wwwroot/heirloomcx.com/cf-updata/locoyapi/erpdb.php:42
+Stack trace:
+#0 /www/wwwroot/heirloomcx.com/cf-updata/dan_duopsot.php(20): erpMySQLi-&gt;query()
+#1 {main}
+  thrown in <b>/www/wwwroot/heirloomcx.com/cf-updata/locoyapi/erpdb.php</b> on line <b>42</b><br />
+   站点对应id为24062%2C24442%2C24064%2C24444%2C24066'24432%2C24446%2C24068%2C24448%2C24406%2C24450 成功数量0  失败数量0   重复数量0  名牌数量0
+2026-04-23T14:19:25.165111+0800 - https://www.discgolfstor.com上传失败 断点为10200 错误代码为200  错误信息为     站点对应id为41990%2C42087%2C41998%2C42095%2C42006%2C42103%2C42014%2C42111%2C42022%2C42119 成功数量9875  失败数量0   重复数量301  名牌数量0
+2026-04-23T16:41:28.346159+0800 - https://www.basketgearhub.com上传失败 断点为5900 错误代码为200  错误信息为     站点对应id为41988%2C42085%2C41996%2C42093%2C42004%2C42101%2C42012%2C42109%2C42020%2C42117 成功数量765  失败数量0   重复数量129  名牌数量0
+2026-04-23T16:42:19.336728+0800 - https://www.baseballcor.com上传失败 断点为0 错误代码为200  错误信息为     站点对应id为41987%2C42084%2C41995%2C42092%2C42003%2C42100%2C42011%2C42108%2C42019%2C42116 成功数量0  失败数量0   重复数量0  名牌数量0
+2026-04-24T10:14:44.100386+0800 - https://www.basketgearhub.com上传失败 断点为5900 错误代码为200  错误信息为     站点对应id为41988%2C42085%2C41996%2C42093%2C42004%2C42101%2C42012%2C42109%2C42020%2C42117 成功数量0  失败数量0   重复数量894  名牌数量0
+2026-04-24T10:21:26.347414+0800 - https://www.discgolfstor.com上传失败 断点为10200 错误代码为200  错误信息为     站点对应id为41990%2C42087%2C41998%2C42095%2C42006%2C42103%2C42014%2C42111%2C42022%2C42119 成功数量0  失败数量0   重复数量10176  名牌数量0
+2026-04-24T11:28:34.039330+0800 - https://www.basketgearhub.com上传失败 断点为6200 错误代码为200  错误信息为     站点对应id为41988%2C42085%2C41996%2C42093%2C42004%2C42101%2C42012%2C42109%2C42020%2C42117 成功数量136  失败数量0   重复数量6050  名牌数量0
+2026-04-24T11:33:05.276852+0800 - https://www.discgolfstor.com上传失败 断点为10400 错误代码为200  错误信息为     站点对应id为41990%2C42087%2C41998%2C42095%2C42006%2C42103%2C42014%2C42111%2C42022%2C42119 成功数量28  失败数量0   重复数量10348  名牌数量0
+2026-04-24T11:47:38.206337+0800 - https://www.basketgearhub.com上传失败 断点为7800 错误代码为200  错误信息为     站点对应id为41988%2C42085%2C41996%2C42093%2C42004%2C42101%2C42012%2C42109%2C42020%2C42117 成功数量836  失败数量0   重复数量6934  名牌数量0
+2026-04-24T14:26:02.400995+0800 - https://www.basketgearhub.com上传失败 断点为8000 错误代码为200  错误信息为     站点对应id为41988%2C42085%2C41996%2C42093%2C42004%2C42101%2C42012%2C42109%2C42020%2C42117 成功数量36  失败数量0   重复数量7929  名牌数量0
+2026-04-24T14:29:10.024670+0800 - https://www.discgolfstor.com上传失败 断点为10400 错误代码为200  错误信息为     站点对应id为41990%2C42087%2C41998%2C42095%2C42006%2C42103%2C42014%2C42111%2C42022%2C42119 成功数量0  失败数量0   重复数量10376  名牌数量0
+2026-04-29T16:55:07.444047+0800 - https://www.actioncamgea.com上传失败 断点为34200 错误代码为200  错误信息为     站点对应id为42762%2C42700%2C42788%2C42731%2C42814%2C42757%2C42695%2C42783%2C42726%2C42809 成功数量33286  失败数量0   重复数量12  名牌数量3
+2026-04-30T15:11:53.572967+0800 - https://www.perxora.com上传失败 断点为500 错误代码为200  错误信息为     站点对应id为41322%2C41365%2C41408%2C41351%2C41394%2C41337%2C41380%2C41323%2C41366%2C41409 成功数量395  失败数量0   重复数量104  名牌数量0
+2026-04-30T15:20:27.559086+0800 - https://www.cymzora.com上传失败 断点为7400 错误代码为200  错误信息为     站点对应id为41322%2C41395%2C41368%2C41341%2C41414%2C41387%2C41360%2C41333%2C41406%2C41379 成功数量6766  失败数量0   重复数量613  名牌数量0
+2026-04-30T15:45:36.888086+0800 - https://www.perxora.com上传失败 断点为500 错误代码为200  错误信息为     站点对应id为41322%2C41365%2C41408%2C41351%2C41394%2C41337%2C41380%2C41323%2C41366%2C41409 成功数量0  失败数量0   重复数量499  名牌数量0

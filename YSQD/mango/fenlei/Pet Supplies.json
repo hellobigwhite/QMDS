@@ -1,0 +1,90 @@
+{
+  "pet_supplies": {
+    "domain_keywords": [
+      "pet","pets","petfood","petcare","petaccessories","dog","cat","fish","bird","hamster",
+      "rabbit","guineapig","reptile","aquarium","dogfood","catfood","treats","chew","toy",
+      "collar","leash","harness","bed","crate","cage","bowl","feeder","waterer","litter","litterbox",
+      "grooming","shampoo","brush","comb","nailclipper","pethealth","vitamins","supplement"
+    ],
+    "categories": {
+      "Pet Supplies Ultimate": {
+        "Pet Food & Treats": {
+          "Dog Food": [
+            "dry dog food","wet dog food","puppy food","adult dog food","senior dog food",
+            "grain-free dog food","organic dog food","dog treats","dog chews","dental chews"
+          ],
+          "Cat Food": [
+            "dry cat food","wet cat food","kitten food","adult cat food","senior cat food",
+            "grain-free cat food","organic cat food","cat treats","catnip","dental treats"
+          ],
+          "Small Animal Food": [
+            "rabbit food","guinea pig food","hamster food","mouse food","ferret food",
+            "bird seed","parrot food","fish flakes","tropical fish food","goldfish food"
+          ]
+        },
+        "Pet Health & Grooming": {
+          "Health & Supplements": [
+            "vitamins","supplements","joint care","skin & coat care","probiotics","flea treatment",
+            "tick treatment","worming tablets","ear cleaner","eye care"
+          ],
+          "Grooming": [
+            "shampoo","conditioner","brush","comb","nail clipper","pet scissors","deshedding tool",
+            "bath sponge","grooming glove","hair trimmer"
+          ]
+        },
+        "Pet Accessories": {
+          "Collars, Leashes & Harnesses": [
+            "dog collar","cat collar","leash","harness","training collar","reflective collar",
+            "adjustable harness","puppy harness","ID tag","bell collar"
+          ],
+          "Bedding & Crates": [
+            "dog bed","cat bed","small animal bedding","crate","cage","kennel","playpen",
+            "pet mat","heated bed","nesting box"
+          ],
+          "Bowls & Feeders": [
+            "dog bowl","cat bowl","automatic feeder","waterer","slow feeder","travel bowl",
+            "ceramic bowl","stainless steel bowl","plastic bowl","elevated feeder"
+          ],
+          "Toys & Enrichment": [
+            "dog toy","cat toy","chew toy","interactive toy","fetch toy","catnip toy",
+            "laser toy","puzzle toy","small animal toy","bird toy","aquarium decoration"
+          ]
+        },
+        "Litter & Waste Management": {
+          "Cat Litter": [
+            "clumping litter","non-clumping litter","crystal litter","natural litter",
+            "scented litter","unscented litter"
+          ],
+          "Litter Accessories": [
+            "litter box","litter mat","litter scoop","litter liner","covered litter box",
+            "self-cleaning litter box"
+          ],
+          "Waste Management": [
+            "dog waste bags","pooper scooper","cat waste bag","diapers","training pads",
+            "odor remover","litter deodorizer","pet trash can"
+          ]
+        },
+        "Aquatic & Reptile Supplies": {
+          "Aquariums & Tanks": [
+            "fish tank","aquarium","aquarium filter","aquarium heater","aquarium hood",
+            "aquarium light","aquarium pump","aquarium stand","aquarium decoration","air pump"
+          ],
+          "Reptile & Amphibian": [
+            "terrarium","heat lamp","uvb lamp","substrate","thermometer","humidity gauge",
+            "reptile hide","water dish","reptile decor","feeding tongs"
+          ]
+        },
+        "Bird Supplies": {
+          "Bird Food": [
+            "bird seed","parrot food","canary food","finch food","treats","bird pellet",
+            "bird supplement"
+          ],
+          "Bird Accessories": [
+            "bird cage","bird perch","bird swing","bird toy","bird feeder","water dispenser",
+            "nest box","cage cover","birdbath"
+          ]
+        }
+      }
+    }
+  }
+}
