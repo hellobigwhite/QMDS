@@ -1,17 +1,29 @@
-"""电商平台检测器（使用 ScraperAPI 代理模式）"""
+"""电商平台检测器（完全仿照 YSQD 实现）"""
 
+import json
+import random
+import time
 from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urlparse
 
-from qmds.config.search_providers import SearchManager
+import requests
+
 from qmds.modules.data_scraper.models.schemas import Platform
-from qmds.utils.http_client import HttpClient
 from qmds.utils.logger import get_logger
 
 log = get_logger("detection")
 
-SCRAPERAPI_FETCH_URL = "http://api.scraperapi.com/"
+SCRAPERAPI_FETCH_URL = "https://api.scraperapi.com/"
+CRAWLBASE_API_URL = "https://api.crawlbase.com/"
+
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36 Edg/134.0.0.0",
+]
 
 
 @dataclass
@@ -27,97 +39,222 @@ class DetectionResult:
         return self.platform != Platform.UNKNOWN
 
 
-SHOPIFY_META_PATH = "/meta.json"
-WOOCOMMERCE_API_PATH = "/wp-json/wc/v3/products?per_page=1"
-MAGENTO_PATHS = ["/magento_version", "/static/version"]
+def get_random_user_agent():
+    return random.choice(USER_AGENTS)
 
 
-def _get_scraperapi_key() -> Optional[str]:
-    """从 SearchManager 获取一个可用的 ScraperAPI key"""
-    from qmds.modules.data_scraper.discovery.google_search import _get_search_manager
-    manager = _get_search_manager()
-    for p in manager._providers:
-        if p.name == "scraperapi" and p.is_available():
-            return p.key_pool.get_key()
+def get_browser_headers():
+    return {
+        "User-Agent": get_random_user_agent(),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Cache-Control": "max-age=0",
+    }
+
+
+class ResponseAdapter:
+    """适配 ScraperAPI / Crawlbase 的响应格式"""
+
+    def __init__(self, status_code=200, text="", json_data=None, headers=None):
+        self.status_code = int(status_code)
+        self.text = text
+        self._json_data = json_data
+        self.headers = headers or {}
+
+    def json(self):
+        if self._json_data is not None:
+            return self._json_data
+        return json.loads(self.text or "{}")
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"HTTP {self.status_code}: {self.text[:200]}")
+
+
+def _load_json_maybe(value):
+    if isinstance(value, (dict, list)):
+        return value
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+def crawlbase_request(url, api_key, scraper=None, timeout=120):
+    """通过 Crawlbase 代理获取 URL 内容"""
+    if not api_key:
+        raise ValueError("Crawlbase token is required")
+    params = {"token": api_key, "url": url, "format": "json"}
+    if scraper:
+        params["scraper"] = scraper
+    response = requests.get(CRAWLBASE_API_URL, params=params, timeout=timeout,
+                            proxies={"http": None, "https": None})
+    response.raise_for_status()
+    payload = response.json()
+
+    body = payload.get("body", payload)
+    json_body = _load_json_maybe(body)
+    if isinstance(body, str):
+        text_body = body
+    else:
+        text_body = json.dumps(body, ensure_ascii=False)
+
+    original_status = (payload.get("original_status") or payload.get("pc_status")
+                       or response.headers.get("original_status") or response.headers.get("pc_status")
+                       or response.status_code)
+    try:
+        original_status = int(str(original_status))
+    except Exception:
+        original_status = response.status_code
+
+    return ResponseAdapter(
+        status_code=original_status,
+        text=text_body,
+        json_data=json_body,
+        headers=payload.get("headers") if isinstance(payload.get("headers"), dict) else {},
+    )
+
+
+def request_with_mode(url, api_key=None, method="GET", headers=None, timeout=30, **kwargs):
+    """按 API 模式发送请求（与 YSQD 一致）"""
+    headers = headers or {}
+
+    # ScraperAPI 模式
+    if api_key:
+        params = {"api_key": api_key, "url": url, "keep_headers": "true"}
+        if method.upper() == "GET":
+            return requests.get(SCRAPERAPI_FETCH_URL, params=params, headers=headers,
+                                timeout=timeout, proxies={"http": None, "https": None}, **kwargs)
+        return requests.post(SCRAPERAPI_FETCH_URL, params=params, headers=headers,
+                             timeout=timeout, proxies={"http": None, "https": None}, **kwargs)
+
+    # 直连模式（走系统代理或无代理）
+    if method.upper() == "GET":
+        return requests.get(url, headers=headers, timeout=timeout, **kwargs)
+    return requests.post(url, headers=headers, timeout=timeout, **kwargs)
+
+
+def _request_with_retry(url, api_key=None, headers=None, timeout=15, max_retries=2):
+    """带重试的请求（与 YSQD 一致）"""
+    for attempt in range(max_retries):
+        try:
+            response = request_with_mode(url, api_key=api_key, method="GET",
+                                         headers=headers, timeout=timeout)
+            if response.status_code != 0:
+                return response
+        except requests.exceptions.SSLError:
+            try:
+                response = request_with_mode(url, api_key=api_key, method="GET",
+                                             headers=headers, timeout=timeout, verify=False)
+                if response.status_code != 0:
+                    return response
+            except Exception:
+                pass
+        except Exception:
+            if attempt < max_retries - 1:
+                time.sleep(1)
+                continue
     return None
 
 
 class PlatformDetector:
-    """检测目标站点使用的电商平台"""
+    """电商平台检测器（完全仿照 YSQD）"""
 
-    def __init__(self, http_client: Optional[HttpClient] = None):
-        self.http = http_client or HttpClient()
+    def __init__(self, scraperapi_key: str = ""):
+        self._api_key = scraperapi_key
 
-    def _fetch(self, url: str, timeout: int = 30) -> Optional[object]:
-        """通过 ScraperAPI 代理模式获取 URL 内容"""
-        api_key = _get_scraperapi_key()
-        if not api_key:
-            log.debug("ScraperAPI key 不可用，跳过平台检测")
-            return None
+    def detect(self, url: str, url_map: dict = None) -> DetectionResult:
+        """检测电商平台（与 YSQD detect_ecommerce_platform 一致）"""
+        url_map = url_map or {}
         try:
-            params = {"api_key": api_key, "url": url}
-            resp = self.http.get(SCRAPERAPI_FETCH_URL, params=params, timeout=timeout)
-            if resp.status_code == 200:
-                return resp
-            log.debug(f"ScraperAPI 返回 {resp.status_code} for {url}")
-            return None
-        except Exception as e:
-            log.debug(f"ScraperAPI 请求失败 {url}: {e}")
-            return None
+            if not url.startswith(("http://", "https://")):
+                url = f"https://{url}"
+            if not url.endswith("/"):
+                url += "/"
 
-    def detect(self, url: str) -> DetectionResult:
-        domain = urlparse(url).netloc or urlparse(url).path
-        domain = domain.strip("/")
+            headers = get_browser_headers()
 
-        result = self._check_shopify(domain)
-        if result:
-            return result
+            # 1. Shopify / WooCommerce / Magento / BigCommerce 检测
+            checks = [
+                ("Shopify", f"{url}meta.json", lambda r: "published_products_count" in r.json()),
+                ("WooCommerce", f"{url}wp-json/wc/v3/products?per_page=1", lambda r: isinstance(r.json(), list)),
+                ("Magento", f"{url}magento_version", lambda r: "Magento" in r.text),
+                ("Magento", f"{url}static/version", lambda r: r.status_code == 200),
+                ("BigCommerce", url, lambda r: "BigCommerce" in r.text),
+            ]
 
-        return DetectionResult(platform=Platform.UNKNOWN)
+            for platform_name, check_url, predicate in checks:
+                try:
+                    response = _request_with_retry(check_url, api_key=self._api_key,
+                                                   headers=headers, timeout=15)
+                    if response and response.status_code == 200 and predicate(response):
+                        return self._to_result(platform_name, url, response)
+                except Exception:
+                    pass
 
-    def _check_shopify(self, domain: str) -> Optional[DetectionResult]:
-        try:
-            resp = self._fetch(f"https://{domain}{SHOPIFY_META_PATH}")
-            if resp:
-                data = resp.json()
-                count = data.get("published_products_count", 0)
-                if count is not None:
-                    return DetectionResult(
-                        platform=Platform.SHOPIFY,
-                        product_count=int(count),
-                        store_name=data.get("name", ""),
-                        currency=data.get("currency", "USD"),
-                        confidence=1.0,
-                        raw=data,
-                    )
-        except Exception:
-            pass
-        return None
-
-    def _check_woocommerce(self, domain: str) -> Optional[DetectionResult]:
-        try:
-            resp = self._fetch(f"https://{domain}{WOOCOMMERCE_API_PATH}")
-            if resp and resp.status_code == 200:
-                return DetectionResult(platform=Platform.WOOCOMMERCE, confidence=0.9)
-        except Exception:
-            pass
-        return None
-
-    def _check_magento(self, domain: str) -> Optional[DetectionResult]:
-        for path in MAGENTO_PATHS:
+            # 2. 通用电商指标（Stripe/PayPal/Klarna 等）
             try:
-                resp = self._fetch(f"https://{domain}{path}")
-                if resp and resp.status_code == 200:
-                    return DetectionResult(platform=Platform.MAGENTO, confidence=0.8)
+                response = _request_with_retry(url, api_key=self._api_key,
+                                               headers=headers, timeout=15)
+                if response and response.status_code == 200:
+                    html_content = response.text.lower()
+                    indicators = [
+                        "js.stripe.com", "stripe.js", "paypal.com/sdk",
+                        "paypalobjects.com", "klarna.com", "squareup.com",
+                        "shopify_payments", "afterpay.com",
+                        '<meta name="generator" content="prestashop">', "opencart",
+                    ]
+                    if any(indicator in html_content for indicator in indicators):
+                        return DetectionResult(platform=Platform.UNKNOWN, confidence=0.3)
             except Exception:
-                continue
-        return None
+                pass
 
-    def _check_bigcommerce(self, domain: str) -> Optional[DetectionResult]:
-        try:
-            resp = self._fetch(f"https://{domain}/")
-            if resp and "BigCommerce" in resp.text:
-                return DetectionResult(platform=Platform.BIGCOMMERCE, confidence=0.7)
+            # 3. myshopify URL 回退
+            myshopify_url = url_map.get(url.rstrip("/"))
+            if myshopify_url:
+                if not myshopify_url.endswith("/"):
+                    myshopify_url += "/"
+                try:
+                    response = _request_with_retry(f"{myshopify_url}meta.json", api_key=self._api_key,
+                                                   headers=headers, timeout=15)
+                    if response and response.status_code == 200 and "published_products_count" in response.json():
+                        return self._to_result("Shopify", myshopify_url, response)
+                except Exception:
+                    pass
+
+            return DetectionResult(platform=Platform.UNKNOWN)
         except Exception:
-            pass
-        return None
+            return DetectionResult(platform=Platform.UNKNOWN)
+
+    def _to_result(self, platform_name: str, url: str, response) -> DetectionResult:
+        """将平台名称和响应转换为 DetectionResult"""
+        if platform_name == "Shopify":
+            try:
+                data = response.json()
+                return DetectionResult(
+                    platform=Platform.SHOPIFY,
+                    product_count=int(data.get("published_products_count", 0)),
+                    store_name=data.get("name", ""),
+                    currency=data.get("currency", "USD"),
+                    confidence=1.0,
+                    raw=data,
+                )
+            except Exception:
+                return DetectionResult(platform=Platform.SHOPIFY, confidence=0.9)
+        elif platform_name == "WooCommerce":
+            return DetectionResult(platform=Platform.WOOCOMMERCE, confidence=0.9)
+        elif platform_name == "Magento":
+            return DetectionResult(platform=Platform.MAGENTO, confidence=0.8)
+        elif platform_name == "BigCommerce":
+            return DetectionResult(platform=Platform.BIGCOMMERCE, confidence=0.7)
+        return DetectionResult(platform=Platform.UNKNOWN)

@@ -32,12 +32,11 @@ class DataScraperModule:
     def __init__(self, http_client: Optional[HttpClient] = None):
         pm = ProxyManager.from_settings() if settings.load_proxies() else None
         self.http = http_client or HttpClient(proxy_manager=pm)
-        self.http_direct = HttpClient()  # ScraperAPI 直连，不走代理
-        self.detector = PlatformDetector(self.http_direct)
         self.extractor = ShopifyExtractor(self.http)
         self.filter = ProductFilter()
         self.processor = ProductProcessor()
         self.searcher = GoogleShopifySearcher()
+        self.detector = PlatformDetector()
         if pm:
             log.info(f"代理池已启用: {pm.available_count}/{pm.total_count} 个可用")
         else:
@@ -186,6 +185,14 @@ class DataScraperModule:
         log.info(f"清洗去重后剩余 {len(cleaned_urls)} 个 URL")
 
         stores = []
+        # 获取 ScraperAPI key 用于平台检测
+        scraperapi_key = ""
+        for p in self.searcher._manager._providers:
+            if p.name == "scraperapi" and p.is_available():
+                scraperapi_key = p.key_pool.get_key() or ""
+                break
+        self.detector._api_key = scraperapi_key
+
         def process_url(url: str) -> Optional[dict]:
             try:
                 detect_url = url_map.get(url)
@@ -205,8 +212,8 @@ class DataScraperModule:
                         "search_query": query,
                         "source": "google_search",
                     }
-                # 非 myshopify.com 域名需要检测
-                detection = self.detector.detect(detect_url)
+                # 非 myshopify.com 域名需要检测（传入 url_map 支持 myshopify 回退）
+                detection = self.detector.detect(detect_url, url_map=url_map)
                 if not detection or detection.platform != Platform.SHOPIFY:
                     return None
                 domain = extract_domain(url)

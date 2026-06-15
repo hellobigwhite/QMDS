@@ -2,46 +2,21 @@
 {% block content %}
 <div class="card" style="max-width:800px;margin:0 auto;">
     <h2>🔍 筛选精准类目</h2>
-    <p class="text-muted" style="margin-bottom:16px;">根据关键词和类目范围筛选最匹配的精准类目</p>
+    <p class="text-muted" style="margin-bottom:16px;">
+        从对应类目的 unfiltered 集合中读取店铺 URL → 请求 /collections.json → 用类目关键词精确匹配 → 保存匹配结果到 filtered 集合
+    </p>
 
     <form method="post" action="/shopify/filter-categories">
         <div class="form-group">
-            <label for="keyword">关键词</label>
-            <input type="text" id="keyword" name="keyword" placeholder="例如: wireless headphones" value="{{ request.form.get('keyword', '') }}" required>
-        </div>
-        <div class="form-group">
-            <label for="scope">类目范围（可选）</label>
-            <input type="text" id="scope" name="scope" placeholder="例如: Electronics > Audio" value="{{ request.form.get('scope', '') }}">
+            <label for="category">选择类目</label>
+            <select id="category" name="category" required>
+                <option value="">-- 请选择类目 --</option>
+                {% for cat in categories %}
+                <option value="{{ cat }}">{{ cat }}</option>
+                {% endfor %}
+            </select>
         </div>
         <button type="submit" class="btn btn-primary">开始筛选</button>
     </form>
-
-    {% if result is not none %}
-    <div class="result-box" style="margin-top:20px;">
-        <div class="stat-row">
-            <span class="stat-label">关键词</span>
-            <span class="stat-value">{{ result.keyword }}</span>
-        </div>
-        {% if result.scope %}
-        <div class="stat-row">
-            <span class="stat-label">类目范围</span>
-            <span class="stat-value">{{ result.scope }}</span>
-        </div>
-        {% endif %}
-        <div class="stat-row">
-            <span class="stat-label">匹配类目</span>
-            <span class="stat-value">{{ result.total }} 个</span>
-        </div>
-        {% if result.categories %}
-        <div style="margin-top:12px;max-height:400px;overflow-y:auto;">
-            {% for cat in result.categories %}
-            <div style="padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:13px;">📁 {{ cat }}</div>
-            {% endfor %}
-        </div>
-        {% else %}
-        <p class="text-muted" style="margin-top:12px;">未找到匹配类目</p>
-        {% endif %}
-    </div>
-    {% endif %}
 </div>
 {% endblock %}

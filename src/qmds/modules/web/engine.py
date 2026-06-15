@@ -10,7 +10,11 @@ from dotenv import load_dotenv
 from flask import Flask, flash, jsonify, render_template, request, redirect, url_for
 
 from qmds.config import settings
+from qmds.config.categories import SHOPIFY_CATEGORIES
+from qmds.db.mongodb import MongoDBClient
 from qmds.modules.data_scraper import DataScraperModule
+from qmds.modules.data_scraper.category_matcher import match_title
+from qmds.modules.data_scraper.collections_fetcher import fetch_collections
 from qmds.utils.http_client import HttpClient
 from qmds.utils.logger import get_logger
 
@@ -130,13 +134,6 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
     def api_tasks():
         return jsonify(_task_manager.list())
 
-    SHOPIFY_CATEGORIES = [
-        "hardware", "vehicles", "sports", "health", "office", "pets",
-        "business", "baby", "media", "religion", "furniture", "home-garden",
-        "adult", "fashion", "toys", "electronics", "cameras", "bags",
-        "arts-entertainment", "software", "food-beverage",
-    ]
-
     @app.route("/shopify/fetch-urls", methods=["GET", "POST"])
     def shopify_fetch_urls():
         api_status = module.searcher.get_api_status()
@@ -175,28 +172,63 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
 
     @app.route("/shopify/filter-categories", methods=["GET", "POST"])
     def shopify_filter_categories():
-        result = None
         if request.method == "POST":
-            keyword = (request.form.get("keyword") or "").strip()
-            scope = (request.form.get("scope") or "").strip()
-            if keyword:
-                sample_categories = [
-                    "Electronics > Headphones > Wireless",
-                    "Electronics > Audio > Speakers",
-                    "Home & Garden > Furniture > Chairs",
-                    "Clothing > Men > Shirts",
-                    "Clothing > Women > Dresses",
-                    "Sports & Outdoors > Fitness > Yoga Mats",
-                    "Beauty > Skincare > Moisturizers",
-                    "Toys & Games > Board Games",
-                    "Food & Beverage > Coffee",
-                    "Pet Supplies > Dogs > Food",
-                ]
-                matched = [c for c in sample_categories if keyword.lower() in c.lower()]
-                if scope:
-                    matched = [c for c in matched if scope.lower() in c.lower()]
-                result = {"keyword": keyword, "scope": scope, "categories": matched, "total": len(matched)}
-        return render_template("shopify_categories.html", result=result)
+            category = (request.form.get("category") or "").strip()
+            if category:
+                task_id = f"filter_{category}_{int(time.time())}"
+                _task_manager.create(task_id, "filter_categories", category)
+
+                def run_task():
+                    db = MongoDBClient()
+                    try:
+                        stores = db.get_all_urls(category)
+                        total = len(stores)
+                        log.info(f"[精准类目] 开始任务: category={category}, 待处理店铺={total}")
+                        if total == 0:
+                            _task_manager.update(task_id, status="completed",
+                                message=f"类目 {category} 无待处理 URL", progress=100)
+                            return
+
+                        matched_count = 0
+                        processed = 0
+                        for store in stores:
+                            store_url = store["url"]
+                            domain = store["domain"]
+                            processed += 1
+                            try:
+                                collections = fetch_collections(http, store_url)
+                                log.info(f"[精准类目] [{processed}/{total}] {domain} - 获取 {len(collections)} 个 collection")
+                                for coll in collections:
+                                    if match_title(category, coll["title"]):
+                                        if db.save_filtered_url(
+                                            category, domain, store_url,
+                                            coll["title"], coll["handle"],
+                                        ):
+                                            matched_count += 1
+                                            log.info(f"[精准类目]   ✅ 匹配: {coll['title']} -> {store_url}/collections/{coll['handle']}")
+                            except Exception as e:
+                                log.warning(f"[精准类目] [{processed}/{total}] {domain} - 处理失败: {e}")
+
+                            if processed % 10 == 0 or processed == total:
+                                _task_manager.update(task_id,
+                                    progress=int(processed / total * 100),
+                                    message=f"处理中: {processed}/{total}，已匹配 {matched_count} 条")
+
+                        log.info(f"[精准类目] 任务完成: category={category}, 处理={total}, 匹配={matched_count}")
+                        _task_manager.update(task_id, status="completed",
+                            message=f"完成: 处理 {total} 个店铺，匹配 {matched_count} 条 collection",
+                            result={"total_stores": total, "matched": matched_count},
+                            progress=100)
+                    except Exception as e:
+                        log.error(f"[精准类目] 任务异常: {e}")
+                        _task_manager.update(task_id, status="failed", message=f"失败: {e}")
+                    finally:
+                        db.close()
+
+                threading.Thread(target=run_task, daemon=True).start()
+                flash(f"精准类目筛选任务已启动: {category}，可在任务页面查看进度")
+                return redirect(url_for("shopify_filter_categories"))
+        return render_template("shopify_categories.html", categories=SHOPIFY_CATEGORIES)
 
     @app.route("/product-data", methods=["GET"])
     def product_data():

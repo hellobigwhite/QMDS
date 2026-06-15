@@ -143,7 +143,8 @@ class ScraperAPIProvider(SearchProvider):
             "country_code": "us",
         }
         try:
-            resp = requests.get(self.config.base_url, params=params, timeout=self.config.timeout)
+            resp = requests.get(self.config.base_url, params=params, timeout=self.config.timeout,
+                                proxies={"http": None, "https": None})
             if resp.status_code == 403:
                 self.key_pool.mark_exhausted(key)
                 raise ScrapeProviderError("403 额度用完")
@@ -173,7 +174,8 @@ class SearchAPIProvider(SearchProvider):
             "num": 10,
         }
         try:
-            resp = requests.get(self.config.base_url, params=params, timeout=self.config.timeout)
+            resp = requests.get(self.config.base_url, params=params, timeout=self.config.timeout,
+                                proxies={"http": None, "https": None})
             if resp.status_code == 403:
                 self.key_pool.mark_exhausted(key)
                 raise ScrapeProviderError("403 额度用完")
@@ -205,7 +207,8 @@ class CrawlbaseProvider(SearchProvider):
         google_url = f"https://www.google.com/search?{urlencode(params)}"
         req_params = {"token": key, "url": google_url, "format": "json", "scraper": "google-serp"}
         try:
-            resp = requests.get(self.config.base_url, params=req_params, timeout=self.config.timeout)
+            resp = requests.get(self.config.base_url, params=req_params, timeout=self.config.timeout,
+                                proxies={"http": None, "https": None})
             if resp.status_code == 403:
                 self.key_pool.mark_exhausted(key)
                 raise ScrapeProviderError("403 额度用完")
@@ -265,7 +268,8 @@ class BestProxyProvider(SearchProvider):
             },
         }
         try:
-            resp = requests.post(self.config.base_url, headers=headers, json=payload, timeout=self.config.timeout)
+            resp = requests.post(self.config.base_url, headers=headers, json=payload, timeout=self.config.timeout,
+                                 proxies={"http": None, "https": None})
             if resp.status_code == 403:
                 self.key_pool.mark_exhausted(key)
                 raise ScrapeProviderError("403 额度用完")

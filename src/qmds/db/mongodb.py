@@ -154,6 +154,51 @@ class MongoDBClient:
         log.info(f"已移动: {domain} → {category}_filtered")
         return True
 
+    # ── 精准类目筛选 ──────────────────────────────────────
+
+    def get_all_urls(self, category: str) -> list[dict]:
+        """从 {category}_unfiltered 获取所有店铺的 url 和 domain
+
+        Returns:
+            [{"url": "https://store.com", "domain": "store.com"}, ...]
+        """
+        col = self.unfiltered_col(category)
+        docs = col.find({}, {"url": 1, "domain": 1, "_id": 0})
+        return [{"url": d.get("url", ""), "domain": d.get("domain", "")} for d in docs if d.get("url")]
+
+    def save_filtered_url(self, category: str, domain: str, store_url: str,
+                          collection_title: str, collection_handle: str) -> bool:
+        """保存匹配到的 collection URL 到 {category}_filtered
+
+        Args:
+            category: 类目名称
+            domain: 店铺域名
+            store_url: 店铺完整 URL
+            collection_title: collection 标题
+            collection_handle: collection handle
+        """
+        col = self.filtered_col(category)
+        collection_url = f"{store_url.rstrip('/')}/collections/{collection_handle}"
+        ts = datetime.utcnow().isoformat()
+
+        result = col.update_one(
+            {"domain": domain, "collection_handle": collection_handle},
+            {"$set": {
+                "domain": domain,
+                "store_url": store_url,
+                "url": collection_url,
+                "collection_title": collection_title,
+                "collection_handle": collection_handle,
+                "category": category,
+                "source": "collections_filter",
+                "updated_at": ts,
+            }, "$setOnInsert": {
+                "created_at": ts,
+            }},
+            upsert=True,
+        )
+        return result.upserted_id is not None or result.modified_count > 0
+
     # ── 查询 ──────────────────────────────────────────────
 
     def list_categories(self) -> list[str]:
