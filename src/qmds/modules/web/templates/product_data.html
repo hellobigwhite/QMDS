@@ -2,62 +2,164 @@
 {% block content %}
 <div class="card">
     <h2>产品数据管理</h2>
-    <p class="text-muted mb-4">管理商品数据：数据清洗、违禁词过滤、分类处理等。</p>
+    <p class="text-muted mb-4">管理商品数据：数据爬取、数据清洗、数据导出。数据存储在 <code>qmds_product_data</code> 数据库中。</p>
 </div>
+
+{% if error %}
+<div class="card" style="border-left: 4px solid #ef4444;">
+    <div class="error">{{ error }}</div>
+</div>
+{% endif %}
 
 <div class="grid-2">
     <div class="card">
         <h2>数据统计</h2>
         <div class="result-box">
             <div class="stat-row">
-                <span class="stat-label">商品集合数</span>
+                <span class="stat-label">类目数量</span>
                 <span class="stat-value">{{ total_collections|default(0) }}</span>
             </div>
             <div class="stat-row">
-                <span class="stat-label">非空集合</span>
-                <span class="stat-value">{{ non_empty_collections|default(0) }}</span>
+                <span class="stat-label">原始数据总量</span>
+                <span class="stat-value">{{ total_rows|default(0) }}</span>
             </div>
             <div class="stat-row">
-                <span class="stat-label">商品总量</span>
-                <span class="stat-value">{{ total_rows|default(0) }}</span>
+                <span class="stat-label">清洗后数据总量</span>
+                <span class="stat-value">{{ total_clean_rows|default(0) }}</span>
             </div>
         </div>
     </div>
 
     <div class="card">
         <h2>快速操作</h2>
-        <form method="POST" action="/product-data/clean">
-            <label for="collection">处理范围</label>
-            <select id="collection" name="collection" style="width:100%;margin-bottom:12px;">
-                <option value="__all__">全部集合</option>
-                {% for item in collections|default([]) %}
-                <option value="{{ item.name }}">{{ item.name }} ({{ item.count }})</option>
-                {% endfor %}
-            </select>
-            <button type="submit" class="btn btn-primary" style="width:100%;">执行数据清洗</button>
-        </form>
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+            <a href="#crawl-section" class="btn btn-primary" style="width:100%;">数据爬取</a>
+            <a href="#clean-section" class="btn btn-warning" style="width:100%;">数据清洗</a>
+            <a href="#export-section" class="btn btn-success" style="width:100%;">数据导出</a>
+            <a href="/tasks" class="btn btn-secondary" style="width:100%;">查看任务中心</a>
+        </div>
     </div>
 </div>
 
+<div class="card" id="crawl-section">
+    <h2>数据爬取</h2>
+    <p class="text-muted mb-4">从数据库的 <code>qmds_url_stores.{category}_filtered</code> 集合获取URL，爬取商品数据并保存到 <code>qmds_product_data.{category}_raw</code>。</p>
+    
+    {% if filtered_categories %}
+    <div class="card" style="border-left: 4px solid #3b82f6; margin-bottom: 16px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="color: #3b82f6; font-weight: bold;">✓</span>
+            <span>已检测到 <code>qmds_url_stores</code> 数据库中的 <code>_filtered</code> 集合，共 {{ filtered_categories|length }} 个类目可用</span>
+        </div>
+    </div>
+    {% else %}
+    <div class="card" style="border-left: 4px solid #f59e0b; margin-bottom: 16px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="color: #f59e0b; font-weight: bold;">⚠</span>
+            <span>未检测到 <code>qmds_url_stores</code> 数据库中的 <code>_filtered</code> 集合。请先使用"店铺URL发现"功能获取店铺URL。</span>
+        </div>
+    </div>
+    {% endif %}
+    
+    <form method="POST" action="/product-data/crawl">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+            <div>
+                <label for="crawl_category">选择类目</label>
+                <select id="crawl_category" name="category" style="width:100%;" required {% if not filtered_categories %}disabled{% endif %}>
+                    <option value="">请选择类目</option>
+                    {% for cat in filtered_categories|default([]) %}
+                    <option value="{{ cat }}">{{ cat }}</option>
+                    {% endfor %}
+                </select>
+                <small class="text-muted">从 <code>qmds_url_stores</code> 数据库的 <code>{category}_filtered</code> 集合获取URL</small>
+            </div>
+            <div>
+                <label for="max_sites">最大站点数</label>
+                <input type="number" id="max_sites" name="max_sites" value="10" min="1" max="100" style="width:100%;">
+                <small class="text-muted">每次任务最多爬取的站点数量</small>
+            </div>
+        </div>
+        <button type="submit" class="btn btn-primary" {% if not filtered_categories %}disabled{% endif %}>开始爬取</button>
+    </form>
+</div>
+
+<div class="card" id="clean-section">
+    <h2>数据清洗</h2>
+    <p class="text-muted mb-4">清洗 <code>{category}_raw</code> 中的原始数据，清洗后保存到 <code>{category}_clean</code>。清洗规则：过滤无效数据、违禁词处理、数据标准化。</p>
+    <form method="POST" action="/product-data/clean">
+        <div style="margin-bottom: 12px;">
+            <label for="clean_category">选择类目</label>
+            <select id="clean_category" name="category" style="width:100%;">
+                <option value="__all__">全部类目</option>
+                {% for cat_stat in category_stats|default([]) %}
+                <option value="{{ cat_stat.category }}">{{ cat_stat.category }} (原始: {{ cat_stat.raw_count }}, 清洗后: {{ cat_stat.clean_count }})</option>
+                {% endfor %}
+            </select>
+        </div>
+        <button type="submit" class="btn btn-warning" onclick="return confirm('确定要执行数据清洗吗？');">执行数据清洗</button>
+    </form>
+</div>
+
+<div class="card" id="export-section">
+    <h2>数据导出</h2>
+    <p class="text-muted mb-4">导出 <code>{category}_clean</code> 中的清洗后数据为Excel文件。</p>
+    <form method="POST" action="/product-data/export">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+            <div>
+                <label for="export_category">选择类目</label>
+                <select id="export_category" name="category" style="width:100%;" required>
+                    <option value="">请选择类目</option>
+                    {% for cat_stat in category_stats|default([]) %}
+                    {% if cat_stat.clean_count > 0 %}
+                    <option value="{{ cat_stat.category }}">{{ cat_stat.category }} ({{ cat_stat.clean_count }} 条)</option>
+                    {% endif %}
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label for="export_format">导出格式</label>
+                <select id="export_format" name="format" style="width:100%;">
+                    <option value="excel">Excel (.xlsx)</option>
+                </select>
+            </div>
+        </div>
+        <button type="submit" class="btn btn-success">开始导出</button>
+    </form>
+</div>
+
 <div class="card">
-    <h2>集合概览</h2>
-    {% if collections %}
+    <h2>类目统计</h2>
+    {% if category_stats %}
     <div style="overflow-x:auto;">
         <table>
             <thead>
                 <tr>
-                    <th>集合名</th>
-                    <th>商品数</th>
+                    <th>类目</th>
+                    <th>原始数据 ({category}_raw)</th>
+                    <th>清洗后数据 ({category}_clean)</th>
                     <th>操作</th>
                 </tr>
             </thead>
             <tbody>
-                {% for item in collections %}
+                {% for cat_stat in category_stats %}
                 <tr>
-                    <td>{{ item.name }}</td>
-                    <td>{{ item.count }}</td>
+                    <td>{{ cat_stat.category }}</td>
+                    <td>{{ cat_stat.raw_count }}</td>
+                    <td>{{ cat_stat.clean_count }}</td>
                     <td>
-                        <a href="/product-data?collection={{ item.name }}" class="btn btn-sm btn-info">查看</a>
+                        <div style="display: flex; gap: 4px;">
+                            <form method="POST" action="/product-data/clean" style="display: inline;">
+                                <input type="hidden" name="category" value="{{ cat_stat.category }}">
+                                <button type="submit" class="btn btn-sm btn-warning">清洗</button>
+                            </form>
+                            {% if cat_stat.clean_count > 0 %}
+                            <form method="POST" action="/product-data/export" style="display: inline;">
+                                <input type="hidden" name="category" value="{{ cat_stat.category }}">
+                                <input type="hidden" name="format" value="excel">
+                                <button type="submit" class="btn btn-sm btn-success">导出</button>
+                            </form>
+                            {% endif %}
+                        </div>
                     </td>
                 </tr>
                 {% endfor %}
@@ -65,7 +167,45 @@
         </table>
     </div>
     {% else %}
-    <p class="text-muted">暂无商品集合数据。</p>
+    <p class="text-muted">暂无产品数据。请先使用数据爬取功能获取商品数据。</p>
     {% endif %}
+</div>
+
+<div class="card">
+    <h2>数据库结构说明</h2>
+    <div class="detail-grid">
+        <div class="detail-item">
+            <div class="k">URL来源数据库</div>
+            <div class="v"><code>qmds_url_stores</code> - 存储店铺URL数据</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">URL来源集合</div>
+            <div class="v"><code>{category}_filtered</code> - 存储已筛选的店铺URL</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">产品数据数据库</div>
+            <div class="v"><code>qmds_product_data</code> - 存储商品数据</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">原始数据集合</div>
+            <div class="v"><code>{category}_raw</code> - 存储爬取的原始商品数据</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">清洗后数据集合</div>
+            <div class="v"><code>{category}_clean</code> - 存储清洗后的商品数据</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">类目对应关系</div>
+            <div class="v">同一类目的原始数据和清洗后数据通过类目名称对应，如 <code>electronics_raw</code> 和 <code>electronics_clean</code></div>
+        </div>
+        <div class="detail-item">
+            <div class="k">数据爬取流程</div>
+            <div class="v">从 <code>qmds_url_stores.{category}_filtered</code> 获取URL → 爬取 <code>/products.json</code> → 保存到 <code>qmds_product_data.{category}_raw</code></div>
+        </div>
+        <div class="detail-item">
+            <div class="k">数据清洗流程</div>
+            <div class="v">从 <code>{category}_raw</code> 读取数据 → 过滤无效数据、违禁词处理 → 保存到 <code>{category}_clean</code></div>
+        </div>
+    </div>
 </div>
 {% endblock %}

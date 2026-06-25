@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <div class="flex" style="justify-content:space-between;">
+        <h2>编辑站点</h2>
+        <a href="/site-management" class="btn btn-secondary">返回建站管理</a>
+    </div>
+    <p class="text-muted mb-4">编辑站点信息：{{ site.domain }}</p>
+</div>
+
+<div class="card">
+    <form method="POST" action="/site-management/{{ site._id }}/edit">
+        <div class="grid-2">
+            <div>
+                <label>域名</label>
+                <input type="text" name="domain" value="{{ site.domain|default('') }}">
+            </div>
+            <div>
+                <label>模板</label>
+                <input type="text" name="template" value="{{ site.template|default('') }}">
+            </div>
+            <div>
+                <label>服务器</label>
+                <input type="text" name="server" value="{{ site.server|default('') }}">
+            </div>
+            <div>
+                <label>大类</label>
+                <input type="text" name="category" value="{{ site.category|default('') }}">
+            </div>
+            <div>
+                <label>主分类</label>
+                <input type="text" name="main_category" value="{{ site.main_category|default('') }}">
+            </div>
+            <div>
+                <label>主数据源ID</label>
+                <input type="text" name="main_data_source_id" value="{{ site.main_data_source_id|default('') }}">
+            </div>
+            <div>
+                <label>补充数据源ID</label>
+                <input type="text" name="extra_data_source_id" value="{{ site.extra_data_source_id|default('') }}">
+            </div>
+            <div>
+                <label>标题</label>
+                <input type="text" name="title" value="{{ site.title|default('') }}">
+            </div>
+        </div>
+        <div>
+            <label>描述</label>
+            <input type="text" name="description" value="{{ site.description|default('') }}">
+        </div>
+        <div>
+            <label>地址</label>
+            <input type="text" name="address" value="{{ site.address|default('') }}">
+        </div>
+
+        <h3 style="margin-top:20px; margin-bottom:16px;">状态信息</h3>
+        <div class="grid-2">
+            <div>
+                <label>上报状态</label>
+                <select name="report_status">
+                    <option value="未报" {% if site.report_status == '未报' %}selected{% endif %}>未报</option>
+                    <option value="已报" {% if site.report_status == '已报' %}selected{% endif %}>已报</option>
+                </select>
+            </div>
+            <div>
+                <label>建站状态</label>
+                <select name="build_status">
+                    <option value="" {% if not site.build_status %}selected{% endif %}>未建站</option>
+                    <option value="已建站" {% if site.build_status == '已建站' %}selected{% endif %}>已建站</option>
+                </select>
+            </div>
+            <div>
+                <label>计划开关</label>
+                <select name="schedule_enabled">
+                    <option value="0" {% if site.schedule_enabled != '1' %}selected{% endif %}>关闭</option>
+                    <option value="1" {% if site.schedule_enabled == '1' %}selected{% endif %}>开启</option>
+                </select>
+            </div>
+            <div>
+                <label>计划时间</label>
+                <input type="datetime-local" name="schedule_time" value="{{ site.schedule_time|default('') }}" step="60">
+            </div>
+        </div>
+
+        <div class="flex mt-4">
+            <button type="submit" class="btn btn-primary">保存修改</button>
+            <a href="/site-management" class="btn btn-secondary">取消</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

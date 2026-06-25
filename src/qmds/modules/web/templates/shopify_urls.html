@@ -7,10 +7,10 @@
     <form method="post" action="/shopify/fetch-urls">
         <div class="form-group">
             <label for="category">选择类目</label>
-            <select id="category" name="category" required>
+            <select id="category" name="category" required onchange="window.location.href='/shopify/fetch-urls?category='+this.value">
                 <option value="">-- 请选择类目 --</option>
                 {% for cat in categories %}
-                <option value="{{ cat }}" {% if request.form.get('category') == cat %}selected{% endif %}>{{ cat }}</option>
+                <option value="{{ cat }}" {% if selected_category == cat or request.form.get('category') == cat %}selected{% endif %}>{{ cat }}</option>
                 {% endfor %}
             </select>
         </div>
@@ -148,4 +148,62 @@
     </div>
     {% endif %}
 </div>
+
+{% if selected_category %}
+<div class="card" style="max-width:960px;margin:20px auto 0;">
+    <h2>📊 {{ selected_category }} - 已存储的店铺数据</h2>
+    <p class="text-muted" style="margin-bottom:16px;">
+        数据来源: <code>{{ db_name }}.{{ selected_category }}_unfiltered</code> | 
+        总数: <strong>{{ stores_total }}</strong> 条
+    </p>
+    
+    {% if stores %}
+    <div style="overflow-x:auto;">
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>域名</th>
+                    <th>店铺名称</th>
+                    <th>商品数</th>
+                    <th>货币</th>
+                    <th>平台</th>
+                    <th>URL</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for store in stores %}
+                <tr>
+                    <td>{{ loop.index }}</td>
+                    <td><strong>{{ store.domain }}</strong></td>
+                    <td>{{ store.store_name or '-' }}</td>
+                    <td>{{ store.product_count or 0 }}</td>
+                    <td>{{ store.currency or 'USD' }}</td>
+                    <td>
+                        <span class="badge-platform badge-{{ store.platform or 'unknown' }}">
+                            {{ store.platform or 'unknown' }}
+                        </span>
+                    </td>
+                    <td style="font-size:12px;word-break:break-all;max-width:300px;">
+                        <a href="{{ store.url }}" target="_blank" rel="noopener">{{ store.url }}</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    
+    {% if stores_total > 50 %}
+    <div style="margin-top:12px;padding:12px;background:#e3f2fd;border-radius:6px;font-size:13px;color:#1565c0;">
+        ℹ️ 显示前 50 条记录，共 {{ stores_total }} 条数据
+    </div>
+    {% endif %}
+    {% else %}
+    <div style="padding:20px;text-align:center;color:#999;">
+        <p>暂无 {{ selected_category }} 类目的店铺数据</p>
+        <p style="font-size:13px;margin-top:8px;">请使用上方表单搜索并获取店铺URL</p>
+    </div>
+    {% endif %}
+</div>
+{% endif %}
 {% endblock %}

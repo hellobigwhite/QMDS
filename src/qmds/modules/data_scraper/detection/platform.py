@@ -3,14 +3,18 @@
 import json
 import random
 import time
+import urllib3
 from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urlparse
 
 import requests
 
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 from qmds.modules.data_scraper.models.schemas import Platform
 from qmds.utils.logger import get_logger
+from qmds.utils.proxy_manager import ProxyManager
 
 log = get_logger("detection")
 
@@ -34,6 +38,7 @@ class DetectionResult:
     currency: str = "USD"
     confidence: float = 0.0
     raw: dict = None
+    page_text: str = ""  # 存储页面文本用于语言检测
 
     def __bool__(self):
         return self.platform != Platform.UNKNOWN
@@ -125,42 +130,37 @@ def crawlbase_request(url, api_key, scraper=None, timeout=120):
     )
 
 
-def request_with_mode(url, api_key=None, method="GET", headers=None, timeout=30, **kwargs):
-    """按 API 模式发送请求（与 YSQD 一致）"""
+def request_with_mode(url, proxy_manager=None, method="GET", headers=None, timeout=30, **kwargs):
+    """按代理模式发送请求"""
     headers = headers or {}
+    proxy = proxy_manager.get_proxy() if proxy_manager else None
 
-    # ScraperAPI 模式
-    if api_key:
-        params = {"api_key": api_key, "url": url, "keep_headers": "true"}
-        if method.upper() == "GET":
-            return requests.get(SCRAPERAPI_FETCH_URL, params=params, headers=headers,
-                                timeout=timeout, proxies={"http": None, "https": None}, **kwargs)
-        return requests.post(SCRAPERAPI_FETCH_URL, params=params, headers=headers,
-                             timeout=timeout, proxies={"http": None, "https": None}, **kwargs)
-
-    # 直连模式（走系统代理或无代理）
     if method.upper() == "GET":
-        return requests.get(url, headers=headers, timeout=timeout, **kwargs)
-    return requests.post(url, headers=headers, timeout=timeout, **kwargs)
+        return requests.get(url, headers=headers, timeout=timeout, proxies=proxy, **kwargs)
+    return requests.post(url, headers=headers, timeout=timeout, proxies=proxy, **kwargs)
 
 
-def _request_with_retry(url, api_key=None, headers=None, timeout=15, max_retries=2):
-    """带重试的请求（与 YSQD 一致）"""
+def _request_with_retry(url, proxy_manager=None, headers=None, timeout=15, max_retries=2):
+    """带重试的请求，失败时标记代理并轮换"""
     for attempt in range(max_retries):
+        proxy = proxy_manager.get_proxy() if proxy_manager else None
         try:
-            response = request_with_mode(url, api_key=api_key, method="GET",
+            response = request_with_mode(url, proxy_manager=proxy_manager, method="GET",
                                          headers=headers, timeout=timeout)
             if response.status_code != 0:
                 return response
         except requests.exceptions.SSLError:
             try:
-                response = request_with_mode(url, api_key=api_key, method="GET",
+                response = request_with_mode(url, proxy_manager=proxy_manager, method="GET",
                                              headers=headers, timeout=timeout, verify=False)
                 if response.status_code != 0:
                     return response
             except Exception:
-                pass
+                if proxy and proxy_manager:
+                    proxy_manager.mark_bad(proxy)
         except Exception:
+            if proxy and proxy_manager:
+                proxy_manager.mark_bad(proxy)
             if attempt < max_retries - 1:
                 time.sleep(1)
                 continue
@@ -170,8 +170,8 @@ def _request_with_retry(url, api_key=None, headers=None, timeout=15, max_retries
 class PlatformDetector:
     """电商平台检测器（完全仿照 YSQD）"""
 
-    def __init__(self, scraperapi_key: str = ""):
-        self._api_key = scraperapi_key
+    def __init__(self, proxy_manager: Optional[ProxyManager] = None):
+        self._proxy_manager = proxy_manager
 
     def detect(self, url: str, url_map: dict = None) -> DetectionResult:
         """检测电商平台（与 YSQD detect_ecommerce_platform 一致）"""
@@ -183,6 +183,7 @@ class PlatformDetector:
                 url += "/"
 
             headers = get_browser_headers()
+            page_text = ""
 
             # 1. Shopify / WooCommerce / Magento / BigCommerce 检测
             checks = [
@@ -195,16 +196,26 @@ class PlatformDetector:
 
             for platform_name, check_url, predicate in checks:
                 try:
-                    response = _request_with_retry(check_url, api_key=self._api_key,
+                    response = _request_with_retry(check_url, proxy_manager=self._proxy_manager,
                                                    headers=headers, timeout=15)
                     if response and response.status_code == 200 and predicate(response):
-                        return self._to_result(platform_name, url, response)
+                        # 获取首页内容用于语言检测
+                        try:
+                            page_response = _request_with_retry(url, proxy_manager=self._proxy_manager,
+                                                               headers=headers, timeout=15)
+                            if page_response and page_response.status_code == 200:
+                                page_text = page_response.text
+                        except Exception:
+                            pass
+                        result = self._to_result(platform_name, url, response)
+                        result.page_text = page_text
+                        return result
                 except Exception:
                     pass
 
             # 2. 通用电商指标（Stripe/PayPal/Klarna 等）
             try:
-                response = _request_with_retry(url, api_key=self._api_key,
+                response = _request_with_retry(url, proxy_manager=self._proxy_manager,
                                                headers=headers, timeout=15)
                 if response and response.status_code == 200:
                     html_content = response.text.lower()
@@ -225,10 +236,20 @@ class PlatformDetector:
                 if not myshopify_url.endswith("/"):
                     myshopify_url += "/"
                 try:
-                    response = _request_with_retry(f"{myshopify_url}meta.json", api_key=self._api_key,
+                    response = _request_with_retry(f"{myshopify_url}meta.json", proxy_manager=self._proxy_manager,
                                                    headers=headers, timeout=15)
                     if response and response.status_code == 200 and "published_products_count" in response.json():
-                        return self._to_result("Shopify", myshopify_url, response)
+                        # 获取首页内容用于语言检测
+                        try:
+                            page_response = _request_with_retry(myshopify_url, proxy_manager=self._proxy_manager,
+                                                               headers=headers, timeout=15)
+                            if page_response and page_response.status_code == 200:
+                                page_text = page_response.text
+                        except Exception:
+                            pass
+                        result = self._to_result("Shopify", myshopify_url, response)
+                        result.page_text = page_text
+                        return result
                 except Exception:
                     pass
 

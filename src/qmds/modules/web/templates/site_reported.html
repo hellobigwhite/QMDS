@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <div class="flex" style="justify-content:space-between;">
+        <h2>📡 已报域名</h2>
+        <a href="/site-management" class="btn btn-secondary">返回建站管理</a>
+    </div>
+    <p class="text-muted mb-4">查看和管理已上报的域名，可以批量建站或取消上报。</p>
+</div>
+
+<div class="grid-3">
+    <div class="stat-card">
+        <div class="icon">📡</div>
+        <div class="value">{{ stats.reported_sites|default(0) }}</div>
+        <div class="label">已报总数</div>
+    </div>
+    <div class="stat-card">
+        <div class="icon">✅</div>
+        <div class="value">{{ stats.built_sites|default(0) }}</div>
+        <div class="label">已建站</div>
+    </div>
+    <div class="stat-card">
+        <div class="icon">⏳</div>
+        <div class="value">{{ stats.reported_sites - stats.built_sites|default(0) }}</div>
+        <div class="label">待建站</div>
+    </div>
+</div>
+
+<div class="card">
+    <h2>已报域名列表</h2>
+    <form method="GET" class="mb-4">
+        <div class="flex">
+            <input type="text" name="q" value="{{ q|default('') }}" placeholder="搜索域名..." style="flex:1;">
+            <button type="submit" class="btn btn-primary">搜索</button>
+            <a href="/site-management/reported" class="btn btn-secondary">清空</a>
+            <a href="/site-management/export-weekly?q={{ q }}" class="btn btn-info">导出本周 Excel</a>
+        </div>
+    </form>
+
+    <form method="POST" action="/site-management/reported">
+        <div class="flex mb-4">
+            <button type="submit" class="btn btn-success" name="action" value="build_selected">批量建站</button>
+            <button type="submit" class="btn btn-danger" name="action" value="delete_selected" onclick="return confirm('确定取消选中站点的上报状态吗？');">取消上报</button>
+        </div>
+
+        {% if sites %}
+        <div style="overflow-x:auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th><input type="checkbox" onclick="toggleAll(this)"></th>
+                        <th>域名</th>
+                        <th>模板</th>
+                        <th>服务器</th>
+                        <th>主分类</th>
+                        <th>建站状态</th>
+                        <th>上报时间</th>
+                        <th>详情</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for site in sites %}
+                    <tr>
+                        <td><input type="checkbox" name="selected_ids" value="{{ site._id }}"></td>
+                        <td><a href="http://{{ site.domain }}" target="_blank" style="color:#1565c0;">{{ site.domain }}</a></td>
+                        <td>{{ site.template|default('-') }}</td>
+                        <td>{{ site.server|default('-') }}</td>
+                        <td>{{ site.main_category|default('-') }}</td>
+                        <td>
+                            {% if site.build_status == '已建站' %}
+                            <span class="badge-platform badge-shopify">已建站</span>
+                            {% else %}
+                            <span class="badge-platform badge-unknown">待建站</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ site.report_time|default('-') }}</td>
+                        <td>
+                            <details class="detail-box">
+                                <summary>展开详情</summary>
+                                <div style="font-size:12px; padding:8px;">
+                                    <div><strong>域名:</strong> {{ site.domain|default('-') }}</div>
+                                    <div><strong>模板:</strong> {{ site.template|default('-') }}</div>
+                                    <div><strong>服务器:</strong> {{ site.server|default('-') }}</div>
+                                    <div><strong>主数据源:</strong> {{ site.main_data_source_id|default('-') }}</div>
+                                    <div><strong>补充数据源:</strong> {{ site.extra_data_source_id|default('-') }}</div>
+                                    <div><strong>主分类:</strong> {{ site.main_category|default('-') }}</div>
+                                    <div><strong>大类:</strong> {{ site.category|default('-') }}</div>
+                                    <div><strong>标题:</strong> {{ site.title|default('-') }}</div>
+                                    <div><strong>描述:</strong> {{ site.description|default('-') }}</div>
+                                    <div><strong>地址:</strong> {{ site.address|default('-') }}</div>
+                                    <div><strong>上报时间:</strong> {{ site.report_time|default('-') }}</div>
+                                    <div><strong>建站状态:</strong> {{ site.build_status|default('-') }}</div>
+                                    <div><strong>建站时间:</strong> {{ site.build_time|default('-') }}</div>
+                                </div>
+                            </details>
+                        </td>
+                        <td>
+                            <a href="/site-management/{{ site._id }}/detail" class="btn btn-sm btn-info">详情</a>
+                            <a href="/site-management/{{ site._id }}/edit" class="btn btn-sm btn-secondary">编辑</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="text-muted">暂无已报域名数据。</p>
+        {% endif %}
+    </form>
+</div>
+
+<script>
+function toggleAll(source) {
+    document.querySelectorAll('input[name="selected_ids"]').forEach(item => {
+        item.checked = source.checked;
+    });
+}
+</script>
+{% endblock %}

@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <h2>📤 数据导出</h2>
+    <p class="text-muted mb-4">导出 <code>{category}_clean</code> 中的清洗后数据为Excel文件。</p>
+</div>
+
+<div class="card">
+    <h2>导出配置</h2>
+    <form method="POST" action="/product-data/export">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+            <div>
+                <label for="export_category">选择类目</label>
+                <select id="export_category" name="category" style="width:100%;" required>
+                    <option value="">请选择类目</option>
+                    {% for cat_stat in category_stats|default([]) %}
+                    {% if cat_stat.clean_count > 0 %}
+                    <option value="{{ cat_stat.category }}">{{ cat_stat.category }} ({{ cat_stat.clean_count }} 条)</option>
+                    {% endif %}
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label for="export_format">导出格式</label>
+                <select id="export_format" name="format" style="width:100%;">
+                    <option value="excel">Excel (.xlsx)</option>
+                </select>
+            </div>
+        </div>
+        <button type="submit" class="btn btn-success">开始导出</button>
+    </form>
+</div>
+
+<div class="card">
+    <h2>可导出类目</h2>
+    {% if category_stats %}
+    <div style="overflow-x:auto;">
+        <table>
+            <thead>
+                <tr>
+                    <th>类目</th>
+                    <th>原始数据 ({category}_raw)</th>
+                    <th>清洗后数据 ({category}_clean)</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for cat_stat in category_stats %}
+                <tr>
+                    <td>{{ cat_stat.category }}</td>
+                    <td>{{ cat_stat.raw_count }}</td>
+                    <td>{{ cat_stat.clean_count }}</td>
+                    <td>
+                        {% if cat_stat.clean_count > 0 %}
+                        <form method="POST" action="/product-data/export" style="display: inline;">
+                            <input type="hidden" name="category" value="{{ cat_stat.category }}">
+                            <input type="hidden" name="format" value="excel">
+                            <button type="submit" class="btn btn-sm btn-success">导出</button>
+                        </form>
+                        {% else %}
+                        <span class="text-muted">无数据</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="text-muted">暂无可导出的数据。请先使用数据爬取和清洗功能。</p>
+    {% endif %}
+</div>
+
+<div class="card">
+    <h2>导出说明</h2>
+    <div class="detail-grid">
+        <div class="detail-item">
+            <div class="k">数据来源</div>
+            <div class="v"><code>qmds_product_data.{category}_clean</code> 集合中的清洗后商品数据</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">导出格式</div>
+            <div class="v">Excel (.xlsx) 格式</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">存储位置</div>
+            <div class="v"><code>Data/exports/</code> 目录下</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">文件命名</div>
+            <div class="v"><code>{category}_clean_{timestamp}.xlsx</code></div>
+        </div>
+    </div>
+</div>
+{% endblock %}

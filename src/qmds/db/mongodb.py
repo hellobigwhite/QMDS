@@ -209,6 +209,24 @@ class MongoDBClient:
                 categories.add(name.replace("_unfiltered", ""))
         return sorted(categories)
 
+    def list_filtered_categories(self) -> list[str]:
+        """列出所有有 filtered 数据的类目"""
+        categories = set()
+        for name in self.db.list_collection_names():
+            if name.endswith("_filtered"):
+                categories.add(name.replace("_filtered", ""))
+        return sorted(categories)
+
+    def get_filtered_urls(self, category: str) -> list[dict]:
+        """从 {category}_filtered 获取所有URL
+        
+        Returns:
+            [{"url": "https://store.com/collections/xxx", "domain": "store.com"}, ...]
+        """
+        col = self.filtered_col(category)
+        docs = col.find({}, {"url": 1, "domain": 1, "_id": 0})
+        return [{"url": d.get("url", ""), "domain": d.get("domain", "")} for d in docs if d.get("url")]
+
     def get_stats(self, category: str) -> dict:
         """获取指定类目的 unfiltered/filtered 数量统计"""
         uf_count = self.unfiltered_col(category).estimated_document_count()
@@ -218,3 +236,22 @@ class MongoDBClient:
             "unfiltered": uf_count,
             "filtered": ff_count,
         }
+
+    def get_unfiltered_stores(self, category: str, limit: int = 100, skip: int = 0) -> list[dict]:
+        """获取指定类目的 unfiltered 店铺数据
+        
+        Args:
+            category: 类目名称
+            limit: 返回记录数限制
+            skip: 跳过记录数（分页用）
+            
+        Returns:
+            店铺数据列表
+        """
+        col = self.unfiltered_col(category)
+        docs = col.find({}, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit)
+        return list(docs)
+
+    def get_unfiltered_count(self, category: str) -> int:
+        """获取指定类目的 unfiltered 数据总数"""
+        return self.unfiltered_col(category).estimated_document_count()

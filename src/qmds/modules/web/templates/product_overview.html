@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <h2>📊 产品数据概览</h2>
+    <p class="text-muted mb-4">管理商品数据：数据爬取、数据清洗、数据导出。数据存储在 <code>qmds_product_data</code> 数据库中。</p>
+</div>
+
+{% if error %}
+<div class="card" style="border-left: 4px solid #ef4444;">
+    <div class="error">{{ error }}</div>
+</div>
+{% endif %}
+
+<div class="grid-2">
+    <div class="card">
+        <h2>数据统计</h2>
+        <div class="result-box">
+            <div class="stat-row">
+                <span class="stat-label">类目数量</span>
+                <span class="stat-value">{{ total_collections|default(0) }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">原始数据总量</span>
+                <span class="stat-value">{{ total_rows|default(0) }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">清洗后数据总量</span>
+                <span class="stat-value">{{ total_clean_rows|default(0) }}</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>快速操作</h2>
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+            <a href="/product-data/crawl" class="btn btn-primary" style="width:100%;">数据爬取</a>
+            <a href="/product-data/clean" class="btn btn-warning" style="width:100%;">数据清洗</a>
+            <a href="/product-data/export" class="btn btn-success" style="width:100%;">数据导出</a>
+            <a href="/tasks" class="btn btn-secondary" style="width:100%;">查看任务中心</a>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h2>类目统计</h2>
+    {% if category_stats %}
+    <div style="overflow-x:auto;">
+        <table>
+            <thead>
+                <tr>
+                    <th>类目</th>
+                    <th>原始数据 ({category}_raw)</th>
+                    <th>清洗后数据 ({category}_clean)</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for cat_stat in category_stats %}
+                <tr>
+                    <td>{{ cat_stat.category }}</td>
+                    <td>{{ cat_stat.raw_count }}</td>
+                    <td>{{ cat_stat.clean_count }}</td>
+                    <td>
+                        <div style="display: flex; gap: 4px;">
+                            <a href="/product-data/clean?category={{ cat_stat.category }}" class="btn btn-sm btn-warning">清洗</a>
+                            {% if cat_stat.clean_count > 0 %}
+                            <a href="/product-data/export?category={{ cat_stat.category }}" class="btn btn-sm btn-success">导出</a>
+                            {% endif %}
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="text-muted">暂无产品数据。请先使用数据爬取功能获取商品数据。</p>
+    {% endif %}
+</div>
+
+<div class="card">
+    <h2>数据库结构说明</h2>
+    <div class="detail-grid">
+        <div class="detail-item">
+            <div class="k">URL来源数据库</div>
+            <div class="v"><code>qmds_url_stores</code> - 存储店铺URL数据</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">URL来源集合</div>
+            <div class="v"><code>{category}_filtered</code> - 存储已筛选的店铺URL</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">产品数据数据库</div>
+            <div class="v"><code>qmds_product_data</code> - 存储商品数据</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">原始数据集合</div>
+            <div class="v"><code>{category}_raw</code> - 存储爬取的原始商品数据</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">清洗后数据集合</div>
+            <div class="v"><code>{category}_clean</code> - 存储清洗后的商品数据</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">类目对应关系</div>
+            <div class="v">同一类目的原始数据和清洗后数据通过类目名称对应，如 <code>electronics_raw</code> 和 <code>electronics_clean</code></div>
+        </div>
+        <div class="detail-item">
+            <div class="k">数据爬取流程</div>
+            <div class="v">从 <code>qmds_url_stores.{category}_filtered</code> 获取URL → 爬取 <code>/products.json</code> → 保存到 <code>qmds_product_data.{category}_raw</code></div>
+        </div>
+        <div class="detail-item">
+            <div class="k">数据清洗流程</div>
+            <div class="v">从 <code>{category}_raw</code> 读取数据 → 过滤无效数据、违禁词处理 → 保存到 <code>{category}_clean</code></div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -8,67 +8,54 @@
 <div class="grid-3">
     <div class="stat-card">
         <div class="icon">🌐</div>
-        <div class="value">{{ total_sites|default(0) }}</div>
+        <div class="value">{{ stats.total_sites|default(0) }}</div>
         <div class="label">站点总数</div>
     </div>
     <div class="stat-card">
-        <div class="icon">✅</div>
-        <div class="value">{{ built_sites|default(0) }}</div>
-        <div class="label">已建站</div>
+        <div class="icon">📁</div>
+        <div class="value">{{ stats.local_sites|default(0) }}</div>
+        <div class="label">本地站点</div>
     </div>
     <div class="stat-card">
         <div class="icon">📡</div>
-        <div class="value">{{ reported_sites|default(0) }}</div>
-        <div class="label">已上报</div>
+        <div class="value">{{ stats.reported_sites|default(0) }}</div>
+        <div class="label">已报域名</div>
+    </div>
+    <div class="stat-card">
+        <div class="icon">⏰</div>
+        <div class="value">{{ stats.scheduled_sites|default(0) }}</div>
+        <div class="label">计划上报</div>
+    </div>
+    <div class="stat-card">
+        <div class="icon">✅</div>
+        <div class="value">{{ stats.built_sites|default(0) }}</div>
+        <div class="label">已建站</div>
     </div>
 </div>
 
 <div class="card">
-    <h2>站点列表</h2>
-    <form method="GET" class="mb-4">
-        <div class="flex">
-            <input type="text" name="q" value="{{ q|default('') }}" placeholder="搜索域名..." style="flex:1;">
-            <button type="submit" class="btn btn-primary">搜索</button>
-        </div>
-    </form>
-
-    {% if sites %}
-    <div style="overflow-x:auto;">
-        <table>
-            <thead>
-                <tr>
-                    <th>域名</th>
-                    <th>模板</th>
-                    <th>服务器</th>
-                    <th>主分类</th>
-                    <th>状态</th>
-                    <th>操作</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for site in sites %}
-                <tr>
-                    <td><a href="http://{{ site.domain }}" target="_blank" style="color:#1565c0;">{{ site.domain }}</a></td>
-                    <td>{{ site.template|default('-') }}</td>
-                    <td>{{ site.server|default('-') }}</td>
-                    <td>{{ site.main_category|default('-') }}</td>
-                    <td>
-                        {% if site.report_status == '已报' %}
-                        <span class="badge-platform badge-shopify">已上报</span>
-                        {% else %}
-                        <span class="badge-platform badge-unknown">未报</span>
-                        {% endif %}
-                    </td>
-                    <td>
-                        <a href="/site-management/{{ site.id }}" class="btn btn-sm btn-info">详情</a>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+    <h2>功能入口</h2>
+    <div class="grid-2">
+        <a href="/site-management/local" class="stat-card" style="text-decoration:none; color:inherit;">
+            <div class="icon">📁</div>
+            <div class="value" style="font-size:20px;">本地站点</div>
+            <div class="label">管理未上报的本地站点数据</div>
+        </a>
+        <a href="/site-management/reported" class="stat-card" style="text-decoration:none; color:inherit;">
+            <div class="icon">📡</div>
+            <div class="value" style="font-size:20px;">已报域名</div>
+            <div class="label">查看和管理已上报的域名</div>
+        </a>
+        <a href="/site-management/scheduled" class="stat-card" style="text-decoration:none; color:inherit;">
+            <div class="icon">⏰</div>
+            <div class="value" style="font-size:20px;">计划上报</div>
+            <div class="label">管理计划上报的站点</div>
+        </a>
+        <a href="/site-management/built" class="stat-card" style="text-decoration:none; color:inherit;">
+            <div class="icon">✅</div>
+            <div class="value" style="font-size:20px;">已建站</div>
+            <div class="label">查看和管理已建站的站点</div>
+        </a>
     </div>
-    {% else %}
-    <p class="text-muted">暂无站点数据。</p>
-    {% endif %}
 </div>
 {% endblock %}

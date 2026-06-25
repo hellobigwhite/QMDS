@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <div class="flex" style="justify-content:space-between;">
+        <h2>{{ option_type }}选项管理</h2>
+        <a href="/config" class="btn btn-secondary">返回配置</a>
+    </div>
+    <p class="text-muted mb-4">管理{{ option_type }}下拉选项，添加或删除可选项。</p>
+</div>
+
+<div class="card">
+    <h2>添加{{ option_type }}</h2>
+    <form method="POST" action="">
+        <input type="hidden" name="action" value="add">
+        <div class="flex">
+            <input type="text" name="name" placeholder="输入{{ option_type }}名称" style="flex:1;" required>
+            <button type="submit" class="btn btn-primary">添加</button>
+        </div>
+    </form>
+</div>
+
+<div class="card">
+    <h2>{{ option_type }}列表</h2>
+    {% if options %}
+    <div style="overflow-x:auto;">
+        <table>
+            <thead>
+                <tr>
+                    <th>{{ option_type }}名称</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for option in options %}
+                <tr>
+                    <td>{{ option }}</td>
+                    <td>
+                        <form method="POST" action="" style="display:inline;">
+                            <input type="hidden" name="action" value="delete">
+                            <input type="hidden" name="name" value="{{ option }}">
+                            <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('确定删除 {{ option_type }} {{ option }} 吗？');">删除</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="text-muted">暂无{{ option_type }}选项。</p>
+    {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <h2>🧹 数据清洗</h2>
+    <p class="text-muted mb-4">清洗 <code>{category}_raw</code> 中的原始数据，清洗后保存到 <code>{category}_clean</code>。清洗规则：过滤无效数据、违禁词处理、数据标准化。</p>
+</div>
+
+<div class="card">
+    <h2>清洗配置</h2>
+    <form method="POST" action="/product-data/clean">
+        <div style="margin-bottom: 12px;">
+            <label for="clean_category">选择类目</label>
+            <select id="clean_category" name="category" style="width:100%;">
+                <option value="__all__">全部类目</option>
+                {% for cat_stat in category_stats|default([]) %}
+                <option value="{{ cat_stat.category }}">{{ cat_stat.category }} (原始: {{ cat_stat.raw_count }}, 清洗后: {{ cat_stat.clean_count }})</option>
+                {% endfor %}
+            </select>
+        </div>
+        <button type="submit" class="btn btn-warning" onclick="return confirm('确定要执行数据清洗吗？');">执行数据清洗</button>
+    </form>
+</div>
+
+<div class="card">
+    <h2>类目数据统计</h2>
+    {% if category_stats %}
+    <div style="overflow-x:auto;">
+        <table>
+            <thead>
+                <tr>
+                    <th>类目</th>
+                    <th>原始数据 ({category}_raw)</th>
+                    <th>清洗后数据 ({category}_clean)</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for cat_stat in category_stats %}
+                <tr>
+                    <td>{{ cat_stat.category }}</td>
+                    <td>{{ cat_stat.raw_count }}</td>
+                    <td>{{ cat_stat.clean_count }}</td>
+                    <td>
+                        <form method="POST" action="/product-data/clean" style="display: inline;">
+                            <input type="hidden" name="category" value="{{ cat_stat.category }}">
+                            <button type="submit" class="btn btn-sm btn-warning" onclick="return confirm('确定要清洗 {{ cat_stat.category }} 的数据吗？');">清洗</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="text-muted">暂无产品数据。请先使用数据爬取功能获取商品数据。</p>
+    {% endif %}
+</div>
+
+<div class="card">
+    <h2>清洗规则说明</h2>
+    <div class="detail-grid">
+        <div class="detail-item">
+            <div class="k">数据来源</div>
+            <div class="v"><code>qmds_product_data.{category}_raw</code> 集合中的原始商品数据</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">清洗规则</div>
+            <div class="v">过滤无效数据、违禁词处理、数据标准化、去重处理</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">存储位置</div>
+            <div class="v"><code>qmds_product_data.{category}_clean</code> 集合</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">清洗效果</div>
+            <div class="v">移除无效商品、过滤违禁词、标准化价格和图片字段</div>
+        </div>
+    </div>
+</div>
+{% endblock %}

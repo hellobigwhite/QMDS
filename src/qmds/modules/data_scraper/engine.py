@@ -2,7 +2,6 @@
 
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -17,7 +16,7 @@ from qmds.modules.data_scraper.discovery import GoogleShopifySearcher
 from qmds.modules.data_scraper.discovery.google_search import clean_url, extract_domain, filter_urls
 from qmds.modules.data_scraper.detection import PlatformDetector
 from qmds.modules.data_scraper.extraction import ShopifyExtractor
-from qmds.modules.data_scraper.models.schemas import Platform, Product, ScrapeTask, TaskStatus
+from qmds.modules.data_scraper.models.schemas import Product, ScrapeTask, TaskStatus
 from qmds.modules.data_scraper.pipeline import ProductFilter, ProductProcessor
 from qmds.utils.http_client import HttpClient
 from qmds.utils.logger import get_logger
@@ -30,13 +29,15 @@ class DataScraperModule:
     """数据爬取模块 - 统一入口"""
 
     def __init__(self, http_client: Optional[HttpClient] = None):
-        pm = ProxyManager.from_settings() if settings.load_proxies() else None
+        proxies = settings.load_proxies()
+        log.info(f"代理文件: {settings.proxies_file}, 加载到 {len(proxies)} 个代理")
+        pm = ProxyManager(proxies) if proxies else None
         self.http = http_client or HttpClient(proxy_manager=pm)
         self.extractor = ShopifyExtractor(self.http)
         self.filter = ProductFilter()
         self.processor = ProductProcessor()
         self.searcher = GoogleShopifySearcher()
-        self.detector = PlatformDetector()
+        self.detector = PlatformDetector(proxy_manager=pm)
         if pm:
             log.info(f"代理池已启用: {pm.available_count}/{pm.total_count} 个可用")
         else:
@@ -60,13 +61,14 @@ class DataScraperModule:
         products = [Product(**d) if isinstance(d, dict) else d for d in raw_result.data]
 
         products = self.processor.process_all(products)
+        products = self.processor.deduplicate_by_title(products)
         products = self.filter.filter(products)
 
         filtered_products = [p for p in products if not self.filter.has_prohibited_content(p)]
         raw_result.data = [p.__dict__ for p in filtered_products]
         raw_result.total_scraped = len(filtered_products)
 
-        log.info(f"{domain}: 提取 {raw_result.total_scraped}/{len(products)} 个有效商品")
+        log.info(f"{domain}: 提取 {raw_result.total_scraped} 个有效商品 (原始 {len(products)} 个，去重后 {len(filtered_products)} 个)")
         return raw_result
 
     def run_pipeline(self, query: str, max_pages: int = 3, max_product_pages: int = 10) -> ScrapeResult:
@@ -134,14 +136,13 @@ class DataScraperModule:
     def fetch_shopify_urls(self, category: str, keyword: str, max_pages: int = 2, min_products: int = 0,
                           workers: int = 10, save_mongo: bool = False, save_excel: bool = False,
                           provider_name: str = "") -> dict:
-        """按类目搜索 Shopify 店铺 URL（搜索 → 清洗 → 检测 → 计数 → 存储）
+        """按类目搜索店铺 URL（搜索 → 清洗 → 存储）
 
         参数:
             category: 类目名称（用于集合命名和存储）
             keyword: 搜索关键词（用于 Google 搜索）
             max_pages: Google 搜索页数
-            min_products: 最低商品数过滤
-            workers: 并发检测线程数
+            min_products: 未使用（已跳过平台检测）
             save_mongo: 是否保存到 MongoDB
             save_excel: 是否导出到 Excel
 
@@ -167,6 +168,7 @@ class DataScraperModule:
             proxy_count = self.http.proxy_manager.available_count
 
         all_raw_urls = []
+        url_query_map: dict[str, str] = {}
         for kw in keywords:
             # 与 YSQD 一致：关键词 + inurl:collections/all
             variants = [
@@ -177,7 +179,9 @@ class DataScraperModule:
             for query in variants:
                 log.info(f"搜索: {query!r}")
                 raw_result = self.searcher.scrape(query=query, max_pages=max_pages, provider_name=provider_name)
-                all_raw_urls.extend(item["url"] for item in raw_result.data)
+                for item in raw_result.data:
+                    all_raw_urls.append(item["url"])
+                    url_query_map[item["url"]] = query
 
         log.info(f"原始搜索到 {len(all_raw_urls)} 个 URL（去重前）")
 
@@ -185,66 +189,23 @@ class DataScraperModule:
         log.info(f"清洗去重后剩余 {len(cleaned_urls)} 个 URL")
 
         stores = []
-        # 获取 ScraperAPI key 用于平台检测
-        scraperapi_key = ""
-        for p in self.searcher._manager._providers:
-            if p.name == "scraperapi" and p.is_available():
-                scraperapi_key = p.key_pool.get_key() or ""
-                break
-        self.detector._api_key = scraperapi_key
+        for url in cleaned_urls:
+            detect_url = url_map.get(url) or url
+            search_query = url_query_map.get(url, "")
+            domain = extract_domain(url)
+            stores.append({
+                "url": detect_url,
+                "domain": domain,
+                "platform": "",
+                "product_count": 0,
+                "store_name": "",
+                "currency": "USD",
+                "category": category,
+                "search_query": search_query,
+                "source": "google_search",
+            })
 
-        def process_url(url: str) -> Optional[dict]:
-            try:
-                detect_url = url_map.get(url)
-                if not detect_url:
-                    detect_url = url
-                # myshopify.com 域名直接确认为 Shopify
-                if ".myshopify.com" in detect_url:
-                    domain = extract_domain(url)
-                    return {
-                        "url": detect_url,
-                        "domain": domain,
-                        "platform": "shopify",
-                        "product_count": 0,
-                        "store_name": "",
-                        "currency": "USD",
-                        "category": category,
-                        "search_query": query,
-                        "source": "google_search",
-                    }
-                # 非 myshopify.com 域名需要检测（传入 url_map 支持 myshopify 回退）
-                detection = self.detector.detect(detect_url, url_map=url_map)
-                if not detection or detection.platform != Platform.SHOPIFY:
-                    return None
-                domain = extract_domain(url)
-                count = detection.product_count or 0
-                if min_products > 0 and count < min_products:
-                    return None
-                return {
-                    "url": detect_url,
-                    "domain": domain,
-                    "platform": detection.platform.value,
-                    "product_count": count,
-                    "store_name": detection.store_name or "",
-                    "currency": detection.currency or "USD",
-                    "category": category,
-                    "search_query": query,
-                    "source": "google_search",
-                }
-            except Exception as e:
-                log.debug(f"检测失败 {url}: {e}")
-                return None
-
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(process_url, url): url for url in cleaned_urls}
-            for future in as_completed(futures):
-                result = future.result()
-                if result:
-                    stores.append(result)
-                time.sleep(0.05)
-
-        stores.sort(key=lambda s: s["product_count"], reverse=True)
-        log.info(f"找到 {len(stores)} 个 Shopify 店铺")
+        log.info(f"共 {len(stores)} 个店铺 URL")
 
         result = {
             "category": category,

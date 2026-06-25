@@ -4,8 +4,9 @@ import re
 from typing import Callable
 
 from qmds.modules.data_scraper.models.schemas import Product
+from qmds.utils.language import is_non_english_text
 
-PLACEHOLDER_IMAGES = re.compile(r"(coming-?soon|no-?image|placeholder|\.svg)", re.I)
+PLACEHOLDER_IMAGES = re.compile(r"(coming-?soon|no-?image|placeholder|\.svg|logo)", re.I)
 PROHIBITED_KEYWORDS = [
     "weapon", "gun", "knife", "drug", "cannabis", "counterfeit",
     "replica", "fake", "adult", "porn", "ivermectin",
@@ -25,6 +26,7 @@ class ProductFilter:
             self._price_range,
             self._title_length,
             self._image_valid,
+            self._is_english,
         ]
 
     def add_rule(self, rule: Callable[[Product], bool]):
@@ -45,11 +47,18 @@ class ProductFilter:
         return len(p.title.strip()) >= MIN_TITLE_LENGTH
 
     def _image_valid(self, p: Product) -> bool:
-        valid = [url for url in p.images if not PLACEHOLDER_IMAGES.search(url)]
-        p.images = valid
+        for url in p.images:
+            if PLACEHOLDER_IMAGES.search(url):
+                return False
         return True
 
     @staticmethod
     def has_prohibited_content(p: Product) -> bool:
         text = f"{p.title} {p.body_html} {' '.join(p.tags)}".lower()
         return any(kw in text for kw in PROHIBITED_KEYWORDS)
+
+    @staticmethod
+    def _is_english(p: Product) -> bool:
+        """检测商品是否为英文"""
+        text = f"{p.title} {p.body_html}"
+        return not is_non_english_text(text)

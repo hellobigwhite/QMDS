@@ -123,9 +123,54 @@
                     </a>
                 </div>
             </div>
-            <a href="/product-data" class="{% if request.path == '/product-data' %}active{% endif %}">产品数据管理</a>
-            <a href="/site-management" class="{% if request.path == '/site-management' %}active{% endif %}">建站管理</a>
+            <div class="nav-dropdown">
+                <a class="{% if request.path.startswith('/product-data') %}active{% endif %}">📦 产品数据管理 ▾</a>
+                <div class="dropdown-menu">
+                    <a href="/product-data/overview">
+                        📊 数据概览
+                        <div class="sub-desc">查看各类目数据统计和总体情况</div>
+                    </a>
+                    <a href="/product-data/crawl">
+                        🕷️ 数据爬取
+                        <div class="sub-desc">从筛选后的店铺URL爬取商品数据</div>
+                    </a>
+                    <a href="/product-data/clean">
+                        🧹 数据清洗
+                        <div class="sub-desc">清洗原始数据，过滤无效和违规内容</div>
+                    </a>
+                    <a href="/product-data/export">
+                        📤 数据导出
+                        <div class="sub-desc">导出清洗后的数据为Excel文件</div>
+                    </a>
+                </div>
+            </div>
+            <div class="nav-dropdown">
+                <a class="{% if request.path.startswith('/site-management') %}active{% endif %}">🏗️ 建站管理 ▾</a>
+                <div class="dropdown-menu">
+                    <a href="/site-management">
+                        📊 建站管理概览
+                        <div class="sub-desc">查看站点统计和功能入口</div>
+                    </a>
+                    <a href="/site-management/local">
+                        📁 本地站点
+                        <div class="sub-desc">管理未上报的本地站点数据</div>
+                    </a>
+                    <a href="/site-management/reported">
+                        📡 已报域名
+                        <div class="sub-desc">查看和管理已上报的域名</div>
+                    </a>
+                    <a href="/site-management/scheduled">
+                        ⏰ 计划上报
+                        <div class="sub-desc">管理计划上报的站点</div>
+                    </a>
+                    <a href="/site-management/built">
+                        ✅ 已建站
+                        <div class="sub-desc">查看和管理已建站的站点</div>
+                    </a>
+                </div>
+            </div>
             <a href="/tasks" class="{% if request.path == '/tasks' %}active{% endif %}">任务</a>
+            <a href="/config" class="{% if request.path.startswith('/config') %}active{% endif %}">配置</a>
         </div>
     </nav>
     <div class="container">

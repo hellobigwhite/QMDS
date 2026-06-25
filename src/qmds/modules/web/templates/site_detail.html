@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <div class="flex" style="justify-content:space-between;">
+        <h2>站点详情</h2>
+        <a href="/site-management" class="btn btn-secondary">返回建站管理</a>
+    </div>
+</div>
+
+<div class="card">
+    <h2>基础信息</h2>
+    <div class="grid-2">
+        <div class="result-box">
+            <div class="stat-row">
+                <span class="stat-label">域名</span>
+                <span class="stat-value"><a href="http://{{ site.domain }}" target="_blank" style="color:#1565c0;">{{ site.domain }}</a></span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">模板</span>
+                <span class="stat-value">{{ site.template|default('-') }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">服务器</span>
+                <span class="stat-value">{{ site.server|default('-') }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">大类</span>
+                <span class="stat-value">{{ site.category|default('-') }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">主分类</span>
+                <span class="stat-value">{{ site.main_category|default('-') }}</span>
+            </div>
+        </div>
+        <div class="result-box">
+            <div class="stat-row">
+                <span class="stat-label">主数据源ID</span>
+                <span class="stat-value">{{ site.main_data_source_id|default('-') }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">补充数据源ID</span>
+                <span class="stat-value">{{ site.extra_data_source_id|default('-') }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">标题</span>
+                <span class="stat-value">{{ site.title|default('-') }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">描述</span>
+                <span class="stat-value">{{ site.description|default('-') }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">地址</span>
+                <span class="stat-value">{{ site.address|default('-') }}</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h2>状态信息</h2>
+    <div class="grid-2">
+        <div class="result-box">
+            <div class="stat-row">
+                <span class="stat-label">上报状态</span>
+                <span class="stat-value">
+                    {% if site.report_status == '已报' %}
+                    <span class="badge-platform badge-shopify">已上报</span>
+                    {% else %}
+                    <span class="badge-platform badge-unknown">未报</span>
+                    {% endif %}
+                </span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">上报时间</span>
+                <span class="stat-value">{{ site.report_time|default('-') }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">建站状态</span>
+                <span class="stat-value">
+                    {% if site.build_status == '已建站' %}
+                    <span class="badge-platform badge-shopify">已建站</span>
+                    {% else %}
+                    <span class="badge-platform badge-unknown">未建站</span>
+                    {% endif %}
+                </span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">建站时间</span>
+                <span class="stat-value">{{ site.build_time|default('-') }}</span>
+            </div>
+        </div>
+        <div class="result-box">
+            <div class="stat-row">
+                <span class="stat-label">计划开关</span>
+                <span class="stat-value">
+                    {% if site.schedule_enabled == '1' %}
+                    <span class="badge-platform badge-shopify">已开启</span>
+                    {% else %}
+                    <span class="badge-platform badge-unknown">关闭</span>
+                    {% endif %}
+                </span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">计划时间</span>
+                <span class="stat-value">{{ site.schedule_time|default('-') }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">创建时间</span>
+                <span class="stat-value">{{ site.created_at|default('-') }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">更新时间</span>
+                <span class="stat-value">{{ site.updated_at|default('-') }}</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="flex">
+        <a href="/site-management/{{ site._id }}/edit" class="btn btn-primary">编辑站点</a>
+        <form method="POST" action="/site-management/{{ site._id }}/delete" style="display:inline;">
+            <button type="submit" class="btn btn-danger" onclick="return confirm('确定删除这个站点吗？');">删除站点</button>
+        </form>
+        <a href="/site-management/local" class="btn btn-secondary">返回本地站点</a>
+    </div>
+</div>
+{% endblock %}

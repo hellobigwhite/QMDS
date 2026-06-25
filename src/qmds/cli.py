@@ -7,6 +7,8 @@ from pathlib import Path
 
 from qmds.utils.logger import setup_logger
 from qmds.utils.http_client import HttpClient
+from qmds.utils.proxy_manager import ProxyManager
+from qmds.config import settings
 from qmds.modules.data_scraper import DataScraperModule
 
 
@@ -90,7 +92,8 @@ def main():
             web.run()
         return
 
-    http = HttpClient()
+    pm = ProxyManager.from_settings() if settings.load_proxies() else None
+    http = HttpClient(proxy_manager=pm)
     module = DataScraperModule(http_client=http)
 
     try:

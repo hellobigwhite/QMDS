@@ -28,6 +28,18 @@ class ProductProcessor:
         return cleaned[:5000] if len(cleaned) > 5000 else cleaned
 
     @staticmethod
+    def deduplicate_by_title(products: list[Product]) -> list[Product]:
+        """基于标题去重，保留第一个出现的商品"""
+        seen_titles = set()
+        unique_products = []
+        for p in products:
+            normalized_title = p.title.strip().lower()
+            if normalized_title and normalized_title not in seen_titles:
+                seen_titles.add(normalized_title)
+                unique_products.append(p)
+        return unique_products
+
+    @staticmethod
     def process_all(products: list[Product]) -> list[Product]:
         processed = []
         for p in products:

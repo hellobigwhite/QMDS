@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <h2>🔧 网页配置</h2>
+    <p class="text-muted mb-4">管理上报配置、ERP配置和WordPress配置。</p>
+</div>
+
+<form method="POST" action="/config">
+    <div class="card">
+        <h2>上报配置</h2>
+        <div class="grid-2">
+            <div>
+                <label>上报账号</label>
+                <input type="text" name="report_username" value="{{ settings.report_username|default('') }}">
+            </div>
+            <div>
+                <label>上报密码</label>
+                <input type="password" name="report_password" value="{{ settings.report_password|default('') }}">
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>ERP 配置</h2>
+        <div class="grid-2">
+            <div>
+                <label>ERP 账号</label>
+                <input type="text" name="erp_username" value="{{ settings.erp_username|default('') }}">
+            </div>
+            <div>
+                <label>ERP 密码</label>
+                <input type="password" name="erp_password" value="{{ settings.erp_password|default('') }}">
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>WordPress 配置</h2>
+        <div class="grid-2">
+            <div>
+                <label>WordPress 密码</label>
+                <input type="password" name="wp_password" value="{{ settings.wp_password|default('') }}">
+            </div>
+            <div>
+                <label>素材根目录</label>
+                <input type="text" name="media_root" value="{{ settings.media_root|default('D:\\logo') }}">
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="flex">
+            <button type="submit" class="btn btn-primary">保存配置</button>
+        </div>
+    </div>
+</form>
+
+<div class="card">
+    <h2>选项管理</h2>
+    <div class="grid-3">
+        <a href="/config/templates" class="stat-card" style="text-decoration:none; color:inherit;">
+            <div class="icon">📋</div>
+            <div class="value" style="font-size:16px;">模板选项</div>
+            <div class="label">管理模板下拉选项</div>
+        </a>
+        <a href="/config/servers" class="stat-card" style="text-decoration:none; color:inherit;">
+            <div class="icon">🖥️</div>
+            <div class="value" style="font-size:16px;">服务器选项</div>
+            <div class="label">管理服务器下拉选项</div>
+        </a>
+        <a href="/config/categories" class="stat-card" style="text-decoration:none; color:inherit;">
+            <div class="icon">📂</div>
+            <div class="value" style="font-size:16px;">主分类选项</div>
+            <div class="label">管理主分类下拉选项</div>
+        </a>
+    </div>
+</div>
+{% endblock %}
