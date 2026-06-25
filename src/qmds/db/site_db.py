@@ -125,40 +125,41 @@ class SiteDBClient:
 
     # ── 查询操作 ──────────────────────────────────────────────
 
-    def list_all_sites(self, keyword: str = "") -> list[dict]:
-        """列出所有站点"""
-        query = {}
+    def _paginate(self, query: dict, keyword: str, sort_field: str, sort_dir: int,
+                  page: int = 1, page_size: int = 20) -> dict:
+        """通用分页查询，返回 {"items": [...], "total": int, "page": int, "page_size": int}"""
         if keyword:
             query["domain"] = {"$regex": keyword, "$options": "i"}
-        return list(self.sites.find(query).sort("created_at", -1))
+        total = self.sites.count_documents(query)
+        skip = (page - 1) * page_size
+        items = list(self.sites.find(query).sort(sort_field, sort_dir).skip(skip).limit(page_size))
+        return {"items": items, "total": total, "page": page, "page_size": page_size}
 
-    def list_local_sites(self, keyword: str = "") -> list[dict]:
-        """列出本地站点（未上报的站点）"""
-        query = {"report_status": {"$ne": "已报"}}
-        if keyword:
-            query["domain"] = {"$regex": keyword, "$options": "i"}
-        return list(self.sites.find(query).sort("created_at", -1))
+    def list_all_sites(self, keyword: str = "", page: int = 1, page_size: int = 20) -> dict:
+        """列出所有站点（分页）"""
+        return self._paginate({}, keyword, "created_at", -1, page, page_size)
 
-    def list_reported_sites(self, keyword: str = "") -> list[dict]:
-        """列出已报域名"""
+    def list_local_sites(self, keyword: str = "", page: int = 1, page_size: int = 20) -> dict:
+        """列出本地站点（未上报的站点，分页）"""
+        return self._paginate({"report_status": {"$ne": "已报"}}, keyword, "created_at", -1, page, page_size)
+
+    def list_reported_sites(self, keyword: str = "", page: int = 1, page_size: int = 20) -> dict:
+        """列出已报域名（分页），待建站排最上面，然后按建站时间倒序"""
         query = {"report_status": "已报"}
         if keyword:
             query["domain"] = {"$regex": keyword, "$options": "i"}
-        return list(self.sites.find(query).sort("report_time", -1))
+        total = self.sites.count_documents(query)
+        skip = (page - 1) * page_size
+        items = list(self.sites.find(query).sort([("build_status", 1), ("build_time", -1)]).skip(skip).limit(page_size))
+        return {"items": items, "total": total, "page": page, "page_size": page_size}
 
-    def list_scheduled_sites(self, keyword: str = "") -> list[dict]:
-        """列出计划上报的站点"""
-        query = {"schedule_enabled": "1", "report_status": {"$ne": "已报"}}
-        if keyword:
-            query["domain"] = {"$regex": keyword, "$options": "i"}
-        return list(self.sites.find(query).sort("schedule_time", 1))
+    def list_scheduled_sites(self, keyword: str = "", page: int = 1, page_size: int = 20) -> dict:
+        """列出计划上报的站点（分页）"""
+        return self._paginate({"schedule_enabled": "1", "report_status": {"$ne": "已报"}}, keyword, "schedule_time", 1, page, page_size)
 
-    def list_built_sites(self, keyword: str = "") -> list[dict]:
-        """列出已建站的站点"""
-        query = {"build_status": "已建站"}
-        if keyword:
-            query["domain"] = {"$regex": keyword, "$options": "i"}
-        return list(self.sites.find(query).sort("build_time", -1))
+    def list_built_sites(self, keyword: str = "", page: int = 1, page_size: int = 20) -> dict:
+        """列出已建站的站点（分页）"""
+        return self._paginate({"build_status": "已建站"}, keyword, "build_time", -1, page, page_size)
 
     # ── 统计操作 ──────────────────────────────────────────────
 
@@ -256,6 +257,8 @@ class SiteDBClient:
         df = pd.read_excel(filepath)
         created = 0
         updated = 0
+        skipped = 0
+        errors = []
 
         for _, row in df.iterrows():
             domain = str(row.get("域名", "") or row.get("domain", "")).strip()
@@ -270,21 +273,38 @@ class SiteDBClient:
                 "main_category": str(row.get("主分类", "") or row.get("main_category", "")),
                 "main_data_source_id": str(row.get("主分类数据码", "") or row.get("main_data_source_id", "")),
                 "extra_data_source_id": str(row.get("站群数据码", "") or row.get("extra_data_source_id", "")),
-                "title": str(row.get("SEO Title", "") or row.get("title", "")),
+                "title": str(row.get("SEO Title", "") or row.get("SEO Title（最大58字符）", "") or row.get("title", "")),
                 "description": str(row.get("Meta Description", "") or row.get("description", "")),
                 "address": str(row.get("地址", "") or row.get("address", "")),
             }
 
             existing = self.get_site(domain)
             if existing:
-                self.update_site(domain, site_data)
-                updated += 1
+                # 检查数据是否一致
+                needs_update = False
+                for key, value in site_data.items():
+                    if key == "domain":
+                        continue
+                    if existing.get(key, "") != value:
+                        needs_update = True
+                        break
+                
+                if needs_update:
+                    self.update_site(domain, site_data)
+                    updated += 1
+                else:
+                    skipped += 1
             else:
                 self.add_site(site_data)
                 created += 1
 
-        log.info(f"Excel导入完成: 新增 {created}, 更新 {updated}")
-        return {"created": created, "updated": updated}
+        log.info(f"Excel导入完成: 新增 {created}, 更新 {updated}, 跳过 {skipped}, 错误 {len(errors)}")
+        return {
+            "created": created,
+            "updated": updated,
+            "skipped": skipped,
+            "errors": errors
+        }
 
     def export_reported_weekly(self, keyword: str = "") -> list[dict]:
         """导出本周已报域名数据"""
@@ -368,7 +388,7 @@ class SiteDBClient:
             "erp_username": "linwei",
             "erp_password": "linwei123",
             "wp_password": "",
-            "media_root": "D:\\logo",
+            "media_root": "logo",
         }
         for key, value in defaults.items():
             existing = self.get_setting(key)
@@ -564,6 +584,26 @@ class SiteDBClient:
             {"$set": {"auto_category_status": status, "auto_category_time": ts, "updated_at": ts}}
         )
         return result.modified_count
+
+    def update_domain_status(self, domain: str, report_id: str, domain_status: str) -> bool:
+        """更新域名状态（从上报API同步）"""
+        ts = datetime.utcnow().isoformat()
+        updates = {
+            "report_id": report_id,
+            "domain_status": domain_status,
+            "domain_status_time": ts,
+            "updated_at": ts,
+        }
+        result = self.sites.update_one(
+            {"domain": domain, "report_status": "已报"},
+            {"$set": updates}
+        )
+        return result.modified_count > 0
+
+    def list_reported_domains_for_sync(self) -> list[dict]:
+        """列出所有已报域名用于同步状态"""
+        query = {"report_status": "已报"}
+        return list(self.sites.find(query, {"domain": 1, "report_id": 1, "domain_status": 1}))
 
     def batch_update_login_path(self, site_ids: list[str], login_path: str) -> int:
         """批量更新登录路径"""

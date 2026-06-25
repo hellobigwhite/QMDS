@@ -67,8 +67,42 @@ def load_category_names(category: str) -> set[str]:
 
 
 def match_title(category: str, title: str) -> bool:
-    """判断 collection title 是否与类目分类完全匹配（忽略大小写）"""
+    """判断 collection title 是否与类目分类匹配（忽略大小写）
+
+    匹配规则：
+    1. 完全匹配：title 在分类名称集合中
+    2. 单词匹配：title 和分类名称有相同的单词（长度>=3，排除通用词）
+    """
     if not title:
         return False
+    title_lower = title.strip().lower()
     names = load_category_names(category)
-    return title.strip().lower() in names
+    
+    # 排除的通用词
+    excluded_words = {"all", "the", "and", "for", "with", "new", "sale", "shop", "best", "top"}
+    
+    # 完全匹配
+    if title_lower in names:
+        return True
+    
+    # 单词匹配：将 title 拆分为单词集合
+    title_words = set(title_lower.split())
+    # 过滤掉过短和通用词
+    title_words = {w for w in title_words if len(w) >= 3 and w not in excluded_words}
+    
+    if not title_words:
+        return False
+    
+    for name in names:
+        # 分类名也要拆分为单词
+        name_words = set(name.split())
+        name_words = {w for w in name_words if len(w) >= 3 and w not in excluded_words}
+        
+        if not name_words:
+            continue
+        
+        # 检查是否有交集（单词级别匹配）
+        if title_words & name_words:
+            return True
+    
+    return False

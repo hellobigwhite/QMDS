@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card" style="max-width:1200px;margin:0 auto;">
+    <h2>✏️ 编辑筛选记录</h2>
+    <p class="text-muted" style="margin-bottom:16px;">
+        类目: <strong>{{ category }}</strong> | 
+        数据来源: <code>{{ category }}_filtered</code>
+    </p>
+
+    <form method="post">
+        <div class="form-group">
+            <label for="domain">域名</label>
+            <input type="text" id="domain" name="domain" value="{{ doc.domain }}" required>
+        </div>
+        <div class="form-group">
+            <label for="store_url">店铺 URL</label>
+            <input type="text" id="store_url" name="store_url" value="{{ doc.store_url }}" required>
+        </div>
+        <div class="form-group">
+            <label for="url">Collection URL</label>
+            <input type="text" id="url" name="url" value="{{ doc.url }}" required>
+        </div>
+        <div class="form-group">
+            <label for="collection_title">Collection 标题</label>
+            <input type="text" id="collection_title" name="collection_title" value="{{ doc.collection_title }}">
+        </div>
+        <div class="form-group">
+            <label for="collection_handle">Collection Handle</label>
+            <input type="text" id="collection_handle" name="collection_handle" value="{{ doc.collection_handle }}">
+        </div>
+        
+        <div style="display:flex;gap:12px;margin-top:20px;">
+            <button type="submit" class="btn btn-primary">保存修改</button>
+            <a href="/shopify/filter-categories?category={{ category }}" class="btn btn-secondary">返回列表</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

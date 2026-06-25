@@ -1,0 +1,676 @@
+{% extends "base.html" %}
+
+{% block content %}
+<style>
+  .section { background: #fff; border-radius: 10px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+  .section h3 { margin-top: 0; margin-bottom: 12px; font-size: 16px; border-left: 3px solid #4fc3f7; padding-left: 10px; }
+  .log-box { background: #1e1e1e; color: #ccc; font-family: 'Cascadia Code','Consolas',monospace; font-size: 13px; padding: 12px; border-radius: 6px; height: 360px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; line-height: 1.6; }
+  .log-box .success { color: #4caf50; }
+  .log-box .error { color: #ef5350; }
+  .log-box .warn { color: #ff9800; }
+  .flex-gap { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; text-align: center; max-width: 560px; }
+  .cal-grid .cal-hdr { font-weight: bold; padding: 4px; background: #f8f8f8; }
+  .cal-grid .cal-day { padding: 4px 2px; min-height: 36px; border: 1px solid #eee; font-size: 12px; cursor: pointer; border-radius: 2px; transition: background .15s; }
+  .cal-grid .cal-day:hover { background: #e3f2fd; }
+  .cal-grid .cal-day.has-order { background: #e8f5e9; border-color: #c8e6c9; }
+  .cal-grid .cal-day .day-num { font-weight: bold; font-size: 13px; }
+  .cal-grid .cal-day .day-stat { color: #999; font-size: 10px; }
+  .cal-grid .cal-day.other-month { color: #ccc; cursor: default; }
+  .cal-grid .cal-day.other-month:hover { background: transparent; }
+  .cal-grid .cal-day.range-start { background: #1a1a2e !important; color: #fff; border-color: #16213e; }
+  .cal-grid .cal-day.range-start .day-stat { color: rgba(255,255,255,.7); }
+  .cal-grid .cal-day.range-end { background: #16213e !important; color: #fff; border-color: #0d1525; }
+  .cal-grid .cal-day.range-end .day-stat { color: rgba(255,255,255,.7); }
+  .cal-grid .cal-day.range-mid { background: #e8eaf6 !important; border-color: #c5cae9; }
+  .top-bar { background: linear-gradient(135deg, #1a1a2e, #16213e); padding: 14px 20px; border-radius: 10px 10px 0 0; color: #fff; }
+  .top-bar select, .top-bar input { background: rgba(255,255,255,.9); border: none; border-radius: 4px; padding: 5px 8px; font-size: 13px; }
+  .top-bar .big-select { min-width: 220px; font-size: 14px; padding: 6px 10px; }
+  .top-bar input[type=date] { width: 130px; }
+  .top-bar label { color: rgba(255,255,255,.8); font-size: 12px; }
+  .cal-wrap { background: #fff; padding: 12px 20px 16px; border-radius: 0 0 10px 10px; margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+  .pager { text-align: center; margin-top: 12px; }
+  .pager button { margin: 0 2px; }
+  .svr-row { cursor: pointer; }
+  .svr-row:hover td { background: #e3f2fd; }
+</style>
+
+<div class="top-bar">
+  <div class="flex-gap" style="flex-wrap:wrap">
+    <select class="big-select" id="topSvrSelect"><option value="">-- 选择IP --</option></select>
+    <select style="width:90px" id="topYear"></select><label>年</label>
+    <select style="width:72px" id="topMonth"></select><label>月</label>
+    <input type="date" id="dateFrom"><label>从</label>
+    <input type="date" id="dateTo"><label>至</label>
+    <button class="btn btn-sm" id="btnClearRange" style="background:rgba(255,255,255,.2);border:none;color:#fff">清除</button>
+    <button class="btn btn-sm" id="topBtnFetch" style="background:#4fc3f7;color:#1a1a2e">抓取IP</button>
+    <button class="btn btn-sm" id="topBtnFetchAll" style="color:#fff;border-color:rgba(255,255,255,.5);background:transparent">抓取全部</button>
+  </div>
+</div>
+
+<div class="cal-wrap">
+  <div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap">
+    <div><div id="calendar"></div></div>
+    <div style="font-size:13px;color:#666;padding-top:4px" id="rangeInfo"></div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>定时任务管理
+    <div style="float:right;display:flex;gap:6px">
+      <button class="btn btn-sm" id="btnSchedulerStart" style="background:#4caf50;color:#fff">启动定时任务</button>
+      <button class="btn btn-sm" id="btnSchedulerStop" style="background:#f44336;color:#fff">停止定时任务</button>
+      <button class="btn btn-sm" id="btnSchedulerRunNow" style="background:#ff9800;color:#fff">立即执行一次</button>
+    </div>
+  </h3>
+  <div style="display:flex;gap:20px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+    <div style="padding:12px 16px;background:#e3f2fd;border-radius:6px;flex:1;min-width:200px">
+      <div style="font-size:12px;color:#666;margin-bottom:4px">定时任务状态</div>
+      <div id="schedulerStatus" style="font-size:16px;font-weight:bold;color:#1a1a2e">未启动</div>
+    </div>
+    <div style="padding:12px 16px;background:#e8f5e9;border-radius:6px;flex:1;min-width:200px">
+      <div style="font-size:12px;color:#666;margin-bottom:4px">执行时间</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="number" id="schedulerHour" min="0" max="23" value="8" style="width:60px;padding:4px 8px;border:1px solid #ddd;border-radius:4px;text-align:center">
+        <span>:</span>
+        <input type="number" id="schedulerMinute" min="0" max="59" value="0" style="width:60px;padding:4px 8px;border:1px solid #ddd;border-radius:4px;text-align:center">
+        <button class="btn btn-sm" id="btnSetScheduleTime" style="background:#4fc3f7;color:#1a1a2e">设置</button>
+      </div>
+    </div>
+    <div style="padding:12px 16px;background:#fff3e0;border-radius:6px;flex:1;min-width:200px">
+      <div style="font-size:12px;color:#666;margin-bottom:4px">上次执行</div>
+      <div id="schedulerLastRun" style="font-size:14px;color:#333">-</div>
+    </div>
+    <div style="padding:12px 16px;background:#fce4ec;border-radius:6px;flex:1;min-width:200px">
+      <div style="font-size:12px;color:#666;margin-bottom:4px">下次执行</div>
+      <div id="schedulerNextRun" style="font-size:14px;color:#333">-</div>
+    </div>
+  </div>
+  <div id="schedulerLog" style="display:none;margin-top:12px">
+    <div style="font-size:13px;color:#666;margin-bottom:4px">定时任务日志</div>
+    <div class="log-box" id="schedulerLogBox" style="height:200px"></div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>服务器管理 
+    <div style="float:right;display:flex;gap:6px">
+      <button class="btn btn-sm" id="btnSyncServers" style="background:#4fc3f7;color:#1a1a2e">从上报平台同步</button>
+      <button class="btn btn-sm btn-primary" id="btnShowAdd">+ 添加</button>
+    </div>
+  </h3>
+  <div id="addForm" style="display:none;margin-bottom:12px;border:1px solid #eee;padding:12px;border-radius:6px">
+    <div class="flex-gap">
+      <input type="text" id="svrDomain" placeholder="域名" style="width:160px;padding:6px 10px;border:1px solid #d9d9d9;border-radius:4px">
+      <input type="text" id="svrIp" placeholder="IP" style="width:120px;padding:6px 10px;border:1px solid #d9d9d9;border-radius:4px">
+      <input type="text" id="svrMainCat" placeholder="主类目" style="width:120px;padding:6px 10px;border:1px solid #d9d9d9;border-radius:4px">
+      <button class="btn btn-primary btn-sm" id="btnSaveServer">保存</button>
+      <button class="btn btn-sm" id="btnCancelAdd" style="background:#eee;color:#333">取消</button>
+    </div>
+  </div>
+  <div style="overflow-x:auto;">
+    <table>
+      <thead><tr><th>ID</th><th>域名</th><th>IP</th><th>主类目</th><th>操作</th></tr></thead>
+      <tbody id="svrTableBody"></tbody>
+    </table>
+  </div>
+  <div id="svrPager" class="pager"></div>
+</div>
+
+<div class="section">
+  <h3>各类别出单统计</h3>
+  <div id="statusSummary" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;font-size:14px"></div>
+  <div id="statusChart" style="height:280px;width:100%"></div>
+</div>
+
+<div class="section">
+  <h3>订单数据 <span style="font-size:13px;color:#999;font-weight:normal" id="orderCount"></span> <span id="ipDomains" style="font-size:12px;color:#4fc3f7;font-weight:normal"></span></h3>
+  <div style="overflow-x:auto;">
+    <table>
+      <thead><tr><th>域名</th><th>时间</th><th>状态</th><th>金额</th><th>出单类别</th></tr></thead>
+      <tbody id="orderTableBody"></tbody>
+    </table>
+  </div>
+  <div class="pager" id="orderPager"></div>
+</div>
+
+<div class="section">
+  <h3>运行日志</h3>
+  <div class="log-box" id="logBox"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<script>
+var eventSource = null;
+var servers = [];
+var currentIp = '';
+var currentYear = new Date().getFullYear();
+var currentMonth = new Date().getMonth() + 1;
+var dateFrom = null, dateTo = null;
+var selectingRange = false;
+var orderReqId = 0;
+var chartReqId = 0;
+
+function appendLog(msg, level) {
+  var box = document.getElementById('logBox');
+  if (!msg) return;
+  var t = new Date().toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  box.innerHTML += '<span class="' + level + '">[' + t + '] ' + msg + '</span>\n';
+  box.scrollTop = box.scrollHeight;
+}
+
+function listenLog(taskId) {
+  if (eventSource) { eventSource.close(); }
+  eventSource = new EventSource('/log-stream/' + taskId);
+  eventSource.onmessage = function(e) {
+    try {
+      var d = JSON.parse(e.data);
+      if (d.done) { appendLog('══════ 完成 ══════', 'success'); eventSource.close(); eventSource = null; return; }
+      appendLog(d.msg, d.level||'info');
+    } catch(ex) { console.log('SSE:', e.data); }
+  };
+  eventSource.onerror = function() {};
+}
+
+function initYearMonth() {
+  var el = document.getElementById('topYear');
+  el.innerHTML = '';
+  for (var i = new Date().getFullYear() - 1; i <= new Date().getFullYear() + 1; i++)
+    el.innerHTML += '<option value="' + i + '"' + (i == new Date().getFullYear() ? ' selected' : '') + '>' + i + '</option>';
+  el = document.getElementById('topMonth');
+  el.innerHTML = '';
+  for (var i = 1; i <= 12; i++)
+    el.innerHTML += '<option value="' + i + '"' + (i == new Date().getMonth() + 1 ? ' selected' : '') + '>' + i + '</option>';
+  currentYear = parseInt(document.getElementById('topYear').value);
+  currentMonth = parseInt(document.getElementById('topMonth').value);
+}
+
+function pad2(n) { return n < 10 ? '0' + n : '' + n; }
+
+function renderCalendar() {
+  var cal = document.getElementById('calendar');
+  var year = currentYear, month = currentMonth;
+  var first = new Date(year, month - 1, 1);
+  var last = new Date(year, month, 0);
+  var startDow = first.getDay();
+  var daysInMonth = last.getDate();
+  var html = '<div class="cal-grid">';
+  ['日','一','二','三','四','五','六'].forEach(function(d) { html += '<div class="cal-hdr">' + d + '</div>'; });
+  for (var i = 0; i < startDow; i++) html += '<div class="cal-day other-month"></div>';
+  for (var d = 1; d <= daysInMonth; d++) {
+    var cls = 'cal-day';
+    var dateStr = year + '-' + pad2(month) + '-' + pad2(d);
+    if (dateFrom) {
+      var end = dateTo || dateFrom;
+      if (dateStr == dateFrom && dateStr == end) cls += ' range-start range-end';
+      else if (dateStr == dateFrom) cls += ' range-start';
+      else if (dateStr == end) cls += ' range-end';
+      else if (dateStr > dateFrom && dateStr < end) cls += ' range-mid';
+    }
+    html += '<div class="' + cls + '" data-date="' + dateStr + '"><div class="day-num">' + d + '</div><div class="day-stat"></div></div>';
+  }
+  html += '</div>';
+  cal.innerHTML = html;
+  if (currentIp !== null && currentIp !== undefined) loadCalStats(currentIp);
+}
+
+document.getElementById('calendar').addEventListener('click', function(e) {
+  var day = e.target.closest('.cal-day');
+  if (!day || day.classList.contains('other-month')) return;
+  var dateStr = day.getAttribute('data-date');
+  if (!selectingRange || dateFrom === null) {
+    dateFrom = dateStr; dateTo = null; selectingRange = true;
+    document.getElementById('dateFrom').value = dateStr;
+    document.getElementById('dateTo').value = '';
+  } else {
+    if (dateStr < dateFrom) { dateTo = dateFrom; dateFrom = dateStr; }
+    else dateTo = dateStr;
+    selectingRange = false;
+    document.getElementById('dateTo').value = dateTo;
+  }
+  renderCalendar(); updateRangeInfo();
+  if (currentIp) loadOrders(currentIp, 1);
+});
+
+document.getElementById('btnClearRange').addEventListener('click', function() {
+  dateFrom = null; dateTo = null; selectingRange = false;
+  document.getElementById('dateFrom').value = '';
+  document.getElementById('dateTo').value = '';
+  renderCalendar(); updateRangeInfo();
+  if (currentIp) loadOrders(currentIp, 1);
+});
+
+function updateRangeInfo() {
+  var el = document.getElementById('rangeInfo');
+  if (dateFrom && dateTo && dateFrom != dateTo) el.textContent = '日期区间: ' + dateFrom + ' → ' + dateTo;
+  else if (dateFrom) el.textContent = '查询日期: ' + dateFrom + ' (再点选择区间)';
+  else el.textContent = '点击日历日期查询当天，再点选择区间';
+}
+
+function loadCalStats(ip) {
+  var url = '/api/order-stats?ip=' + encodeURIComponent(ip);
+  if (dateFrom) url += '&date_from=' + dateFrom + '&date_to=' + (dateTo || dateFrom);
+  else url += '&year=' + currentYear + '&month=' + currentMonth;
+  fetch(url).then(function(r){return r.json()}).then(function(stats) {
+    stats.forEach(function(s) {
+      var ds = (s.d||'').slice(0,10);
+      var el = document.querySelector('.cal-day[data-date="' + ds + '"]');
+      if (el) {
+        el.classList.add('has-order');
+        el.querySelector('.day-stat').textContent = s.cnt + '单';
+      }
+    });
+  }).catch(function(){});
+}
+
+function loadServers() {
+  fetch('/api/servers').then(function(r){return r.json()}).then(function(data) {
+    servers = Array.isArray(data) ? data : (data.data || []);
+  });
+  fetch('/api/ips').then(function(r){return r.json()}).then(function(ips) {
+    var sel = document.getElementById('topSvrSelect');
+    sel.innerHTML = '<option value="">-- 所有服务器 --</option>';
+    ips.forEach(function(ip) { sel.innerHTML += '<option value="' + ip + '">' + ip + '</option>'; });
+    sel.value = '';
+    sel.onchange();
+  });
+  loadServerTable(1);
+}
+
+var currSvrPage = 1;
+
+function loadServerTable(page) {
+  currSvrPage = page || 1;
+  fetch('/api/servers?page=' + currSvrPage + '&limit=20').then(function(r){return r.json()}).then(function(data) {
+    var rows = Array.isArray(data) ? data : (data.data || []);
+    var total = data.total || rows.length;
+    var limit = data.limit || 20;
+    var tbody = document.getElementById('svrTableBody');
+    tbody.innerHTML = '';
+    rows.forEach(function(s) {
+      tbody.innerHTML += '<tr class="svr-row" data-ip="' + (s.ip||'') + '"><td>' + s.id + '</td><td>' + s.domain + '</td><td>' + (s.ip||'') + '</td><td>' + (s.main_category||'') + '</td><td>' +
+        '<button class="btn btn-sm btn-success fetch-one" data-id="' + s.id + '">抓取</button> ' +
+        '<button class="btn btn-sm edit-svr" data-id="' + s.id + '" style="background:#eee;color:#333">编辑</button> ' +
+        '<button class="btn btn-sm del-svr" data-id="' + s.id + '" style="background:#ef5350;color:#fff">删除</button></td></tr>';
+    });
+    // 渲染分页
+    var el = document.getElementById('svrPager');
+    var tp = Math.ceil(total / limit);
+    if (tp <= 1) { el.innerHTML = ''; return; }
+    var h = '';
+    h += '<button class="btn btn-sm svr-page-btn" data-page="' + (currSvrPage-1) + '"' + (currSvrPage<=1?' disabled':'') + '>上一页</button>';
+    var s = Math.max(1, currSvrPage-3), e = Math.min(tp, currSvrPage+3);
+    if (s > 1) h += '<button class="btn btn-sm svr-page-btn" data-page="1">1</button>...';
+    for (var i = s; i <= e; i++) h += '<button class="btn btn-sm svr-page-btn' + (i==currSvrPage?' btn-primary':'') + '" data-page="' + i + '">' + i + '</button>';
+    if (e < tp) h += '...<button class="btn btn-sm svr-page-btn" data-page="' + tp + '">' + tp + '</button>';
+    h += '<button class="btn btn-sm svr-page-btn" data-page="' + (currSvrPage+1) + '"' + (currSvrPage>=tp?' disabled':'') + '>下一页</button>';
+    h += '<span style="margin-left:8px;color:#666;font-size:13px">' + currSvrPage + '/' + tp + ' (共' + total + '条)</span>';
+    el.innerHTML = h;
+  });
+}
+
+document.addEventListener('click', function(e) {
+  var btn = e.target.closest('.svr-page-btn');
+  if (!btn || btn.disabled) return;
+  var p = parseInt(btn.getAttribute('data-page'));
+  if (!isNaN(p)) loadServerTable(p);
+});
+
+document.addEventListener('click', function(e) {
+  var row = e.target.closest('.svr-row');
+  if (row) {
+    var ip = row.getAttribute('data-ip');
+    if (ip) { document.getElementById('topSvrSelect').value = ip; document.getElementById('topSvrSelect').onchange(); }
+  }
+});
+
+document.addEventListener('click', function(e) {
+  var btn = e.target.closest('.del-svr');
+  if (btn && confirm('确认删除？')) {
+    fetch('/api/servers/' + btn.getAttribute('data-id'), {method:'DELETE'}).then(function(){loadServers();});
+  }
+});
+
+document.addEventListener('click', function(e) {
+  var btn = e.target.closest('.edit-svr');
+  if (!btn) return;
+  var id = parseInt(btn.getAttribute('data-id'));
+  var svr = servers.find(function(s){return s.id==id});
+  if (!svr) return;
+  document.getElementById('svrDomain').value = svr.domain;
+  document.getElementById('svrIp').value = svr.ip||'';
+  document.getElementById('svrMainCat').value = svr.main_category||'';
+  document.getElementById('addForm').style.display = 'block';
+  document.getElementById('btnSaveServer').dataset.editId = id;
+});
+
+document.getElementById('btnShowAdd').addEventListener('click', function() {
+  document.getElementById('addForm').style.display = 'block';
+  document.getElementById('btnSaveServer').dataset.editId = '';
+  document.getElementById('svrDomain').value = '';
+  document.getElementById('svrIp').value = '';
+  document.getElementById('svrMainCat').value = '';
+});
+
+document.getElementById('btnCancelAdd').addEventListener('click', function() {
+  document.getElementById('addForm').style.display = 'none';
+});
+
+document.getElementById('btnSaveServer').addEventListener('click', function() {
+  var id = this.dataset.editId;
+  var data = {domain: document.getElementById('svrDomain').value.trim(), ip: document.getElementById('svrIp').value.trim(), main_category: document.getElementById('svrMainCat').value.trim()};
+  if (!data.domain) { alert('请填写域名'); return; }
+  var url = '/api/servers' + (id ? '/' + id : '');
+  var method = id ? 'PUT' : 'POST';
+  fetch(url, {method:method, headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)}).then(function(r){return r.json()}).then(function(d) {
+    if (d.error) { alert(d.error); return; }
+    document.getElementById('addForm').style.display = 'none';
+    loadServers();
+  });
+});
+
+document.getElementById('btnSyncServers').addEventListener('click', function() {
+  if (!confirm('确定从上报平台同步服务器数据？')) return;
+  var btn = this;
+  btn.disabled = true;
+  btn.textContent = '同步中...';
+  fetch('/api/servers/sync', {method:'POST', headers:{'Content-Type':'application/json'}}).then(function(r){return r.json()}).then(function(d) {
+    btn.disabled = false;
+    btn.textContent = '从上报平台同步';
+    if (d.error) { alert(d.error); return; }
+    alert('同步完成：新增 ' + d.added + ' 个，更新 ' + d.updated + ' 个，共 ' + d.total + ' 条');
+    loadServers();
+  }).catch(function(e) {
+    btn.disabled = false;
+    btn.textContent = '从上报平台同步';
+    alert('同步失败: ' + e);
+  });
+});
+
+function doFetch(url, label, extra) {
+  document.getElementById('logBox').innerHTML = '';
+  var body = {};
+  body.year = currentYear; body.month = currentMonth;
+  if (dateFrom) { body.date_from = dateFrom; body.date_to = dateTo || dateFrom; }
+  if (extra) { for (var k in extra) body[k] = extra[k]; }
+  fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)}).then(function(r){return r.json()}).then(function(data) {
+    if (data.error) { alert(data.error); return; }
+    var rangeTxt = dateFrom ? ' (' + (dateTo||dateFrom) + ')' : '';
+    appendLog(label + ' | ' + currentYear + '-' + currentMonth + rangeTxt, 'info');
+    listenLog(data.task_id);
+  }).catch(function(){alert('请求失败');});
+}
+
+document.getElementById('topBtnFetch').addEventListener('click', function() {
+  var ip = document.getElementById('topSvrSelect').value;
+  if (!ip) { alert('请选择IP'); return; }
+  doFetch('/api/fetch-one', '抓取 ' + ip, {ip: ip});
+});
+
+document.getElementById('topBtnFetchAll').addEventListener('click', function() {
+  doFetch('/api/fetch-all', '抓取全部');
+});
+
+document.addEventListener('click', function(e) {
+  var btn = e.target.closest('.fetch-one');
+  if (!btn) return;
+  document.getElementById('logBox').innerHTML = '';
+  fetch('/api/fetch-one', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({server_id: parseInt(btn.getAttribute('data-id')), year: currentYear, month: currentMonth, date_from: dateFrom, date_to: dateTo || dateFrom})}).then(function(r){return r.json()}).then(function(data) {
+    if (data.error) { alert(data.error); return; }
+    listenLog(data.task_id);
+  });
+});
+
+function loadOrders(ip, page) {
+  var myId = ++orderReqId;
+  var url = '/api/orders?ip=' + encodeURIComponent(ip) + '&page=' + (page||1) + '&limit=30';
+  if (dateFrom) url += '&date_from=' + dateFrom + '&date_to=' + (dateTo || dateFrom);
+  else url += '&year=' + currentYear + '&month=' + currentMonth;
+  fetch(url).then(function(r){return r.json()}).then(function(data) {
+    if (myId != orderReqId) return;
+    if (data.error) { document.getElementById('orderTableBody').innerHTML = '<tr><td colspan="5">' + data.error + '</td></tr>'; return; }
+    document.getElementById('orderCount').textContent = '共 ' + data.total + ' 条';
+    var tbody = document.getElementById('orderTableBody');
+    tbody.innerHTML = '';
+    var sm = {'completed':'已完成','processing':'处理中','pending':'待付款','pending payment':'待付款','on-hold':'暂停','cancelled':'已取消','refunded':'已退款','failed':'失败'};
+    (data.data||[]).forEach(function(o) {
+      tbody.innerHTML += '<tr><td>' + (o.domain||'') + '</td><td>' + (o.order_time||'').slice(0,19).replace('T',' ') + '</td><td>' + (sm[o.order_status]||o.order_status) + '</td><td>$ ' + parseFloat(o.order_amount||0).toFixed(2) + '</td><td>' + (o.order_category||'') + '</td></tr>';
+    });
+    renderPager(data.total, data.limit, page);
+    renderCalendar();
+    renderStatusChart(ip);
+  }).catch(function(e) { console.error('loadOrders fail:', e); });
+}
+
+function renderPager(total, limit, cur) {
+  var el = document.getElementById('orderPager');
+  var tp = Math.ceil(total / limit);
+  if (tp <= 1) { el.innerHTML = ''; return; }
+  var h = '';
+  h += '<button class="btn btn-sm page-btn" data-page="' + (cur-1) + '"' + (cur<=1?' disabled':'') + '>上一页</button>';
+  var s = Math.max(1, cur-3), e = Math.min(tp, cur+3);
+  if (s > 1) h += '<button class="btn btn-sm page-btn" data-page="1">1</button>...';
+  for (var i = s; i <= e; i++) h += '<button class="btn btn-sm page-btn' + (i==cur?' btn-primary':'') + '" data-page="' + i + '">' + i + '</button>';
+  if (e < tp) h += '...<button class="btn btn-sm page-btn" data-page="' + tp + '">' + tp + '</button>';
+  h += '<button class="btn btn-sm page-btn" data-page="' + (cur+1) + '"' + (cur>=tp?' disabled':'') + '>下一页</button>';
+  el.innerHTML = h;
+}
+
+document.addEventListener('click', function(e) {
+  var btn = e.target.closest('.page-btn');
+  if (!btn || btn.disabled) return;
+  var p = parseInt(btn.getAttribute('data-page'));
+  if (!isNaN(p)) loadOrders(currentIp || '', p);
+});
+
+document.getElementById('topSvrSelect').onchange = function() {
+  var ip = this.value;
+  currentIp = ip;
+  var dl = document.getElementById('ipDomains');
+  if (ip) {
+    var doms = servers.filter(function(s){return s.ip==ip}).map(function(s){return s.domain});
+    dl.textContent = '› ' + doms.join(', ');
+  } else {
+    dl.textContent = '› 所有服务器';
+  }
+  loadOrders(ip, 1); renderCalendar(); renderStatusChart(ip);
+};
+
+document.getElementById('topYear').onchange = function() {
+  currentYear = parseInt(this.value);
+  renderCalendar();
+  if (currentIp) { loadOrders(currentIp, 1); renderStatusChart(currentIp); }
+};
+document.getElementById('topMonth').onchange = function() {
+  currentMonth = parseInt(this.value);
+  renderCalendar();
+  if (currentIp) { loadOrders(currentIp, 1); renderStatusChart(currentIp); }
+};
+
+var statusChart = null;
+
+function renderStatusChart(ip) {
+  if (ip == null) return;
+  if (typeof echarts === 'undefined') return;
+  var myId = ++chartReqId;
+  if (!statusChart) statusChart = echarts.init(document.getElementById('statusChart'));
+  var url = '/api/order-status-stats?ip=' + encodeURIComponent(ip);
+  if (dateFrom) url += '&date_from=' + dateFrom + '&date_to=' + (dateTo || dateFrom);
+  else url += '&year=' + currentYear + '&month=' + currentMonth;
+  fetch(url).then(function(r){return r.json()}).then(function(data) {
+    if (myId != chartReqId) return;
+    if (!data.length) { statusChart.clear(); statusChart.setOption({title:{text:'暂无数据',left:'center',top:'center',textStyle:{fontSize:14,color:'#999'}}}); document.getElementById('statusSummary').innerHTML = ''; return; }
+    var sm = {'completed':'已完成','processing':'处理中','pending payment':'待付款','pending':'pending','on-hold':'暂停','cancelled':'已取消','refunded':'已退款','failed':'失败'};
+    var statusColors = {'completed':'#4caf50','processing':'#2196f3','pending payment':'#ef5350','pending':'#ff9800','on-hold':'#9c27b0','cancelled':'#607d8b','refunded':'#ff5722','failed':'#f44336'};
+    var categories = [], statuses = [];
+    var catMap = {};
+    data.forEach(function(d) {
+      if (catMap[d.order_category] === undefined) { catMap[d.order_category] = {}; categories.push(d.order_category); }
+      catMap[d.order_category][d.order_status] = d.cnt;
+      if (statuses.indexOf(d.order_status) === -1) statuses.push(d.order_status);
+    });
+    var series = statuses.map(function(s) {
+      return {
+        name: sm[s] || s,
+        type: 'bar',
+        barMaxWidth: 40,
+        itemStyle: {color: statusColors[s] || '#999'},
+        data: categories.map(function(c) { return catMap[c][s] || 0; }),
+        label: {show: true, position: 'top', formatter: function(p) { return p.value || ''; }}
+      };
+    });
+    statusChart.setOption({
+      tooltip: {trigger: 'axis', formatter: function(p) {
+        var html = p[0].axisValue + '<br/>';
+        p.forEach(function(pp) { if (pp.value) html += pp.marker + ' ' + pp.seriesName + ': ' + pp.value + ' 单<br/>'; });
+        return html;
+      }},
+      legend: {data: statuses.map(function(s){return sm[s]||s}), bottom: 0},
+      grid: {left:'8%',right:'6%',bottom:'18%',top:'8%'},
+      xAxis: {type:'category', data: categories, axisLabel:{rotate:15,fontSize:11}},
+      yAxis: {type:'value', name: '单数'},
+      series: series
+    });
+    var totalCnt = 0, totalRev = 0, totals = {};
+    data.forEach(function(d) {
+      totals[d.order_status] = totals[d.order_status] || {cnt:0, rev:0};
+      totals[d.order_status].cnt += d.cnt;
+      totals[d.order_status].rev += parseFloat(d.revenue||0);
+      totalCnt += d.cnt;
+      totalRev += parseFloat(d.revenue||0);
+    });
+    var sumHtml = '';
+    statuses.forEach(function(s) {
+      var t = totals[s] || {cnt:0, rev:0};
+      sumHtml += '<div style="padding:8px 16px;border-radius:6px;background:' + (statusColors[s]||'#999') + '20;border:1px solid ' + (statusColors[s]||'#999') + '40;color:#333">' +
+        '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + (statusColors[s]||'#999') + ';margin-right:6px"></span>' +
+        '<strong>' + (sm[s]||s) + '</strong>: <span style="font-size:18px;font-weight:bold">' + t.cnt + '</span> 单 <span style="color:#888;font-size:13px">$' + t.rev.toFixed(2) + '</span></div>';
+    });
+    sumHtml += '<div style="padding:8px 16px;border-radius:6px;background:#f5f5f5;border:1px solid #ddd;color:#333"><strong>合计</strong>: <span style="font-size:18px;font-weight:bold">' + totalCnt + '</span> 单 <span style="color:#888;font-size:13px">$' + totalRev.toFixed(2) + '</span></div>';
+    document.getElementById('statusSummary').innerHTML = sumHtml;
+  }).catch(function(){});
+}
+
+// 定时任务控制
+var schedulerEventSource = null;
+
+function loadSchedulerStatus() {
+  fetch('/api/scheduler/status').then(function(r){return r.json()}).then(function(data) {
+    var statusEl = document.getElementById('schedulerStatus');
+    var lastRunEl = document.getElementById('schedulerLastRun');
+    var nextRunEl = document.getElementById('schedulerNextRun');
+    
+    if (data.running) {
+      statusEl.textContent = '运行中';
+      statusEl.style.color = '#4caf50';
+    } else if (data.status === 'error') {
+      statusEl.textContent = '错误';
+      statusEl.style.color = '#f44336';
+    } else {
+      statusEl.textContent = '未启动';
+      statusEl.style.color = '#999';
+    }
+    
+    if (data.schedule) {
+      var parts = data.schedule.split(':');
+      document.getElementById('schedulerHour').value = parts[0];
+      document.getElementById('schedulerMinute').value = parts[1];
+    }
+    
+    lastRunEl.textContent = data.last_run ? new Date(data.last_run).toLocaleString('zh-CN') : '-';
+    nextRunEl.textContent = data.next_run ? new Date(data.next_run).toLocaleString('zh-CN') : '-';
+    
+    if (data.last_error) {
+      lastRunEl.innerHTML += '<br><span style="color:#f44336;font-size:12px">错误: ' + data.last_error + '</span>';
+    }
+  }).catch(function(e) {
+    console.error('获取调度器状态失败:', e);
+  });
+}
+
+function appendSchedulerLog(msg, level) {
+  var box = document.getElementById('schedulerLogBox');
+  if (!msg) return;
+  var t = new Date().toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  box.innerHTML += '<span class="' + level + '">[' + t + '] ' + msg + '</span>\n';
+  box.scrollTop = box.scrollHeight;
+}
+
+function listenSchedulerLog(taskId) {
+  document.getElementById('schedulerLog').style.display = 'block';
+  document.getElementById('schedulerLogBox').innerHTML = '';
+  
+  if (schedulerEventSource) { schedulerEventSource.close(); }
+  schedulerEventSource = new EventSource('/api/scheduler/log/' + taskId);
+  schedulerEventSource.onmessage = function(e) {
+    try {
+      var d = JSON.parse(e.data);
+      if (d.done) { 
+        appendSchedulerLog('══════ 完成 ══════', 'success'); 
+        schedulerEventSource.close(); 
+        schedulerEventSource = null; 
+        loadSchedulerStatus();
+        return; 
+      }
+      appendSchedulerLog(d.msg, d.level||'info');
+    } catch(ex) { console.log('SSE:', e.data); }
+  };
+  schedulerEventSource.onerror = function() {};
+}
+
+document.getElementById('btnSchedulerStart').addEventListener('click', function() {
+  fetch('/api/scheduler/start', {method:'POST', headers:{'Content-Type':'application/json'}}).then(function(r){return r.json()}).then(function(data) {
+    if (data.error) { alert(data.error); return; }
+    alert(data.message);
+    loadSchedulerStatus();
+  }).catch(function(e) { alert('启动失败: ' + e); });
+});
+
+document.getElementById('btnSchedulerStop').addEventListener('click', function() {
+  fetch('/api/scheduler/stop', {method:'POST', headers:{'Content-Type':'application/json'}}).then(function(r){return r.json()}).then(function(data) {
+    if (data.error) { alert(data.error); return; }
+    alert(data.message);
+    loadSchedulerStatus();
+  }).catch(function(e) { alert('停止失败: ' + e); });
+});
+
+document.getElementById('btnSchedulerRunNow').addEventListener('click', function() {
+  if (!confirm('确定立即执行一次订单更新？')) return;
+  fetch('/api/scheduler/run-now', {method:'POST', headers:{'Content-Type':'application/json'}}).then(function(r){return r.json()}).then(function(data) {
+    if (data.error) { alert(data.error); return; }
+    alert(data.message);
+    listenSchedulerLog(data.task_id);
+    loadSchedulerStatus();
+  }).catch(function(e) { alert('执行失败: ' + e); });
+});
+
+document.getElementById('btnSetScheduleTime').addEventListener('click', function() {
+  var hour = parseInt(document.getElementById('schedulerHour').value);
+  var minute = parseInt(document.getElementById('schedulerMinute').value);
+  if (isNaN(hour) || isNaN(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    alert('请输入有效的时间 (0-23:0-59)');
+    return;
+  }
+  fetch('/api/scheduler/set-time', {
+    method:'POST', 
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({hour: hour, minute: minute})
+  }).then(function(r){return r.json()}).then(function(data) {
+    if (data.error) { alert(data.error); return; }
+    alert(data.message);
+    loadSchedulerStatus();
+  }).catch(function(e) { alert('设置失败: ' + e); });
+});
+
+document.addEventListener('DOMContentLoaded', function() {
+  initYearMonth();
+  loadServers();
+  renderCalendar();
+  updateRangeInfo();
+  loadSchedulerStatus();
+  
+  // 每30秒刷新一次定时任务状态
+  setInterval(loadSchedulerStatus, 30000);
+});
+</script>
+{% endblock %}

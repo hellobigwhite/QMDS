@@ -43,7 +43,25 @@
             </div>
             <div>
                 <label>素材根目录</label>
-                <input type="text" name="media_root" value="{{ settings.media_root|default('D:\\logo') }}">
+                <input type="text" name="media_root" value="{{ settings.media_root|default('logo') }}">
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>SEO 收录查询配置</h2>
+        <div class="grid-2">
+            <div>
+                <label>Google 代理地址</label>
+                <input type="text" name="seo_proxy" value="{{ settings.seo_proxy|default('') }}" 
+                       placeholder="http://user:pass@host:port">
+                <small style="color:#666;font-size:12px;">用于访问Google查询网站收录</small>
+            </div>
+            <div>
+                <label>SerpAPI Key（推荐）</label>
+                <input type="text" name="seo_api_key" value="{{ settings.seo_api_key|default('') }}" 
+                       placeholder="从 serpapi.com 获取的 API Key">
+                <small style="color:#666;font-size:12px;">使用SerpAPI更稳定，<a href="https://serpapi.com" target="_blank">获取API Key</a></small>
             </div>
         </div>
     </div>

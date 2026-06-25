@@ -1,0 +1,44 @@
+{% if total is defined and total > 0 %}
+{% set total_pages = (total + page_size - 1) // page_size %}
+{% if total_pages > 1 %}
+<div style="display:flex; align-items:center; justify-content:space-between; margin-top:16px; padding-top:12px; border-top:1px solid #eee;">
+    <span style="font-size:13px; color:#666;">共 {{ total }} 条，{{ page }}/{{ total_pages }} 页</span>
+    <div style="display:flex; align-items:center; gap:4px;">
+        {% if page > 1 %}
+        <a href="?q={{ q }}&page=1" class="btn btn-sm btn-secondary">首页</a>
+        <a href="?q={{ q }}&page={{ page - 1 }}" class="btn btn-sm btn-secondary">上一页</a>
+        {% endif %}
+
+        {% set start_page = [1, page - 2] | max %}
+        {% set end_page = [total_pages, page + 2] | min %}
+
+        {% if start_page > 1 %}
+        <a href="?q={{ q }}&page=1" class="btn btn-sm btn-secondary">1</a>
+        {% if start_page > 2 %}
+        <span style="padding:0 4px; color:#999;">...</span>
+        {% endif %}
+        {% endif %}
+
+        {% for p in range(start_page, end_page + 1) %}
+            {% if p == page %}
+            <span class="btn btn-sm btn-primary">{{ p }}</span>
+            {% else %}
+            <a href="?q={{ q }}&page={{ p }}" class="btn btn-sm btn-secondary">{{ p }}</a>
+            {% endif %}
+        {% endfor %}
+
+        {% if end_page < total_pages %}
+            {% if end_page < total_pages - 1 %}
+            <span style="padding:0 4px; color:#999;">...</span>
+            {% endif %}
+        <a href="?q={{ q }}&page={{ total_pages }}" class="btn btn-sm btn-secondary">{{ total_pages }}</a>
+        {% endif %}
+
+        {% if page < total_pages %}
+        <a href="?q={{ q }}&page={{ page + 1 }}" class="btn btn-sm btn-secondary">下一页</a>
+        <a href="?q={{ q }}&page={{ total_pages }}" class="btn btn-sm btn-secondary">末页</a>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+{% endif %}

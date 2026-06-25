@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <h2>🔧 分类数据处理</h2>
+    <p class="text-muted">处理表格中分类数据，将数量过少的分类合并为公共类</p>
+</div>
+
+<div class="card">
+    <h3>📋 处理参数</h3>
+    <form method="POST" action="/tools/category-merge">
+        <div class="grid-2">
+            <div>
+                <label for="file_path">表格文件路径</label>
+                <input type="text" id="file_path" name="file_path" placeholder="例如: F:\data\products.xlsx" required>
+            </div>
+            <div>
+                <label for="threshold">分类数量阈值</label>
+                <input type="number" id="threshold" name="threshold" value="10" min="1" required>
+                <small class="text-muted">分类数据个数小于该阈值的将被合并</small>
+            </div>
+        </div>
+        <div class="grid-2">
+            <div>
+                <label for="category_field">分类字段名</label>
+                <input type="text" id="category_field" name="category_field" value="分类" required>
+                <small class="text-muted">表格中分类列的名称</small>
+            </div>
+            <div>
+                <label for="common_category">公共类名称</label>
+                <input type="text" id="common_category" name="common_category" value="Other" required>
+                <small class="text-muted">合并后的分类名称（英文）</small>
+            </div>
+        </div>
+        <div class="mt-4">
+            <button type="submit" class="btn btn-primary">🚀 开始处理</button>
+            <a href="/tools" class="btn btn-info">返回工具箱</a>
+        </div>
+    </form>
+</div>
+
+{% if result %}
+<div class="card">
+    <h3>📊 处理结果</h3>
+    <div class="result-box">
+        <div class="stat-row">
+            <span class="stat-label">处理文件</span>
+            <span class="stat-value">{{ result.file_path }}</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">数据总行数</span>
+            <span class="stat-value">{{ result.total_rows }}</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">分类字段</span>
+            <span class="stat-value">{{ result.category_field }}</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">阈值设置</span>
+            <span class="stat-value">{{ result.threshold }}</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">公共类名称</span>
+            <span class="stat-value">{{ result.common_category }}</span>
+        </div>
+    </div>
+
+    <h4 class="mt-4">📈 处理详情</h4>
+    <div class="result-box">
+        <div class="stat-row">
+            <span class="stat-label">修改前分类个数</span>
+            <span class="stat-value">{{ result.before_count }}</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">修改后分类个数</span>
+            <span class="stat-value">{{ result.after_count }}</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">被合并的分类数</span>
+            <span class="stat-value" style="color: #e65100;">{{ result.merged_count }}</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">被修改的行数</span>
+            <span class="stat-value" style="color: #c62828;">{{ result.modified_rows }}</span>
+        </div>
+    </div>
+
+    {% if result.merged_categories %}
+    <h4 class="mt-4">🗂️ 被合并的分类列表</h4>
+    <div class="result-box">
+        <div style="max-height: 300px; overflow-y: auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>原始分类</th>
+                        <th>数据条数</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for cat, count in result.merged_categories %}
+                    <tr>
+                        <td>{{ cat }}</td>
+                        <td>{{ count }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    {% if result.remaining_categories %}
+    <h4 class="mt-4">✅ 保留的分类列表</h4>
+    <div class="result-box">
+        <div style="max-height: 300px; overflow-y: auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>分类名称</th>
+                        <th>数据条数</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for cat, count in result.remaining_categories %}
+                    <tr>
+                        <td>{{ cat }}</td>
+                        <td>{{ count }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+
+{% if error %}
+<div class="card">
+    <h3>❌ 错误信息</h3>
+    <div class="result-box" style="border-color: #f8bbd0; background: #fce4ec;">
+        <p style="color: #c62828;">{{ error }}</p>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

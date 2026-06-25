@@ -24,7 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     # discover
     p_discover = sub.add_parser("discover", help="发现 Shopify 店铺")
     p_discover.add_argument("--query", "-q", default="inurl:collections/all", help="搜索关键词")
-    p_discover.add_argument("--pages", "-p", type=int, default=3, help="搜索页数")
+    p_discover.add_argument("--pages", "-p", type=int, default=0, help="搜索页数（0 表示遍历全部页面）")
     p_discover.add_argument("--output", "-o", help="输出 JSON 文件")
 
     # detect
@@ -40,7 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     # pipeline
     p_pipe = sub.add_parser("pipeline", help="完整流水线：发现→检测→提取→清洗")
     p_pipe.add_argument("--query", "-q", default="inurl:collections/all", help="搜索关键词")
-    p_pipe.add_argument("--pages", "-p", type=int, default=2, help="最大页数")
+    p_pipe.add_argument("--pages", "-p", type=int, default=0, help="最大页数（0 表示遍历全部页面）")
     p_pipe.add_argument("--output", "-o", required=True, help="输出 JSON 文件")
 
     # web

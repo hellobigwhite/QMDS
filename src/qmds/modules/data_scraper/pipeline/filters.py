@@ -6,10 +6,45 @@ from typing import Callable
 from qmds.modules.data_scraper.models.schemas import Product
 from qmds.utils.language import is_non_english_text
 
-PLACEHOLDER_IMAGES = re.compile(r"(coming-?soon|no-?image|placeholder|\.svg|logo)", re.I)
+PLACEHOLDER_IMAGES = re.compile(
+    r"(coming[\s_\-\.]*soon|no[\s_\-\.]*image|placeholder|\.svg|logo|"
+    r"default|missing|empty|blank|unavailable|not[\s_\-]*available|"
+    r"sample|demo|temp|dummy|generic|stock[\s_\-]*photo)",
+    re.IGNORECASE
+)
 PROHIBITED_KEYWORDS = [
-    "weapon", "gun", "knife", "drug", "cannabis", "counterfeit",
-    "replica", "fake", "adult", "porn", "ivermectin",
+    # 武器类
+    "weapon", "weapons", "gun", "guns", "firearm", "firearms", "rifle", "rifles",
+    "shotgun", "shotguns", "pistol", "pistols", "ammo", "ammunition", "bullet",
+    "bullets", "explosive", "explosives", "bomb", "bombs", "grenade", "grenades",
+    "knife", "knives", "dagger", "daggers", "sword", "swords", "blade", "blades",
+    "brass knuckles", "knuckle", "crossbow", "taser", "stun gun",
+    
+    # 药品类
+    "drug", "drugs", "narcotic", "narcotics", "opioid", "opioids", "cocaine",
+    "heroin", "methamphetamine", "meth", "lsd", "ecstasy", "mdma", "fentanyl",
+    "cannabis", "marijuana", "weed", "thc", "cbd", "steroid", "steroids",
+    "ivermectin", "pill", "pills", "prescription drug",
+    
+    # 色情类
+    "adult", "porn", "porno", "pornography", "xxx", "sex toy", "sex toys",
+    "vibrator", "lingerie", "erotic", "nude", "naked", "booty", "onlyfans",
+    "nsfw", "fetish", "bdsm", "escort", "escorts", "prostitut",
+    
+    # 赌博类
+    "gambling", "gamble", "casino", "poker", "slot machine", "betting",
+    "lottery", "jackpot", "wager", "bookie", "sportsbook",
+    
+    # 假货/诈骗类
+    "counterfeit", "counterfeits", "replica", "replicas", "fake", "fakes",
+    "knockoff", "knockoffs", "imitation", "imitations", "bootleg", "pirated",
+    "forged", "forgery", "scam", "fraud", "phishing",
+    
+    # 其他违禁
+    "tobacco", "cigarette", "cigarettes", "cigar", "vape", "e-cigarette",
+    "alcohol", "beer", "wine", "whiskey", "vodka",
+    "lock pick", "lockpick", "spy camera", "hidden camera", "wiretap",
+    "human growth hormone", "hgh", "dnp", "2,4-dinitrophenol",
 ]
 
 MIN_TITLE_LENGTH = 5

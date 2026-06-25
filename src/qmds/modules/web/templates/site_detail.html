@@ -72,6 +72,26 @@
                 </span>
             </div>
             <div class="stat-row">
+                <span class="stat-label">上报ID</span>
+                <span class="stat-value">{{ site.report_id|default('-') }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">域名状态</span>
+                <span class="stat-value">
+                    {% if site.domain_status == '0' or site.domain_status == 0 %}
+                    <span class="badge-platform badge-unknown">待解析</span>
+                    {% elif site.domain_status == '1' or site.domain_status == 1 %}
+                    <span class="badge-platform" style="background:#fff3e0;color:#e65100;">待配置</span>
+                    {% elif site.domain_status == '2' or site.domain_status == 2 or site.domain_status == '3' or site.domain_status == 3 %}
+                    <span class="badge-platform badge-shopify">已解析</span>
+                    {% elif site.domain_status == '4' or site.domain_status == 4 %}
+                    <span class="badge-platform" style="background:#e8f5e9;color:#2e7d32;">已建站</span>
+                    {% else %}
+                    <span class="badge-platform badge-unknown">{{ site.domain_status|default('未同步') }}</span>
+                    {% endif %}
+                </span>
+            </div>
+            <div class="stat-row">
                 <span class="stat-label">上报时间</span>
                 <span class="stat-value">{{ site.report_time|default('-') }}</span>
             </div>

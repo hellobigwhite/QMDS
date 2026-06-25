@@ -2,7 +2,7 @@
 {% block content %}
 <div class="card">
     <h2>🕷️ 数据爬取</h2>
-    <p class="text-muted mb-4">基于导航的深度爬取：解析店铺导航栏获取分类结构，按集合逐类爬取商品数据，保存到 <code>qmds_product_data.{category}_raw</code>。</p>
+    <p class="text-muted mb-4">并发爬取：按域名分组，同域名串行（防封），不同域名并发执行，保存到 <code>qmds_product_data.{category}_raw</code>。</p>
 </div>
 
 {% if filtered_categories %}
@@ -24,7 +24,7 @@
 <div class="card">
     <h2>爬取配置</h2>
     <form method="POST" action="/product-data/crawl">
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px;">
             <div>
                 <label for="crawl_category">选择类目</label>
                 <select id="crawl_category" name="category" style="width:100%;" required {% if not filtered_categories %}disabled{% endif %}>
@@ -33,12 +33,17 @@
                     <option value="{{ cat }}">{{ cat }}</option>
                     {% endfor %}
                 </select>
-                <small class="text-muted">从 <code>qmds_url_stores</code> 数据库的 <code>{category}_filtered</code> 集合获取店铺URL（自动去重）</small>
+                <small class="text-muted">从 <code>{category}_filtered</code> 获取URL</small>
             </div>
             <div>
-                <label for="max_sites">最大站点数</label>
-                <input type="number" id="max_sites" name="max_sites" value="10" min="1" max="100" style="width:100%;">
-                <small class="text-muted">每次任务最多爬取的店铺数量</small>
+                <label for="max_sites">最大集合数</label>
+                <input type="number" id="max_sites" name="max_sites" value="10" min="1" max="1000" style="width:100%;">
+                <small class="text-muted">最多爬取的集合数量</small>
+            </div>
+            <div>
+                <label for="max_workers">并发线程数</label>
+                <input type="number" id="max_workers" name="max_workers" value="10" min="1" max="20" style="width:100%;">
+                <small class="text-muted">同时爬取的域名数（1=串行）</small>
             </div>
         </div>
         <button type="submit" class="btn btn-primary" {% if not filtered_categories %}disabled{% endif %}>开始爬取</button>
@@ -49,20 +54,16 @@
     <h2>爬取说明</h2>
     <div class="detail-grid">
         <div class="detail-item">
+            <div class="k">并发策略</div>
+            <div class="v">按域名分组，同域名内集合串行爬取（6-12秒冷却），不同域名并发执行，避免被目标站点封禁</div>
+        </div>
+        <div class="detail-item">
             <div class="k">数据来源</div>
             <div class="v"><code>qmds_url_stores.{category}_filtered</code> 集合中的店铺URL（按域名去重）</div>
         </div>
         <div class="detail-item">
             <div class="k">爬取方式</div>
-            <div class="v">解析店铺首页导航栏，获取两级分类结构，按 <code>/collections/{handle}/products.json</code> 逐类爬取</div>
-        </div>
-        <div class="detail-item">
-            <div class="k">分类来源</div>
-            <div class="v">商品分类来自店铺导航栏的层级结构（一级分类 > 二级分类），而非 product_type 字段</div>
-        </div>
-        <div class="detail-item">
-            <div class="k">兜底策略</div>
-            <div class="v">导航解析失败时，自动回退到 <code>/collections.json</code> 接口获取分类列表</div>
+            <div class="v">按 <code>/collections/{handle}/products.json</code> 逐类爬取，每页200条，自动翻页</div>
         </div>
         <div class="detail-item">
             <div class="k">存储位置</div>
@@ -70,7 +71,7 @@
         </div>
         <div class="detail-item">
             <div class="k">数据字段</div>
-            <div class="v">商品ID、SKU、标题、描述、图片、价格、变体、分类（导航层级）、来源分类等</div>
+            <div class="v">商品ID、SKU、标题、描述、图片、价格、变体、分类、来源分类等</div>
         </div>
     </div>
 </div>

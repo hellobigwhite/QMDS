@@ -5,7 +5,7 @@
         <h2>📡 已报域名</h2>
         <a href="/site-management" class="btn btn-secondary">返回建站管理</a>
     </div>
-    <p class="text-muted mb-4">查看和管理已上报的域名，可以批量建站或取消上报。</p>
+    <p class="text-muted mb-4">查看和管理已上报的域名，可以批量建站、更新域名状态或取消上报。</p>
 </div>
 
 <div class="grid-3">
@@ -40,7 +40,31 @@
     <form method="POST" action="/site-management/reported">
         <div class="flex mb-4">
             <button type="submit" class="btn btn-success" name="action" value="build_selected">批量建站</button>
+            <button type="submit" class="btn btn-primary" name="action" value="update_status" onclick="return confirm('将从上报API同步选中站点的域名状态，是否继续？');">更新域名状态</button>
             <button type="submit" class="btn btn-danger" name="action" value="delete_selected" onclick="return confirm('确定取消选中站点的上报状态吗？');">取消上报</button>
+            <button type="submit" class="btn btn-warning" name="action" value="review_reported" onclick="return confirm('将审查所有已报域名，平台中不存在的将被移除，是否继续？');">审查</button>
+        </div>
+        <div class="flex mb-4" style="gap:8px; align-items:center;">
+            <span style="font-weight:bold;">批量修改:</span>
+            <select name="batch_field" style="width:150px;" onchange="toggleBatchValueInput(this)">
+                <option value="">-- 选择字段 --</option>
+                <option value="template">模板</option>
+                <option value="server">服务器</option>
+                <option value="category">大类</option>
+                <option value="main_category">主分类</option>
+                <option value="main_data_source_id">主数据源ID</option>
+                <option value="extra_data_source_id">补充数据源ID</option>
+                <option value="title">SEO Title</option>
+                <option value="description">Meta Description</option>
+                <option value="address">地址</option>
+                <option value="build_status">建站状态</option>
+            </select>
+            <select name="batch_value_select" id="batch_value_select" style="width:200px; display:none;">
+                <option value="已建站">已建站</option>
+                <option value="">待建站</option>
+            </select>
+            <input type="text" name="batch_value" id="batch_value_input" placeholder="新值" style="width:200px;">
+            <button type="submit" class="btn btn-info" name="action" value="batch_update" onclick="return confirm('确定批量修改选中站点的字段吗？');">批量修改</button>
         </div>
 
         {% if sites %}
@@ -52,7 +76,9 @@
                         <th>域名</th>
                         <th>模板</th>
                         <th>服务器</th>
+                        <th>大类</th>
                         <th>主分类</th>
+                        <th>域名状态</th>
                         <th>建站状态</th>
                         <th>上报时间</th>
                         <th>详情</th>
@@ -66,7 +92,21 @@
                         <td><a href="http://{{ site.domain }}" target="_blank" style="color:#1565c0;">{{ site.domain }}</a></td>
                         <td>{{ site.template|default('-') }}</td>
                         <td>{{ site.server|default('-') }}</td>
+                        <td>{{ site.category|default('-') }}</td>
                         <td>{{ site.main_category|default('-') }}</td>
+                        <td>
+                            {% if site.domain_status == '0' or site.domain_status == 0 %}
+                            <span class="badge-platform badge-unknown">待解析</span>
+                            {% elif site.domain_status == '1' or site.domain_status == 1 %}
+                            <span class="badge-platform" style="background:#fff3e0;color:#e65100;">待配置</span>
+                            {% elif site.domain_status == '2' or site.domain_status == 2 or site.domain_status == '3' or site.domain_status == 3 %}
+                            <span class="badge-platform badge-shopify">已解析</span>
+                            {% elif site.domain_status == '4' or site.domain_status == 4 %}
+                            <span class="badge-platform" style="background:#e8f5e9;color:#2e7d32;">已建站</span>
+                            {% else %}
+                            <span class="badge-platform badge-unknown">{{ site.domain_status|default('未同步') }}</span>
+                            {% endif %}
+                        </td>
                         <td>
                             {% if site.build_status == '已建站' %}
                             <span class="badge-platform badge-shopify">已建站</span>
@@ -89,6 +129,8 @@
                                     <div><strong>标题:</strong> {{ site.title|default('-') }}</div>
                                     <div><strong>描述:</strong> {{ site.description|default('-') }}</div>
                                     <div><strong>地址:</strong> {{ site.address|default('-') }}</div>
+                                    <div><strong>上报ID:</strong> {{ site.report_id|default('-') }}</div>
+                                    <div><strong>域名状态值:</strong> {{ site.domain_status|default('-') }}</div>
                                     <div><strong>上报时间:</strong> {{ site.report_time|default('-') }}</div>
                                     <div><strong>建站状态:</strong> {{ site.build_status|default('-') }}</div>
                                     <div><strong>建站时间:</strong> {{ site.build_time|default('-') }}</div>
@@ -107,6 +149,8 @@
         {% else %}
         <p class="text-muted">暂无已报域名数据。</p>
         {% endif %}
+
+        {% include "_pagination.html" %}
     </form>
 </div>
 
@@ -115,6 +159,22 @@ function toggleAll(source) {
     document.querySelectorAll('input[name="selected_ids"]').forEach(item => {
         item.checked = source.checked;
     });
+}
+
+function toggleBatchValueInput(select) {
+    var input = document.getElementById('batch_value_input');
+    var selectEl = document.getElementById('batch_value_select');
+    if (select.value === 'build_status') {
+        input.style.display = 'none';
+        input.name = '';
+        selectEl.style.display = '';
+        selectEl.name = 'batch_value';
+    } else {
+        input.style.display = '';
+        input.name = 'batch_value';
+        selectEl.style.display = 'none';
+        selectEl.name = '';
+    }
 }
 </script>
 {% endblock %}

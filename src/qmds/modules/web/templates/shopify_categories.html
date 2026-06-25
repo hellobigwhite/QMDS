@@ -1,22 +1,128 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="card" style="max-width:800px;margin:0 auto;">
-    <h2>🔍 筛选精准类目</h2>
+<div class="card" style="max-width:1200px;margin:0 auto;">
+    <h2>🎯 手动筛选精准类目</h2>
     <p class="text-muted" style="margin-bottom:16px;">
-        从对应类目的 unfiltered 集合中读取店铺 URL → 请求 /collections.json → 用类目关键词精确匹配 → 保存匹配结果到 filtered 集合
+        人工手动筛选：批量添加或删除 collection URL 到 filtered 集合
     </p>
 
     <form method="post" action="/shopify/filter-categories">
+        <input type="hidden" name="action" value="filter">
         <div class="form-group">
             <label for="category">选择类目</label>
-            <select id="category" name="category" required>
+            <select id="category" name="category" required onchange="window.location.href='/shopify/filter-categories?category='+this.value">
                 <option value="">-- 请选择类目 --</option>
                 {% for cat in categories %}
-                <option value="{{ cat }}">{{ cat }}</option>
+                <option value="{{ cat }}" {% if selected_category == cat %}selected{% endif %}>{{ cat }}</option>
                 {% endfor %}
             </select>
         </div>
-        <button type="submit" class="btn btn-primary">开始筛选</button>
     </form>
 </div>
+
+{% if selected_category %}
+<div class="card" style="max-width:1200px;margin:20px auto 0;">
+    <h2>➕ 批量添加 URL</h2>
+    <p class="text-muted" style="margin-bottom:16px;">
+        手动添加 collection URL 到 <code>{{ selected_category }}_filtered</code> 集合
+    </p>
+
+    <form method="post" action="/shopify/filter-categories/import" enctype="multipart/form-data">
+        <input type="hidden" name="category" value="{{ selected_category }}">
+        
+        <div class="form-group">
+            <label>输入 URL（每行一个）</label>
+            <textarea name="urls" rows="6" placeholder="https://store.com/collections/xxx&#10;https://store.com/collections/yyy&#10;..." style="width:100%;font-family:monospace;font-size:13px;"></textarea>
+        </div>
+        
+        <div class="form-group">
+            <label>或上传文件（.txt 或 .xlsx）</label>
+            <input type="file" name="file" accept=".txt,.xlsx,.xls">
+            <p class="text-muted" style="font-size:12px;margin-top:4px;">
+                TXT: 每行一个 URL | Excel: 需包含 collection_url 或 store_url 列
+            </p>
+        </div>
+        
+        <button type="submit" class="btn btn-primary">批量导入</button>
+    </form>
+</div>
+
+<div class="card" style="max-width:1200px;margin:20px auto 0;">
+    <h2>📊 {{ selected_category }} - 筛选后的精准类目数据</h2>
+    <p class="text-muted" style="margin-bottom:16px;">
+        数据来源: <code>qmds_url_stores.{{ selected_category }}_filtered</code> | 
+        总数: <strong>{{ filtered_total }}</strong> 条
+    </p>
+    
+    {% if filtered_stores %}
+    <form method="post" action="/shopify/filter-categories?category={{ selected_category }}" id="batchForm">
+        <input type="hidden" name="action" value="delete_selected">
+        <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center;">
+            <button type="submit" class="btn btn-danger" onclick="return confirm('确定删除选中的记录吗？')">批量删除选中</button>
+            <span class="text-muted" style="font-size:13px;">勾选后点击批量删除</span>
+        </div>
+        
+        <div style="overflow-x:auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width:40px;"><input type="checkbox" id="selectAll" onclick="toggleSelectAll(this)"></th>
+                        <th>#</th>
+                        <th>域名</th>
+                        <th>Collection 标题</th>
+                        <th>Collection Handle</th>
+                        <th>Collection URL</th>
+                        <th>来源</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for store in filtered_stores %}
+                    <tr>
+                        <td><input type="checkbox" name="selected_ids" value="{{ store._id }}" class="select-item"></td>
+                        <td>{{ loop.index }}</td>
+                        <td><strong>{{ store.domain }}</strong></td>
+                        <td>{{ store.collection_title or '-' }}</td>
+                        <td><code>{{ store.collection_handle or '-' }}</code></td>
+                        <td style="font-size:12px;word-break:break-all;max-width:250px;">
+                            {% if store.url %}
+                            <a href="{{ store.url }}" target="_blank" rel="noopener">{{ store.url }}</a>
+                            {% else %}
+                            -
+                            {% endif %}
+                        </td>
+                        <td>{{ store.source or '-' }}</td>
+                        <td style="white-space:nowrap;">
+                            <a href="/shopify/filter-categories/{{ selected_category }}/{{ store._id }}/edit" class="btn btn-sm btn-secondary">编辑</a>
+                            <form method="post" action="/shopify/filter-categories/{{ selected_category }}/{{ store._id }}/delete" style="display:inline;" onsubmit="return confirm('确定删除这条记录吗？')">
+                                <button type="submit" class="btn btn-sm btn-danger">删除</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </form>
+    
+    {% if filtered_total > 100 %}
+    <div style="margin-top:12px;padding:12px;background:#e3f2fd;border-radius:6px;font-size:13px;color:#1565c0;">
+        ℹ️ 显示前 100 条记录，共 {{ filtered_total }} 条数据
+    </div>
+    {% endif %}
+    {% else %}
+    <div style="padding:20px;text-align:center;color:#999;">
+        <p>暂无 {{ selected_category }} 类目的筛选后数据</p>
+        <p style="font-size:13px;margin-top:8px;">请使用上方表单批量添加 collection URL</p>
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+
+<script>
+function toggleSelectAll(source) {
+    const checkboxes = document.querySelectorAll('.select-item');
+    checkboxes.forEach(cb => cb.checked = source.checked);
+}
+</script>
 {% endblock %}

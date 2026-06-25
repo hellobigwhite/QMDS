@@ -45,6 +45,7 @@ class Product:
     product_type: str = ""
     variants: list[dict[str, Any]] = field(default_factory=list)
     category: str = ""
+    unique_key: str = ""
     scraped_at: datetime = field(default_factory=datetime.utcnow)
     raw: dict[str, Any] = field(default_factory=dict)
 

@@ -1,0 +1,8 @@
+{
+    "login_url": "https://erp.yswl.site/index.php?main_page=login",
+    "upload_page_url": "https://erp.yswl.site/index.php?main_page=erp_products&p=sc_cp",
+    "login_url_2": "https://erp.yswl.site/index.php?main_page=login&dongzuo=denglu",
+    "upload_page_url_2": "https://erp.yswl.site/index.php?main_page=erp_products&dongzuo=add_cp_pl",
+    "username": "续豪",
+    "password": "xh827"
+}

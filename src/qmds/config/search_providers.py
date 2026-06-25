@@ -360,7 +360,8 @@ class SearchManager:
                     key = p.key_pool._keys[0] if p.key_pool._keys else "?"
                     masked = key[:8] + "..." if len(key) > 8 else key
                     urls = p.search(query, page)
-                    log.info(f"[{p.name}] query={query!r} page={page} found={len(urls)}")
+                    t_name = threading.current_thread().name
+                    log.info(f"[{t_name}] [{p.name}] query={query!r} page={page} found={len(urls)}")
                     return SearchResult(urls=urls, provider=p.name, key_used=masked, query=query, page=page)
             raise ScrapeProviderError(f"未找到 provider: {provider_name}")
 
@@ -378,7 +379,8 @@ class SearchManager:
                 key = provider.key_pool._keys[0] if provider.key_pool._keys else "?"
                 masked = key[:8] + "..." if len(key) > 8 else key
                 urls = provider.search(query, page)
-                log.info(f"[{provider.name}] query={query!r} page={page} found={len(urls)}")
+                t_name = threading.current_thread().name
+                log.info(f"[{t_name}] [{provider.name}] query={query!r} page={page} found={len(urls)}")
                 return SearchResult(urls=urls, provider=provider.name, key_used=masked, query=query, page=page)
             except ScrapeProviderError as e:
                 log.warning(f"[{provider.name}] 失败: {e}")

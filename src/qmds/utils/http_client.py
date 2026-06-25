@@ -2,12 +2,15 @@ import random
 from typing import Optional
 
 import requests
+import urllib3
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from qmds.config import settings
 from qmds.core.exceptions import ProxyError, RateLimitError
 from qmds.utils.proxy_manager import ProxyManager
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 class HttpClient:
@@ -77,6 +80,24 @@ class HttpClient:
                 raise RateLimitError(f"429 Too Many Requests: {url}")
             resp.raise_for_status()
             return resp
+        except requests.exceptions.SSLError:
+            if verify:
+                resp = self._session.request(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    timeout=timeout or settings.request_timeout,
+                    proxies=proxy,
+                    verify=False,
+                    **kwargs,
+                )
+                if resp.status_code == 429:
+                    if self.proxy_manager:
+                        self.proxy_manager.mark_bad(proxy)
+                    raise RateLimitError(f"429 Too Many Requests: {url}")
+                resp.raise_for_status()
+                return resp
+            raise
         except requests.exceptions.ProxyError as e:
             if proxy and self.proxy_manager:
                 self.proxy_manager.mark_bad(proxy)

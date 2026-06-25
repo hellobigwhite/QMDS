@@ -1,5 +1,6 @@
 """通过 Google 搜索发现 Shopify 店铺（多 API 自动切换）"""
 
+import threading
 import time
 from typing import Optional
 from urllib.parse import urlparse, urlunparse
@@ -110,19 +111,45 @@ class GoogleShopifySearcher(BaseScraper):
             log.error(str(e))
             return []
 
-    def scrape(self, query: Optional[str] = None, max_pages: int = 3, provider_name: str = "") -> ScrapeResult:
+    def scrape(self, query: Optional[str] = None, max_pages: int = 0, provider_name: str = "") -> ScrapeResult:
+        """搜索 Google 结果
+
+        参数:
+            query: 搜索查询，为 None 时使用默认 SHOPIFY_QUERIES
+            max_pages: 最大搜索页数，0 表示遍历全部页面（直到无结果）
+            provider_name: 指定搜索 API 提供者名称
+        """
+        thread_name = threading.current_thread().name
         queries = [query] if query else SHOPIFY_QUERIES
         result = ScrapeResult(source="multi_api")
 
         for q in queries:
-            for page in range(1, max_pages + 1):
+            page = 1
+            consecutive_empty = 0
+            while True:
                 try:
                     urls = self._search_page(q, page, provider_name=provider_name)
-                    result.data.extend({"url": u, "query": q, "source": provider_name or "multi_api"} for u in urls)
-                    result.total_found += len(urls)
+                    if not urls:
+                        consecutive_empty += 1
+                        if consecutive_empty >= 2:
+                            log.info(f"[{thread_name}] 查询 {q!r}: 连续 {consecutive_empty} 页无结果，停止搜索")
+                            break
+                    else:
+                        consecutive_empty = 0
+                        result.data.extend({"url": u, "query": q, "source": provider_name or "multi_api"} for u in urls)
+                        result.total_found += len(urls)
+                        log.info(f"[{thread_name}] 查询 {q!r} 第 {page} 页: {len(urls)} 个结果")
                 except Exception as e:
-                    log.error(f"搜索异常: {e}")
-                    continue
+                    log.error(f"[{thread_name}] 搜索异常: {e}")
+                    consecutive_empty += 1
+                    if consecutive_empty >= 2:
+                        break
+
+                if max_pages > 0 and page >= max_pages:
+                    log.info(f"[{thread_name}] 查询 {q!r}: 已达到最大页数 {max_pages}，停止搜索")
+                    break
+
+                page += 1
                 time.sleep(1)
 
         result.data = list({d["url"]: d for d in result.data}.values())

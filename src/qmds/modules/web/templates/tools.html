@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <h2>🔧 工具箱</h2>
+    <p class="text-muted">实用工具集合，方便日常操作</p>
+</div>
+
+<div class="grid-3">
+    <div class="card">
+        <h3>📊 数据处理工具</h3>
+        <p class="text-muted">数据清洗、转换和分析工具</p>
+        <div class="mt-4">
+            <a href="/tools/category-merge" class="btn btn-primary btn-sm">分类数据处理</a>
+            <a href="/product-data/clean" class="btn btn-info btn-sm">数据清洗</a>
+            <a href="/product-data/export" class="btn btn-info btn-sm">数据导出</a>
+        </div>
+    </div>
+    
+    <div class="card">
+        <h3>🔍 分析工具</h3>
+        <p class="text-muted">网站分析和SEO工具</p>
+        <div class="mt-4">
+            <a href="/seo-analysis" class="btn btn-primary btn-sm">网站收录分析</a>
+            <a href="/orders" class="btn btn-info btn-sm">订单分析</a>
+        </div>
+    </div>
+    
+    <div class="card">
+        <h3>🛠️ 系统工具</h3>
+        <p class="text-muted">系统维护和配置工具</p>
+        <div class="mt-4">
+            <a href="/config" class="btn btn-primary btn-sm">系统配置</a>
+            <a href="/tasks" class="btn btn-info btn-sm">任务管理</a>
+        </div>
+    </div>
+</div>
+
+<div class="card mt-4">
+    <h2>🚀 快速操作</h2>
+    <div class="grid-2">
+        <div>
+            <h4>常用功能</h4>
+            <ul style="list-style: none; padding: 0;">
+                <li style="padding: 8px 0; border-bottom: 1px solid #f0f0f0;">
+                    <a href="/tools/category-merge" style="text-decoration: none; color: #1a1a2e;">🔧 分类数据处理</a>
+                </li>
+                <li style="padding: 8px 0; border-bottom: 1px solid #f0f0f0;">
+                    <a href="/shopify/fetch-urls" style="text-decoration: none; color: #1a1a2e;">🔗 获取Shopify店铺URL</a>
+                </li>
+                <li style="padding: 8px 0; border-bottom: 1px solid #f0f0f0;">
+                    <a href="/product-data/crawl" style="text-decoration: none; color: #1a1a2e;">🕷️ 数据爬取</a>
+                </li>
+                <li style="padding: 8px 0;">
+                    <a href="/site-management" style="text-decoration: none; color: #1a1a2e;">🏗️ 建站管理</a>
+                </li>
+            </ul>
+        </div>
+        <div>
+            <h4>系统状态</h4>
+            <div class="result-box">
+                <div class="stat-row">
+                    <span class="stat-label">系统版本</span>
+                    <span class="stat-value">QMDS v1.0</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">运行状态</span>
+                    <span class="stat-value" style="color: #4caf50;">正常</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

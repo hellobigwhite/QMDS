@@ -1,0 +1,99 @@
+{
+    "categories": [
+        {
+            "name": "数据采集",
+            "scripts": [
+                {
+                    "name": "本地数据源管理工具",
+                    "path": "DataSource\\run.py"
+                }
+            ]
+        },
+        {
+            "name": "数据采集",
+            "scripts": [
+                {
+                    "name": "Shopify 自动采集工具",
+                    "path": "DataCrawler\\shopify_run.py"
+                }
+            ]
+        },
+        {
+            "name": "数据处理",
+            "scripts": [
+                {
+                    "name": "通用数据清洗工具",
+                    "path": "DataHandle\\pretreatment_run.py"
+                },
+                {
+                    "name": "批量清洗不合格变体工具",
+                    "path": "DataHandle\\variants_clean_run.py"
+                },
+                {
+                    "name": "币种转换工具",
+                    "path": "DataHandle\\price_currency_run.py"
+                },
+                {
+                    "name": "通用图片下载工具",
+                    "path": "DataHandle\\imgs_downloader_run.py"
+                }
+            ]
+        },
+        {
+            "name": "数据分析",
+            "scripts": [
+                {
+                    "name": "数据表分类统计计数工具",
+                    "path": "DataAnalyze\\classify_count_run.py"
+                }
+            ]
+        },
+        {
+            "name": "表格处理",
+            "scripts": [
+                {
+                    "name": "批量拆表工具",
+                    "path": "DataHandle\\splitter_run.py"
+                },
+                {
+                    "name": "数据拆分工具-分类均分",
+                    "path": "DataHandle\\splitter_categories_run.py"
+                },
+                {
+                    "name": "批量合并表工具",
+                    "path": "DataHandle\\merger_run.py"
+                }
+            ]
+        },
+        {
+            "name": "站群系统-WP自动化",
+            "scripts": [
+                {
+                    "name": "数据表上传站群系统辅助工具",
+                    "path": "WebSites\\system_upload_run.py"
+                },
+                {
+                    "name": "数据表上传站群系统辅助工具-惠升版",
+                    "path": "WebSites\\system_upload_run_huisheng.py"
+                },
+                {
+                    "name": "WP批量自动配置火箭缓存插件-晨曦版",
+                    "path": "WebSites\\wp_batch_rocket_chenxi_run.py"
+                }
+            ]
+        },
+        {
+            "name": "域名管理系统自动化",
+            "scripts": [
+                {
+                    "name": "批量收录查询工具",
+                    "path": "WebSites\\domain_seo_run.py"
+                },
+                {
+                    "name": "批量访问状态测试工具",
+                    "path": "WebSites\\domain_accessible_run.py"
+                }
+            ]
+        }
+    ]
+}

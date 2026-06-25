@@ -1,0 +1,201 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <h2>网站收录分析</h2>
+    <p class="text-muted" style="margin-bottom:16px;">批量查询网站在Google的收录数量</p>
+    
+    <div class="grid-2">
+        <div class="card" style="background:#f8f9ff;">
+            <h3 style="font-size:16px;margin-bottom:12px;">域名来源</h3>
+            <p class="text-muted" style="margin-bottom:12px;">域名来自订单分析数据库，无需重复拉取</p>
+            <div style="display:flex;gap:10px;">
+                <a href="/orders" class="btn btn-info">管理域名</a>
+                <button type="button" class="btn btn-success" onclick="syncDomains()">从上报平台同步</button>
+            </div>
+            <div id="sync-result" style="margin-top:12px;display:none;">
+                <div class="flash" id="sync-message"></div>
+            </div>
+        </div>
+        
+        <div class="card" style="background:#f8f9ff;">
+            <h3 style="font-size:16px;margin-bottom:12px;">使用说明</h3>
+            <ul style="font-size:13px;color:#666;line-height:1.8;">
+                <li>域名列表来自订单分析数据库</li>
+                <li>可点击"从上报平台同步"更新域名列表</li>
+                <li>系统使用ScraperAPI查询Google收录</li>
+                <li>可在任务页面查看查询进度</li>
+            </ul>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h2>批量收录查询</h2>
+    <form method="POST" action="/seo-analysis/query" id="query-form">
+        <div style="margin-bottom:16px;">
+            <label for="domains" style="display:block;font-weight:600;margin-bottom:8px;">域名列表（每行一个）</label>
+            <textarea id="domains" name="domains" rows="10" style="width:100%;padding:12px;border:1px solid #d9d9d9;border-radius:6px;font-size:14px;font-family:monospace;resize:vertical;" placeholder="example.com&#10;google.com&#10;github.com">{{ domains|join('\n') if domains else '' }}</textarea>
+        </div>
+        
+        <div style="display:flex;gap:20px;align-items:end;margin-bottom:16px;">
+            <div style="flex:1;">
+                <label for="interval" style="display:block;font-weight:600;margin-bottom:8px;">查询间隔（秒）</label>
+                <input type="number" id="interval" name="interval" value="1.0" min="0.5" max="10" step="0.5" style="width:100%;padding:8px 12px;border:1px solid #d9d9d9;border-radius:6px;font-size:14px;">
+            </div>
+            <div>
+                <button type="submit" class="btn btn-primary" style="height:42px;">开始查询</button>
+            </div>
+        </div>
+    </form>
+</div>
+
+{% if domains %}
+<div class="card">
+    <h2>已加载域名 <span class="badge">{{ domains|length }}</span></h2>
+    <div style="max-height:300px;overflow-y:auto;">
+        <table>
+            <thead>
+                <tr>
+                    <th>序号</th>
+                    <th>域名</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for domain in domains %}
+                <tr>
+                    <td>{{ loop.index }}</td>
+                    <td>{{ domain }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+<div class="card">
+    <h2>查询结果</h2>
+    <p class="text-muted" style="margin-bottom:12px;">查询任务启动后，可在此查看进度和结果</p>
+    
+    <div id="task-status" style="display:none;">
+        <div class="result-box">
+            <div class="stat-row">
+                <span class="stat-label">任务状态</span>
+                <span class="stat-value" id="task-status-text">运行中</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">进度</span>
+                <span class="stat-value" id="task-progress">0%</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">任务信息</span>
+                <span class="stat-value" id="task-message">-</span>
+            </div>
+        </div>
+        
+        <div style="margin-top:12px;">
+            <div style="background:#e0e0e0;border-radius:4px;height:20px;overflow:hidden;">
+                <div id="progress-bar" style="background:#4caf50;height:100%;width:0%;transition:width 0.3s;"></div>
+            </div>
+        </div>
+    </div>
+    
+    <div id="task-result" style="display:none;margin-top:16px;">
+        <div class="flash" id="result-message"></div>
+    </div>
+    
+    <div style="margin-top:16px;">
+        <a href="/tasks" class="btn btn-info">查看所有任务</a>
+    </div>
+</div>
+
+<script>
+function syncDomains() {
+    const resultDiv = document.getElementById('sync-result');
+    const messageDiv = document.getElementById('sync-message');
+    messageDiv.textContent = '正在同步...';
+    messageDiv.className = 'flash flash-info';
+    resultDiv.style.display = 'block';
+    
+    fetch('/api/servers/sync', { method: 'POST' })
+        .then(response => response.json())
+        .then(data => {
+            if (data.ok) {
+                messageDiv.textContent = `同步完成: 新增 ${data.added || 0}, 更新 ${data.updated || 0}`;
+                messageDiv.className = 'flash flash-success';
+                setTimeout(() => location.reload(), 1500);
+            } else {
+                messageDiv.textContent = `同步失败: ${data.error || '未知错误'}`;
+                messageDiv.className = 'flash flash-error';
+            }
+        })
+        .catch(error => {
+            messageDiv.textContent = `请求失败: ${error.message}`;
+            messageDiv.className = 'flash flash-error';
+        });
+}
+
+let currentTaskId = null;
+
+function checkTaskStatus(taskId) {
+    fetch('/api/tasks')
+        .then(response => response.json())
+        .then(tasks => {
+            const task = tasks.find(t => t.id === taskId);
+            if (!task) return;
+            
+            document.getElementById('task-status').style.display = 'block';
+            document.getElementById('task-status-text').textContent = 
+                task.status === 'running' ? '运行中' : 
+                task.status === 'completed' ? '已完成' : 
+                task.status === 'failed' ? '失败' : task.status;
+            document.getElementById('task-progress').textContent = `${task.progress || 0}%`;
+            document.getElementById('task-message').textContent = task.message || '-';
+            document.getElementById('progress-bar').style.width = `${task.progress || 0}%`;
+            
+            if (task.status === 'completed') {
+                const resultDiv = document.getElementById('task-result');
+                const resultMessage = document.getElementById('result-message');
+                resultDiv.style.display = 'block';
+                if (task.result) {
+                    resultMessage.textContent = `查询完成: 共 ${task.result.total} 个域名，成功 ${task.result.success} 个，失败 ${task.result.failed} 个`;
+                    resultMessage.className = 'flash flash-success';
+                }
+            } else if (task.status === 'failed') {
+                const resultDiv = document.getElementById('task-result');
+                const resultMessage = document.getElementById('result-message');
+                resultDiv.style.display = 'block';
+                resultMessage.textContent = `任务失败: ${task.message}`;
+                resultMessage.className = 'flash flash-error';
+            }
+            
+            if (task.status === 'running') {
+                setTimeout(() => checkTaskStatus(taskId), 2000);
+            }
+        })
+        .catch(error => console.error('Error:', error));
+}
+
+document.getElementById('query-form').addEventListener('submit', function(e) {
+    const domains = document.getElementById('domains').value.trim();
+    if (!domains) {
+        e.preventDefault();
+        alert('请输入要查询的域名');
+        return;
+    }
+    
+    setTimeout(() => {
+        fetch('/api/tasks')
+            .then(response => response.json())
+            .then(tasks => {
+                const seoTask = tasks.find(t => t.action === 'seo_analysis' && t.status === 'running');
+                if (seoTask) {
+                    currentTaskId = seoTask.id;
+                    checkTaskStatus(currentTaskId);
+                }
+            })
+            .catch(error => console.error('Error:', error));
+    }, 1000);
+});
+</script>
+{% endblock %}

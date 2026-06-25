@@ -14,6 +14,7 @@
                     <th>状态</th>
                     <th>进度</th>
                     <th>创建时间</th>
+                    <th>操作</th>
                 </tr>
             </thead>
             <tbody>
@@ -25,14 +26,33 @@
                     <td>
                         {% if task.status == 'running' %}
                         <span style="color:#2196f3;font-weight:600;">运行中</span>
+                        {% elif task.status == 'stopping' %}
+                        <span style="color:#ff9800;font-weight:600;">停止中</span>
+                        {% elif task.status == 'stopped' %}
+                        <span style="color:#ff9800;font-weight:600;">已停止</span>
                         {% elif task.status == 'completed' %}
                         <span style="color:#4caf50;font-weight:600;">已完成</span>
                         {% else %}
                         <span style="color:#c62828;font-weight:600;">{{ task.status }}</span>
                         {% endif %}
                     </td>
-                    <td>{{ task.progress }}%</td>
+                    <td>
+                        {% if task.total > 0 %}
+                        {{ task.current }}/{{ task.total }}
+                        {% elif task.progress > 0 %}
+                        {{ task.progress }}%
+                        {% else %}
+                        -
+                        {% endif %}
+                    </td>
                     <td class="text-muted">{{ task.created_at[:19] }}</td>
+                    <td>
+                        {% if task.status == 'running' %}
+                        <button class="btn btn-sm btn-danger stop-task-btn" data-task-id="{{ task.id }}" onclick="stopTask('{{ task.id }}')">停止</button>
+                        {% else %}
+                        <span class="text-muted">-</span>
+                        {% endif %}
+                    </td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -42,4 +62,39 @@
     <p class="text-muted">暂无任务记录，运行流水线后将会在此显示。</p>
     {% endif %}
 </div>
+
+<script>
+function stopTask(taskId) {
+    if (!confirm('确定要停止此任务吗？')) {
+        return;
+    }
+    
+    fetch(`/api/tasks/${taskId}/stop`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.ok) {
+            // 更新按钮状态
+            const btn = document.querySelector(`[data-task-id="${taskId}"]`);
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = '停止中...';
+            }
+            // 刷新页面以更新状态
+            setTimeout(() => {
+                location.reload();
+            }, 1000);
+        } else {
+            alert('停止任务失败: ' + (data.error || '未知错误'));
+        }
+    })
+    .catch(error => {
+        alert('请求失败: ' + error);
+    });
+}
+</script>
 {% endblock %}

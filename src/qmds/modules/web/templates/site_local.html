@@ -109,7 +109,7 @@
         </div>
 
         <div class="flex mb-4">
-            <select name="batch_field" style="min-width:150px;">
+            <select name="batch_field" id="batch_field" style="width:120px;" onchange="switchBatchValue()">
                 <option value="">选择字段</option>
                 <option value="template">模板</option>
                 <option value="server">服务器</option>
@@ -117,8 +117,11 @@
                 <option value="main_category">主分类</option>
                 <option value="main_data_source_id">主数据源ID</option>
                 <option value="extra_data_source_id">补充数据源ID</option>
+                <option value="report_status">上报状态</option>
             </select>
-            <input type="text" name="batch_value" placeholder="新值" style="flex:1;">
+            <span id="batch_value_container" style="flex:1;">
+                <input type="text" name="batch_value" placeholder="新值" style="width:100%;">
+            </span>
             <button type="submit" class="btn btn-info" formaction="/site-management/batch-update">批量更新</button>
         </div>
 
@@ -148,7 +151,7 @@
                         <td>{{ site.template|default('-') }}</td>
                         <td>{{ site.server|default('-') }}</td>
                         <td>{{ site.main_data_source_id|default('-') }}</td>
-                        <td>{{ site.extra_data_source_id|default('-') }}</td>
+                        <td class="data-source-cell" title="{{ site.extra_data_source_id|default('') }}"><span class="data-source-text">{{ site.extra_data_source_id|default('-') }}</span></td>
                         <td>{{ site.main_category|default('-') }}</td>
                         <td>{{ site.category|default('-') }}</td>
                         <td>{{ site.schedule_time|default('未设置') }}</td>
@@ -173,6 +176,9 @@
                         <td>
                             <a href="/site-management/{{ site._id }}/detail" class="btn btn-sm btn-info">详情</a>
                             <a href="/site-management/{{ site._id }}/edit" class="btn btn-sm btn-secondary">编辑</a>
+                            <form method="POST" action="/site-management/{{ site._id }}/report" style="display:inline;">
+                                <button type="submit" class="btn btn-sm btn-primary" onclick="return confirm('确定将 {{ site.domain }} 标记为已上报？')">上报</button>
+                            </form>
                         </td>
                     </tr>
                     {% endfor %}
@@ -182,6 +188,8 @@
         {% else %}
         <p class="text-muted">暂无本地站点数据。</p>
         {% endif %}
+
+        {% include "_pagination.html" %}
     </form>
 </div>
 
@@ -191,5 +199,42 @@ function toggleAll(source) {
         item.checked = source.checked;
     });
 }
+
+function switchBatchValue() {
+    var field = document.getElementById('batch_field').value;
+    var container = document.getElementById('batch_value_container');
+    if (field === 'report_status') {
+        container.innerHTML = '<select name="batch_value" style="width:100%;"><option value="未报">未报</option><option value="已报">已报</option></select>';
+    } else {
+        container.innerHTML = '<input type="text" name="batch_value" placeholder="新值" style="width:100%;">';
+    }
+}
+
+// 数据源单元格点击展开/收起
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('.data-source-cell').forEach(cell => {
+        cell.addEventListener('click', function(e) {
+            e.stopPropagation();
+            const isExpanded = this.classList.contains('expanded');
+            
+            // 先收起所有已展开的单元格
+            document.querySelectorAll('.data-source-cell.expanded').forEach(other => {
+                other.classList.remove('expanded');
+            });
+            
+            // 如果当前单元格未展开，则展开它
+            if (!isExpanded) {
+                this.classList.add('expanded');
+            }
+        });
+    });
+    
+    // 点击其他地方收起所有展开的单元格
+    document.addEventListener('click', function() {
+        document.querySelectorAll('.data-source-cell.expanded').forEach(cell => {
+            cell.classList.remove('expanded');
+        });
+    });
+});
 </script>
 {% endblock %}

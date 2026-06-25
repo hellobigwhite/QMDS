@@ -18,7 +18,7 @@ def main():
     parser.add_argument("--query", "-q", help="搜索关键词")
     parser.add_argument("--url", "-u", help="目标 URL")
     parser.add_argument("--domain", "-d", help="目标域名")
-    parser.add_argument("--pages", "-p", type=int, default=3, help="最大页数")
+    parser.add_argument("--pages", "-p", type=int, default=0, help="最大页数（0 表示遍历全部页面）")
     parser.add_argument("--output", "-o", help="输出 JSON 文件路径")
     parser.add_argument("--verbose", "-v", action="store_true", help="详细日志")
 

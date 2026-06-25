@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="card" style="max-width:960px;margin:0 auto;">
+<div class="card" style="max-width:1200px;margin:0 auto;">
     <h2>🔗 获取指定类目的Shopify店铺URL</h2>
     <p class="text-muted" style="margin-bottom:16px;">选择类目 → 输入关键词 → 多 API 自动搜索 → URL 清洗去重 → 平台检测 → 存储</p>
 
@@ -91,6 +91,12 @@
             <span class="stat-label">✅ Shopify 店铺</span>
             <span class="stat-value" style="color:#2e7d32;">{{ result.total_shopify }} 个</span>
         </div>
+        {% if result.not_shopify is defined %}
+        <div class="stat-row">
+            <span class="stat-label">❌ 非 Shopify</span>
+            <span class="stat-value" style="color:#c62828;">{{ result.not_shopify }} 个</span>
+        </div>
+        {% endif %}
         {% if result.saved_mongodb is not none %}
         <div class="stat-row">
             <span class="stat-label">MongoDB 存储</span>
@@ -140,7 +146,7 @@
 
         <div style="margin-top:12px;padding:12px;background:#e8f5e9;border-radius:6px;font-size:13px;color:#2e7d32;">
             ✅ 共找到 <strong>{{ result.total_shopify }}</strong> 个 Shopify 店铺
-            （原始 {{ result.total_raw }} → 去重 {{ result.total_after_filter }} → 确认 {{ result.total_shopify }}）
+            （原始 {{ result.total_raw }} → 去重 {{ result.total_after_filter }} → 检测确认 {{ result.total_shopify }}{% if result.not_shopify is defined %}，过滤非 Shopify {{ result.not_shopify }}{% endif %}）
         </div>
         {% elif not result.error %}
         <p class="text-muted" style="margin-top:12px;">未找到 Shopify 店铺，请尝试其他关键词</p>
@@ -149,53 +155,191 @@
     {% endif %}
 </div>
 
+{% if not selected_category %}
+<div class="card" style="max-width:1200px;margin:20px auto 0;">
+    <h2>📊 店铺数据管理</h2>
+    <div style="padding:20px;text-align:center;color:#666;">
+        <p style="font-size:16px;margin-bottom:8px;">请先在上方选择一个类目</p>
+        <p style="font-size:13px;">选择类目后可以查看、添加、编辑和删除该类目下的店铺数据</p>
+    </div>
+</div>
+{% endif %}
+
 {% if selected_category %}
-<div class="card" style="max-width:960px;margin:20px auto 0;">
+<div class="card" style="max-width:1200px;margin:20px auto 0;">
     <h2>📊 {{ selected_category }} - 已存储的店铺数据</h2>
     <p class="text-muted" style="margin-bottom:16px;">
         数据来源: <code>{{ db_name }}.{{ selected_category }}_unfiltered</code> | 
         总数: <strong>{{ stores_total }}</strong> 条
     </p>
     
-    {% if stores %}
-    <div style="overflow-x:auto;">
-        <table>
-            <thead>
-                <tr>
-                    <th>#</th>
-                    <th>域名</th>
-                    <th>店铺名称</th>
-                    <th>商品数</th>
-                    <th>货币</th>
-                    <th>平台</th>
-                    <th>URL</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for store in stores %}
-                <tr>
-                    <td>{{ loop.index }}</td>
-                    <td><strong>{{ store.domain }}</strong></td>
-                    <td>{{ store.store_name or '-' }}</td>
-                    <td>{{ store.product_count or 0 }}</td>
-                    <td>{{ store.currency or 'USD' }}</td>
-                    <td>
-                        <span class="badge-platform badge-{{ store.platform or 'unknown' }}">
-                            {{ store.platform or 'unknown' }}
-                        </span>
-                    </td>
-                    <td style="font-size:12px;word-break:break-all;max-width:300px;">
-                        <a href="{{ store.url }}" target="_blank" rel="noopener">{{ store.url }}</a>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
+    <!-- 添加新店铺表单 -->
+    <details style="margin-bottom:16px;" open>
+        <summary style="cursor:pointer;padding:8px 12px;background:#e3f2fd;border-radius:6px;font-weight:500;">
+            ➕ 添加新店铺
+        </summary>
+        <form method="POST" action="/shopify/unfiltered/add" style="margin-top:12px;padding:16px;background:#f8f9fa;border-radius:8px;">
+            <input type="hidden" name="category" value="{{ selected_category }}">
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;">
+                <div>
+                    <label style="font-size:13px;font-weight:500;">域名 *</label>
+                    <input type="text" name="domain" placeholder="example.com" required style="width:100%;">
+                </div>
+                <div>
+                    <label style="font-size:13px;font-weight:500;">URL</label>
+                    <input type="text" name="url" placeholder="https://example.com" style="width:100%;">
+                </div>
+                <div>
+                    <label style="font-size:13px;font-weight:500;">店铺名称</label>
+                    <input type="text" name="store_name" placeholder="店铺名称" style="width:100%;">
+                </div>
+                <div>
+                    <label style="font-size:13px;font-weight:500;">平台</label>
+                    <select name="platform" style="width:100%;">
+                        <option value="Shopify">Shopify</option>
+                        <option value="WooCommerce">WooCommerce</option>
+                        <option value="Other">Other</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="font-size:13px;font-weight:500;">商品数</label>
+                    <input type="number" name="product_count" placeholder="0" min="0" style="width:100%;">
+                </div>
+                <div>
+                    <label style="font-size:13px;font-weight:500;">货币</label>
+                    <input type="text" name="currency" placeholder="USD" value="USD" style="width:100%;">
+                </div>
+            </div>
+            <button type="submit" class="btn btn-primary" style="margin-top:12px;">添加店铺</button>
+        </form>
+    </details>
+
+    <!-- 批量导入店铺 -->
+    <details style="margin-bottom:16px;">
+        <summary style="cursor:pointer;padding:8px 12px;background:#fff3e0;border-radius:6px;font-weight:500;">
+            📥 批量导入店铺
+        </summary>
+        <form method="POST" action="/shopify/unfiltered/import" enctype="multipart/form-data" style="margin-top:12px;padding:16px;background:#f8f9fa;border-radius:8px;">
+            <input type="hidden" name="category" value="{{ selected_category }}">
+            <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
+                <div style="flex:1;min-width:250px;">
+                    <label style="font-size:13px;font-weight:500;">选择Excel文件</label>
+                    <input type="file" name="file" accept=".xlsx,.xls" required style="width:100%;margin-top:4px;">
+                </div>
+                <button type="submit" class="btn btn-primary" style="white-space:nowrap;">🚀 开始导入</button>
+            </div>
+            <div style="margin-top:12px;padding:12px;background:#fff8e1;border-radius:6px;font-size:13px;color:#f57f17;">
+                <strong>Excel格式要求：</strong>
+                <ul style="margin:8px 0 0 20px;padding:0;">
+                    <li><strong>域名/domain</strong>（必填）- 店铺域名，如 example.com</li>
+                    <li><strong>URL/url</strong>（可选）- 店铺完整URL</li>
+                    <li><strong>店铺名称/store_name</strong>（可选）- 店铺名称</li>
+                    <li><strong>平台/platform</strong>（可选）- Shopify/WooCommerce/Other，默认Shopify</li>
+                    <li><strong>商品数/product_count</strong>（可选）- 商品数量</li>
+                    <li><strong>货币/currency</strong>（可选）- 货币代码，默认USD</li>
+                </ul>
+            </div>
+        </form>
+    </details>
     
-    {% if stores_total > 50 %}
+    {% if stores %}
+    <!-- 批量操作表单 -->
+    <form method="POST" action="/shopify/unfiltered/delete" id="batchForm">
+        <input type="hidden" name="category" value="{{ selected_category }}">
+        <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;">
+            <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('确定删除选中的记录吗？')" style="font-size:12px;">
+                🗑️ 删除选中
+            </button>
+            <span style="font-size:12px;color:#666;" id="selectedCount">已选 0 条</span>
+        </div>
+        
+        <div style="overflow-x:auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width:40px;"><input type="checkbox" onclick="toggleAll(this)" style="cursor:pointer;"></th>
+                        <th>#</th>
+                        <th>域名</th>
+                        <th>店铺名称</th>
+                        <th>商品数</th>
+                        <th>货币</th>
+                        <th>平台</th>
+                        <th>URL</th>
+                        <th style="width:120px;">操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for store in stores %}
+                    <tr>
+                        <td><input type="checkbox" name="domains" value="{{ store.domain }}" class="store-checkbox" onchange="updateSelectedCount()" style="cursor:pointer;"></td>
+                        <td>{{ loop.index }}</td>
+                        <td><strong>{{ store.domain }}</strong></td>
+                        <td>{{ store.store_name or '-' }}</td>
+                        <td>{{ store.product_count or 0 }}</td>
+                        <td>{{ store.currency or 'USD' }}</td>
+                        <td>
+                            <span class="badge-platform badge-{{ store.platform or 'unknown' }}">
+                                {{ store.platform or 'unknown' }}
+                            </span>
+                        </td>
+                        <td style="font-size:12px;word-break:break-all;max-width:300px;">
+                            <a href="{{ store.url }}" target="_blank" rel="noopener">{{ store.url }}</a>
+                        </td>
+                        <td>
+                            <button type="button" class="btn btn-sm btn-secondary" 
+                                    onclick="openEditModal('{{ store.domain }}', '{{ store.url }}', '{{ store.store_name }}', '{{ store.platform }}', '{{ store.product_count }}', '{{ store.currency }}')"
+                                    style="font-size:11px;padding:2px 8px;">
+                                ✏️ 编辑
+                            </button>
+                            <button type="button" class="btn btn-sm btn-danger" 
+                                    onclick="deleteSingle('{{ store.domain }}')"
+                                    style="font-size:11px;padding:2px 8px;">
+                                🗑️
+                            </button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </form>
+    
+    {% if total_pages > 1 %}
+    <div style="margin-top:16px;display:flex;justify-content:center;align-items:center;gap:8px;flex-wrap:wrap;">
+        <span style="font-size:13px;color:#666;margin-right:8px;">共 {{ stores_total }} 条，{{ total_pages }} 页</span>
+        
+        {% if page > 1 %}
+        <a href="?category={{ selected_category }}&page=1" class="btn btn-sm btn-secondary" style="font-size:12px;padding:4px 10px;">首页</a>
+        <a href="?category={{ selected_category }}&page={{ page - 1 }}" class="btn btn-sm btn-secondary" style="font-size:12px;padding:4px 10px;">上一页</a>
+        {% endif %}
+        
+        {% set start_page = [1, page - 2] | max %}
+        {% set end_page = [total_pages, page + 2] | min %}
+        
+        {% if start_page > 1 %}
+        <span style="font-size:12px;color:#999;">...</span>
+        {% endif %}
+        
+        {% for p in range(start_page, end_page + 1) %}
+            {% if p == page %}
+            <span class="btn btn-sm btn-primary" style="font-size:12px;padding:4px 10px;min-width:32px;text-align:center;">{{ p }}</span>
+            {% else %}
+            <a href="?category={{ selected_category }}&page={{ p }}" class="btn btn-sm btn-secondary" style="font-size:12px;padding:4px 10px;min-width:32px;text-align:center;">{{ p }}</a>
+            {% endif %}
+        {% endfor %}
+        
+        {% if end_page < total_pages %}
+        <span style="font-size:12px;color:#999;">...</span>
+        {% endif %}
+        
+        {% if page < total_pages %}
+        <a href="?category={{ selected_category }}&page={{ page + 1 }}" class="btn btn-sm btn-secondary" style="font-size:12px;padding:4px 10px;">下一页</a>
+        <a href="?category={{ selected_category }}&page={{ total_pages }}" class="btn btn-sm btn-secondary" style="font-size:12px;padding:4px 10px;">末页</a>
+        {% endif %}
+    </div>
+    {% elif stores_total > 0 %}
     <div style="margin-top:12px;padding:12px;background:#e3f2fd;border-radius:6px;font-size:13px;color:#1565c0;">
-        ℹ️ 显示前 50 条记录，共 {{ stores_total }} 条数据
+        ℹ️ 共 {{ stores_total }} 条记录
     </div>
     {% endif %}
     {% else %}
@@ -205,5 +349,102 @@
     </div>
     {% endif %}
 </div>
+
+<!-- 编辑模态框 -->
+<div id="editModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:1000;justify-content:center;align-items:center;">
+    <div style="background:white;border-radius:12px;padding:24px;max-width:500px;width:90%;max-height:80vh;overflow-y:auto;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+            <h3 style="margin:0;">编辑店铺信息</h3>
+            <button type="button" onclick="closeEditModal()" style="background:none;border:none;font-size:20px;cursor:pointer;">✕</button>
+        </div>
+        <form method="POST" action="/shopify/unfiltered/edit">
+            <input type="hidden" name="category" value="{{ selected_category }}">
+            <input type="hidden" name="domain" id="editDomain">
+            <div style="display:grid;gap:12px;">
+                <div>
+                    <label style="font-size:13px;font-weight:500;">域名</label>
+                    <input type="text" id="editDomainDisplay" disabled style="width:100%;background:#f5f5f5;">
+                </div>
+                <div>
+                    <label style="font-size:13px;font-weight:500;">URL</label>
+                    <input type="text" name="url" id="editUrl" style="width:100%;">
+                </div>
+                <div>
+                    <label style="font-size:13px;font-weight:500;">店铺名称</label>
+                    <input type="text" name="store_name" id="editStoreName" style="width:100%;">
+                </div>
+                <div>
+                    <label style="font-size:13px;font-weight:500;">平台</label>
+                    <select name="platform" id="editPlatform" style="width:100%;">
+                        <option value="Shopify">Shopify</option>
+                        <option value="WooCommerce">WooCommerce</option>
+                        <option value="Other">Other</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="font-size:13px;font-weight:500;">商品数</label>
+                    <input type="number" name="product_count" id="editProductCount" min="0" style="width:100%;">
+                </div>
+                <div>
+                    <label style="font-size:13px;font-weight:500;">货币</label>
+                    <input type="text" name="currency" id="editCurrency" style="width:100%;">
+                </div>
+            </div>
+            <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
+                <button type="button" class="btn btn-secondary" onclick="closeEditModal()">取消</button>
+                <button type="submit" class="btn btn-primary">保存</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- 删除确认表单（单条） -->
+<form method="POST" action="/shopify/unfiltered/delete" id="deleteSingleForm" style="display:none;">
+    <input type="hidden" name="category" value="{{ selected_category }}">
+    <input type="hidden" name="domain" id="deleteSingleDomain">
+</form>
+
+<script>
+function toggleAll(source) {
+    document.querySelectorAll('.store-checkbox').forEach(item => {
+        item.checked = source.checked;
+    });
+    updateSelectedCount();
+}
+
+function updateSelectedCount() {
+    const checked = document.querySelectorAll('.store-checkbox:checked').length;
+    document.getElementById('selectedCount').textContent = `已选 ${checked} 条`;
+}
+
+function openEditModal(domain, url, storeName, platform, productCount, currency) {
+    document.getElementById('editDomain').value = domain;
+    document.getElementById('editDomainDisplay').value = domain;
+    document.getElementById('editUrl').value = url || '';
+    document.getElementById('editStoreName').value = storeName || '';
+    document.getElementById('editPlatform').value = platform || 'Shopify';
+    document.getElementById('editProductCount').value = productCount || 0;
+    document.getElementById('editCurrency').value = currency || 'USD';
+    document.getElementById('editModal').style.display = 'flex';
+}
+
+function closeEditModal() {
+    document.getElementById('editModal').style.display = 'none';
+}
+
+function deleteSingle(domain) {
+    if (confirm(`确定删除店铺 "${domain}" 吗？`)) {
+        document.getElementById('deleteSingleDomain').value = domain;
+        document.getElementById('deleteSingleForm').submit();
+    }
+}
+
+// 点击模态框外部关闭
+document.getElementById('editModal').addEventListener('click', function(e) {
+    if (e.target === this) {
+        closeEditModal();
+    }
+});
+</script>
 {% endif %}
 {% endblock %}

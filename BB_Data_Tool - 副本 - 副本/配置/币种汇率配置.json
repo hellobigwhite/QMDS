@@ -1,0 +1,247 @@
+[
+    {
+      "id": 1,
+      "creation_date": "2025-01-10",
+      "nation": "USD",
+      "name": "美金",
+      "exchange_rate_usd": 1
+    },
+    {
+      "id": 2,
+      "creation_date": "2025-01-10",
+      "nation": "CNY",
+      "name": "人民币",
+      "exchange_rate_usd": 0.14
+    },
+    {
+      "id": 3,
+      "creation_date": "2025-01-10",
+      "nation": "HKD",
+      "name": "港币",
+      "exchange_rate_usd": 0.13
+    },
+    {
+      "id": 4,
+      "creation_date": "2025-01-10",
+      "nation": "GBP",
+      "name": "英镑",
+      "exchange_rate_usd": 1.25
+    },
+    {
+      "id": 5,
+      "creation_date": "2025-01-10",
+      "nation": "EUR",
+      "name": "欧元",
+      "exchange_rate_usd": 1.1
+    },
+    {
+      "id": 6,
+      "creation_date": "2025-01-10",
+      "nation": "JPY",
+      "name": "日元",
+      "exchange_rate_usd": 0.0068
+    },
+    {
+      "id": 7,
+      "creation_date": "2025-01-10",
+      "nation": "CAD",
+      "name": "加元",
+      "exchange_rate_usd": 0.75
+    },
+    {
+      "id": 8,
+      "creation_date": "2025-01-10",
+      "nation": "AUD",
+      "name": "澳元",
+      "exchange_rate_usd": 0.65
+    },
+    {
+      "id": 9,
+      "creation_date": "2025-01-10",
+      "nation": "CHF",
+      "name": "瑞士法郎",
+      "exchange_rate_usd": 1
+    },
+    {
+      "id": 10,
+      "creation_date": "2025-01-10",
+      "nation": "SGD",
+      "name": "新加坡元",
+      "exchange_rate_usd": 0.74
+    },
+    {
+      "id": 11,
+      "creation_date": "2025-01-10",
+      "nation": "KRW",
+      "name": "韩元",
+      "exchange_rate_usd": 0.00075
+    },
+    {
+      "id": 12,
+      "creation_date": "2025-01-10",
+      "nation": "INR",
+      "name": "印度卢比",
+      "exchange_rate_usd": 0.012
+    },
+    {
+      "id": 13,
+      "creation_date": "2025-01-10",
+      "nation": "BRL",
+      "name": "巴西雷亚尔",
+      "exchange_rate_usd": 0.18
+    },
+    {
+      "id": 14,
+      "creation_date": "2025-01-10",
+      "nation": "RUB",
+      "name": "俄罗斯卢布",
+      "exchange_rate_usd": 0.012
+    },
+    {
+      "id": 15,
+      "creation_date": "2025-01-10",
+      "nation": "MYR",
+      "name": "马来西亚林吉特",
+      "exchange_rate_usd": 0.22
+    },
+    {
+      "id": 16,
+      "creation_date": "2025-01-11",
+      "nation": "ZAR",
+      "name": "南非兰特",
+      "exchange_rate_usd": 0.053
+    },
+    {
+      "id": 17,
+      "creation_date": "2025-01-11",
+      "nation": "ARS",
+      "name": "阿根廷比索",
+      "exchange_rate_usd": 0.005
+    },
+    {
+      "id": 18,
+      "creation_date": "2025-01-11",
+      "nation": "AED",
+      "name": "阿联酋迪拉姆",
+      "exchange_rate_usd": 0.27
+    },
+    {
+      "id": 19,
+      "creation_date": "2025-01-11",
+      "nation": "TRY",
+      "name": "土耳其里拉",
+      "exchange_rate_usd": 0.052
+    },
+    {
+      "id": 20,
+      "creation_date": "2025-01-11",
+      "nation": "IDR",
+      "name": "印尼盾",
+      "exchange_rate_usd": 0.000065
+    },
+    {
+      "id": 21,
+      "creation_date": "2025-01-11",
+      "nation": "ILS",
+      "name": "以色列新谢克尔",
+      "exchange_rate_usd": 0.29
+    },
+    {
+      "id": 22,
+      "creation_date": "2025-01-11",
+      "nation": "THB",
+      "name": "泰铢",
+      "exchange_rate_usd": 0.029
+    },
+    {
+      "id": 23,
+      "creation_date": "2025-01-11",
+      "nation": "PHP",
+      "name": "菲律宾比索",
+      "exchange_rate_usd": 0.018
+    },
+    {
+      "id": 24,
+      "creation_date": "2025-01-11",
+      "nation": "NZD",
+      "name": "新西兰元",
+      "exchange_rate_usd": 0.61
+    },
+    {
+      "id": 25,
+      "creation_date": "2025-01-11",
+      "nation": "CLP",
+      "name": "智利比索",
+      "exchange_rate_usd": 0.0012
+    },
+    {
+      "id": 26,
+      "creation_date": "2025-01-11",
+      "nation": "CRC",
+      "name": "哥斯达黎加科朗",
+      "exchange_rate_usd": 0.0017
+    },
+    {
+      "id": 27,
+      "creation_date": "2025-01-11",
+      "nation": "GEL",
+      "name": "格鲁吉亚拉里",
+      "exchange_rate_usd": 0.34
+    },
+    {
+      "id": 28,
+      "creation_date": "2025-01-11",
+      "nation": "MXN",
+      "name": "墨西哥比索",
+      "exchange_rate_usd": 0.053
+    },
+    {
+      "id": 29,
+      "creation_date": "2025-01-11",
+      "nation": "NGN",
+      "name": "尼日利亚奈拉",
+      "exchange_rate_usd": 0.0013
+    },
+    {
+      "id": 30,
+      "creation_date": "2025-01-11",
+      "nation": "PKR",
+      "name": "巴基斯坦卢比",
+      "exchange_rate_usd": 0.0036
+    },
+    {
+      "id": 31,
+      "creation_date": "2025-01-11",
+      "nation": "TWD",
+      "name": "新台币",
+      "exchange_rate_usd": 0.033
+    },
+    {
+      "id": 32,
+      "creation_date": "2025-01-11",
+      "nation": "JOD",
+      "name": "约旦第纳尔",
+      "exchange_rate_usd": 1.41
+    },
+    {
+      "id": 33,
+      "creation_date": "2025-01-11",
+      "nation": "COP",
+      "name": "哥伦比亚比索",
+      "exchange_rate_usd": 0.00026
+    },
+    {
+      "id": 34,
+      "creation_date": "2025-01-11",
+      "nation": "SAR",
+      "name": "沙特里亚尔",
+      "exchange_rate_usd": 0.27
+    },
+    {
+      "id": 35,
+      "creation_date": "2025-01-11",
+      "nation": "QAR",
+      "name": "卡塔尔里亚尔",
+      "exchange_rate_usd": 0.27
+    }
+  ]
