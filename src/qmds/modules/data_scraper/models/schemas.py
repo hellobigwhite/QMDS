@@ -19,6 +19,12 @@ class TaskStatus(str, Enum):
     FAILED = "failed"
 
 
+class CleanStatus(str, Enum):
+    UNCLEAN = "unclean"  # 未清洗
+    CLEANED = "cleaned"  # 已清洗
+    FAILED = "failed"    # 清洗失败
+
+
 @dataclass
 class Store:
     url: str
@@ -48,6 +54,8 @@ class Product:
     unique_key: str = ""
     scraped_at: datetime = field(default_factory=datetime.utcnow)
     raw: dict[str, Any] = field(default_factory=dict)
+    clean_status: str = CleanStatus.UNCLEAN.value  # 清洗状态
+    clean_time: Optional[str] = None  # 清洗时间
 
 
 @dataclass

@@ -73,7 +73,7 @@
         </div>
         <div class="stat-row">
             <span class="stat-label">关键词</span>
-            <span class="stat-value">{{ result.keyword }}</span>
+            <span class="stat-value">{{ result.keyword if result.keyword is defined else (result.keywords|join(', ') if result.keywords is defined else '-') }}</span>
         </div>
         <div class="stat-row">
             <span class="stat-label">搜索 API</span>
@@ -83,10 +83,12 @@
             <span class="stat-label">原始搜索结果</span>
             <span class="stat-value">{{ result.total_raw }} 个 URL</span>
         </div>
+        {% if result.total_after_filter is defined %}
         <div class="stat-row">
             <span class="stat-label">清洗去重后</span>
             <span class="stat-value">{{ result.total_after_filter }} 个 URL</span>
         </div>
+        {% endif %}
         <div class="stat-row">
             <span class="stat-label">✅ Shopify 店铺</span>
             <span class="stat-value" style="color:#2e7d32;">{{ result.total_shopify }} 个</span>
@@ -97,24 +99,36 @@
             <span class="stat-value" style="color:#c62828;">{{ result.not_shopify }} 个</span>
         </div>
         {% endif %}
-        {% if result.saved_mongodb is not none %}
+        {% if result.new_stores is defined %}
+        <div class="stat-row">
+            <span class="stat-label">新增店铺</span>
+            <span class="stat-value" style="color:#1565c0;">{{ result.new_stores }} 条</span>
+        </div>
+        {% endif %}
+        {% if result.updated_stores is defined %}
+        <div class="stat-row">
+            <span class="stat-label">更新店铺</span>
+            <span class="stat-value" style="color:#e65100;">{{ result.updated_stores }} 条</span>
+        </div>
+        {% endif %}
+        {% if result.saved_mongodb is defined and result.saved_mongodb is not none %}
         <div class="stat-row">
             <span class="stat-label">MongoDB 存储</span>
             <span class="stat-value" style="color:#1565c0;">{{ result.saved_mongodb }} 条 → {{ result.category }}_unfiltered</span>
         </div>
         {% endif %}
-        {% if result.saved_excel %}
+        {% if result.saved_excel is defined and result.saved_excel %}
         <div class="stat-row">
             <span class="stat-label">Excel 导出</span>
             <span class="stat-value" style="color:#e65100;">{{ result.saved_excel }}</span>
         </div>
         {% endif %}
 
-        {% if result.error %}
+        {% if result.error is defined and result.error %}
         <div class="flash flash-error" style="margin-top:12px;">⚠️ {{ result.error }}</div>
         {% endif %}
 
-        {% if result.stores %}
+        {% if result.stores is defined and result.stores %}
         <div style="margin-top:16px;overflow-x:auto;">
             <table>
                 <thead>
@@ -146,7 +160,43 @@
 
         <div style="margin-top:12px;padding:12px;background:#e8f5e9;border-radius:6px;font-size:13px;color:#2e7d32;">
             ✅ 共找到 <strong>{{ result.total_shopify }}</strong> 个 Shopify 店铺
-            （原始 {{ result.total_raw }} → 去重 {{ result.total_after_filter }} → 检测确认 {{ result.total_shopify }}{% if result.not_shopify is defined %}，过滤非 Shopify {{ result.not_shopify }}{% endif %}）
+            （原始 {{ result.total_raw }} → 检测确认 {{ result.total_shopify }}{% if result.not_shopify is defined %}，过滤非 Shopify {{ result.not_shopify }}{% endif %}）
+        </div>
+        {% elif result.results_per_keyword is defined and result.results_per_keyword %}
+        <div style="margin-top:16px;overflow-x:auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>关键词</th>
+                        <th>原始URL数</th>
+                        <th>Shopify</th>
+                        <th>非Shopify</th>
+                        <th>新增</th>
+                        <th>更新</th>
+                        <th>状态</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for kr in result.results_per_keyword %}
+                    <tr>
+                        <td>{{ loop.index }}</td>
+                        <td><strong>{{ kr.keyword }}</strong></td>
+                        <td>{{ kr.raw_count }}</td>
+                        <td style="color:#2e7d32;">{{ kr.shopify_count }}</td>
+                        <td style="color:#c62828;">{{ kr.not_shopify_count }}</td>
+                        <td>{{ kr.new_count }}</td>
+                        <td>{{ kr.updated_count }}</td>
+                        <td>{% if kr.error %}<span style="color:#c62828;">{{ kr.error }}</span>{% else %}<span style="color:#2e7d32;">完成</span>{% endif %}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <div style="margin-top:12px;padding:12px;background:#e8f5e9;border-radius:6px;font-size:13px;color:#2e7d32;">
+            ✅ 共找到 <strong>{{ result.total_shopify }}</strong> 个 Shopify 店铺
+            （处理 {{ result.processed_keywords }}/{{ result.total_keywords }} 个关键词，原始 {{ result.total_raw }} 个URL{% if result.not_shopify is defined %}，过滤非 Shopify {{ result.not_shopify }}{% endif %}，新增 {{ result.new_stores }}，更新 {{ result.updated_stores }}）
         </div>
         {% elif not result.error %}
         <p class="text-muted" style="margin-top:12px;">未找到 Shopify 店铺，请尝试其他关键词</p>

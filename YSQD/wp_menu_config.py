@@ -12,14 +12,23 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 EXCLUDED = {
     "best seller", "featured", "accessories", "other", "new arrival",
     "exclusive", "limited edition", "hot sale", "most popular",
-    "trending", "special offer", "flash sale", "ACCESSORIES",
-    "book", "books", "novel", "novels", "fiction", "movie", "movies",
-    "music", "video", "videos", "dvd", "cd", "art", "poster", "posters",
-    "gift card", "gift cards", "gift certificate", "magazine", "magazines",
+    "trending", "special offer", "flash sale", "ACCESSORIES"
 }
 BROAD_KEYWORDS = {"gear", "accessories", "parts", "components", "equipment", "supplies", "tools", "sets", "kits"}
 CATCHALL_KEYWORDS = {"gear", "accessories", "equipment", "supplies"}
 STOP_WORDS = {"and", "the", "for", "with", "from", "that", "this", "are", "not", "but", "all", "can", "has", "its", "was"}
+
+
+def safe_json(resp):
+    text = resp.text.strip()
+    for prefix, suffix in (('{', '}'), ('[', ']')):
+        start = text.find(prefix)
+        if start >= 0:
+            end = text.rfind(suffix)
+            if end > start:
+                text = text[start:end+1]
+                break
+    return json.loads(text)
 
 
 def request_with_retry(session, method, url, retries=3, delay=3, **kwargs):
@@ -310,29 +319,83 @@ def clear_menu_items_via_admin(session, site_url, menu_id):
             r2 = session.get(delete_url)
             if r2.status_code in (200, 302):
                 deleted += 1
+    if deleted:
+        print(f"    Deleted {deleted} existing items")
 
 
 def add_rest_menu_item(session, site_url, api_nonce, menu_id, title, obj_type, obj_id, parent_id=0):
     headers = {"User-Agent": "Mozilla/5.0", "X-WP-Nonce": api_nonce,
                "Content-Type": "application/json"}
     base = f"{site_url}/wp-json/wp/v2"
-    slug = clean_slug(title)
-    body = {"title": title, "type": obj_type, "menus": str(menu_id), "parent": parent_id}
+    body = {"title": title, "type": obj_type, "menus": menu_id, "parent": parent_id}
     if obj_type == "taxonomy":
         body["object"] = "product_cat"
-        body["object_id"] = str(obj_id)
+        body["object_id"] = obj_id
+    elif obj_type == "post_type":
+        body["object"] = "page"
+        body["object_id"] = obj_id
     elif obj_type == "custom":
         body["object"] = "custom"
         body["object_id"] = 0
         if title.lower() == "home":
             body["url"] = site_url + "/"
         else:
-            body["url"] = f"{site_url}/product-category/{slug}/"
+            body["url"] = f"{site_url}/product-category/{clean_slug(title)}/"
     resp = request_with_retry(session, "POST", f"{base}/menu-items", json=body, headers=headers, retries=3)
     if resp is not None and resp.status_code in (200, 201):
-        data = resp.json()
-        return data["id"]
+        try:
+            data = safe_json(resp)
+            return data["id"]
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"    JSON parse error: {e}")
+            print(f"    Response ({resp.status_code}): {resp.text[:200]}")
+            return None
+    print(f"    FAIL: {title} - HTTP {resp.status_code if resp is not None else 'N/A'}")
+    if resp is not None:
+        print(f"    Response: {resp.text[:200]}")
     return None
+
+
+def fetch_wp_pages(session, site_url):
+    pages = {}
+    for page in range(1, 100):
+        url = f"{site_url}/wp-admin/edit.php?post_type=page&paged={page}"
+        r = session.get(url)
+        if r is None or r.status_code != 200 or "edit.php" not in r.url:
+            break
+        found = list(re.finditer(r'<tr[^>]*id="post-(\d+)"[^>]*>.*?<a[^>]*class="row-title"[^>]*>([^<]+)</a>', r.text, re.S))
+        if not found:
+            break
+        for m in found:
+            pid, pname = m.group(1), html.unescape(m.group(2)).strip()
+            pages[pname] = int(pid)
+        if len(found) < 20:
+            break
+    return pages
+
+
+def detect_nav_width(session, site_url):
+    r = session.get(site_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+    if r.status_code != 200:
+        return 1140
+    patterns = [
+        r'\.site-header[\s\S]{0,500}?max-width\s*:\s*(\d+)px',
+        r'#masthead[\s\S]{0,500}?max-width\s*:\s*(\d+)px',
+        r'\.container[\s\S]{0,500}?max-width\s*:\s*(\d+)px',
+        r'\.nav[\s\S]{0,500}?max-width\s*:\s*(\d+)px',
+        r'\.primary-menu[\s\S]{0,500}?max-width\s*:\s*(\d+)px',
+        r'\.menu[\s\S]{0,500}?max-width\s*:\s*(\d+)px',
+        r'#primary[\s\S]{0,500}?max-width\s*:\s*(\d+)px',
+        r'\.wrapper[\s\S]{0,500}?max-width\s*:\s*(\d+)px',
+        r'max-width\s*:\s*(\d+)px',
+    ]
+    for pat in patterns:
+        m = re.search(pat, r.text, re.I)
+        if m:
+            w = int(m.group(1))
+            if 600 <= w <= 2000:
+                return w
+    return 1140
 
 
 class WpMenuConfigurator:
@@ -352,22 +415,27 @@ class WpMenuConfigurator:
         # 1. Login
         wp_login(self._session, site_url, self._password)
 
-        # 2. Fetch categories from the site (replaces Excel reading)
+        # 2. Fetch categories from the site
         counter, wp_term_ids = fetch_site_categories_with_counts(self._session, site_url)
 
-        # 3. Build menu using smart algorithm
-        menu = build_menu_structure(counter, target_top=8)
+        # 3. Detect nav width and calculate target_top
+        nav_width = detect_nav_width(self._session, site_url)
+        target_top = max(3, min(10, nav_width // 130))
+        print(f"  Nav width: {nav_width}px, top slots: {target_top}")
 
-        # 4. Get REST API nonce
+        # 4. Build menu using smart algorithm
+        menu = build_menu_structure(counter, target_top=target_top)
+
+        # 5. Get REST API nonce
         api_nonce = get_rest_api_nonce(self._session, site_url)
 
-        # 5. Find/create menu via REST API
+        # 6. Find/create menu via REST API
         menu_id = self._find_or_create_menu(site_url, api_nonce)
 
-        # 6. Clear existing menu items
+        # 7. Clear existing menu items
         clear_menu_items_via_admin(self._session, site_url, menu_id)
 
-        # 7. Add menu items via REST API (two passes)
+        # 8. Add menu items via REST API (two passes)
         self._add_all_menu_items(site_url, api_nonce, menu_id, menu, wp_term_ids)
 
     def _find_or_create_menu(self, site_url, api_nonce):
@@ -397,6 +465,10 @@ class WpMenuConfigurator:
                         term_ids[name] = v
                         break
 
+        # Fetch WP pages to find Shop page ID
+        wp_pages = fetch_wp_pages(self._session, site_url)
+        shop_page_id = wp_pages.get("Shop", 0)
+
         def is_shop(name):
             return name.lower() == "shop"
 
@@ -404,14 +476,18 @@ class WpMenuConfigurator:
             if parent_name:
                 continue
             tid = term_ids.get(name)
-            if tid is not None and not is_shop(name):
+            if tid is not None and not is_shop(name) and name.lower() != "home":
                 mid = add_rest_menu_item(self._session, site_url, api_nonce,
                                          menu_id, name, "taxonomy", tid, 0)
+            elif is_shop(name) and shop_page_id:
+                mid = add_rest_menu_item(self._session, site_url, api_nonce,
+                                         menu_id, name, "post_type", shop_page_id, 0)
             else:
                 mid = add_rest_menu_item(self._session, site_url, api_nonce,
                                          menu_id, name, "custom", 0, 0)
             if mid:
                 created_items[name] = mid
+                print(f"    Added: {name} (menu_id={mid})")
             time.sleep(0.3)
 
         for name, parent_name, _ in menu:
@@ -419,12 +495,16 @@ class WpMenuConfigurator:
                 continue
             pid = created_items.get(parent_name, 0)
             tid = term_ids.get(name)
-            if tid is not None and not is_shop(name):
+            if tid is not None and not is_shop(name) and name.lower() != "home":
                 mid = add_rest_menu_item(self._session, site_url, api_nonce,
                                          menu_id, name, "taxonomy", tid, pid)
+            elif is_shop(name) and shop_page_id:
+                mid = add_rest_menu_item(self._session, site_url, api_nonce,
+                                         menu_id, name, "post_type", shop_page_id, pid)
             else:
                 mid = add_rest_menu_item(self._session, site_url, api_nonce,
                                          menu_id, name, "custom", 0, pid)
             if mid:
                 created_items[name] = mid
+                print(f"    Added: {name} -> {parent_name} (menu_id={mid}, parent_id={pid})")
             time.sleep(0.3)

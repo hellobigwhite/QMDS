@@ -31,7 +31,7 @@ log = get_logger("data_scraper")
 class DataScraperModule:
     """数据爬取模块 - 统一入口"""
 
-    def __init__(self, http_client: Optional[HttpClient] = None, max_workers: int = 10):
+    def __init__(self, http_client: Optional[HttpClient] = None, max_workers: int = 20):
         proxies = settings.load_proxies()
         log.info(f"代理文件: {settings.proxies_file}, 加载到 {len(proxies)} 个代理")
         pm = ProxyManager(proxies) if proxies else None
@@ -42,9 +42,13 @@ class DataScraperModule:
         self.searcher = GoogleShopifySearcher()
         self.detector = PlatformDetector(proxy_manager=pm)
         
-        # 全局线程池
+        # 全局线程池（用于关键词处理）
         self._max_workers = max_workers
         self._executor: Optional[ThreadPoolExecutor] = None
+        # 变体搜索专用线程池（独立，避免资源竞争）
+        self._search_executor: Optional[ThreadPoolExecutor] = None
+        # 平台检测专用线程池（独立，避免死锁）
+        self._detect_executor: Optional[ThreadPoolExecutor] = None
         self._lock = threading.Lock()
         
         if pm:
@@ -65,12 +69,46 @@ class DataScraperModule:
                     log.info(f"全局线程池已创建: {self._max_workers} 线程")
         return self._executor
 
+    @property
+    def search_executor(self) -> ThreadPoolExecutor:
+        """获取变体搜索专用线程池（独立，避免资源竞争）"""
+        if self._search_executor is None:
+            with self._lock:
+                if self._search_executor is None:
+                    self._search_executor = ThreadPoolExecutor(
+                        max_workers=6,
+                        thread_name_prefix="qmds_search"
+                    )
+                    log.info("变体搜索线程池已创建: 6 线程")
+        return self._search_executor
+
+    @property
+    def detect_executor(self) -> ThreadPoolExecutor:
+        """获取平台检测专用线程池（独立，避免死锁）"""
+        if self._detect_executor is None:
+            with self._lock:
+                if self._detect_executor is None:
+                    self._detect_executor = ThreadPoolExecutor(
+                        max_workers=10,
+                        thread_name_prefix="qmds_detect"
+                    )
+                    log.info("平台检测线程池已创建: 10 线程")
+        return self._detect_executor
+
     def shutdown(self):
         """关闭线程池"""
         if self._executor:
             self._executor.shutdown(wait=True)
             self._executor = None
             log.info("全局线程池已关闭")
+        if self._search_executor:
+            self._search_executor.shutdown(wait=True)
+            self._search_executor = None
+            log.info("变体搜索线程池已关闭")
+        if self._detect_executor:
+            self._detect_executor.shutdown(wait=True)
+            self._detect_executor = None
+            log.info("平台检测线程池已关闭")
 
     def __del__(self):
         """析构时关闭线程池"""
@@ -325,7 +363,7 @@ class DataScraperModule:
                                        min_products: int = 0, workers: int = 10,
                                        keyword_workers: int = 1,
                                        save_mongo: bool = True, save_excel: bool = False,
-                                       provider_name: str = "") -> dict:
+                                       provider_name: str = "", progress_callback=None) -> dict:
         """按关键词处理：搜索 → 平台检测 → 去重 → 存入数据库
 
         与 fetch_shopify_urls 的区别：每处理完一个关键词立即存储到数据库，
@@ -341,6 +379,7 @@ class DataScraperModule:
             save_mongo: 是否保存到 MongoDB（默认 True）
             save_excel: 是否导出到 Excel
             provider_name: 指定搜索 API 提供者
+            progress_callback: 进度回调函数
 
         返回:
             {
@@ -359,6 +398,8 @@ class DataScraperModule:
         """
         keywords = [kw.strip() for kw in keyword.replace(";", "\n").replace(",", "\n").splitlines() if kw.strip()]
         log.info(f"fetch_shopify_urls_by_keyword: category={category!r} keywords={keywords} keyword_workers={keyword_workers}")
+        if progress_callback:
+            progress_callback(f"开始处理: category={category}, 关键词={keywords}, 并行数={keyword_workers}")
 
         # 初始化数据库客户端
         db = MongoDBClient() if save_mongo else None
@@ -390,6 +431,8 @@ class DataScraperModule:
             """处理单个关键词"""
             thread_name = threading.current_thread().name
             log.info(f"[{thread_name}] 开始处理关键词 [{idx}/{len(keywords)}]: {kw!r}")
+            if progress_callback:
+                progress_callback(f"开始处理关键词 [{idx}/{len(keywords)}]: {kw}")
 
             keyword_result = {
                 "keyword": kw,
@@ -420,13 +463,13 @@ class DataScraperModule:
                     log.info(f"[{t_name}] <<< 变体{variant_idx}完成: {query!r} -> {len(urls)} 个URL")
                     return variant_idx, query, urls
 
-                # 使用全局线程池并发搜索
+                # 使用变体搜索专用线程池并发搜索
                 log.info(f"[{thread_name}] === 并发搜索 {len(variants)} 个变体 ===")
                 search_futures = {}
                 for i, q in enumerate(variants, 1):
-                    future = self.executor.submit(_search_variant, q, i)
+                    future = self.search_executor.submit(_search_variant, q, i)
                     search_futures[future] = (i, q)
-                    log.info(f"[{thread_name}] 提交变体{i}到线程池: {q!r}")
+                    log.info(f"[{thread_name}] 提交变体{i}到搜索线程池: {q!r}")
 
                 log.info(f"[{thread_name}] 等待 {len(search_futures)} 个变体完成...")
                 for future in as_completed(search_futures):
@@ -443,6 +486,8 @@ class DataScraperModule:
                 for i, info in sorted(variant_results.items()):
                     log.info(f"[{thread_name}] 变体{i}结果: {info['query']!r} -> {info['count']} 个URL")
                 log.info(f"[{thread_name}] === 关键词 {kw!r} 搜索完成: 共 {len(all_raw_urls)} 个URL ===")
+                if progress_callback:
+                    progress_callback(f"[{kw}] 搜索完成: 共 {len(all_raw_urls)} 个URL")
 
                 with lock:
                     stats["total_raw"] += len(all_raw_urls)
@@ -455,6 +500,8 @@ class DataScraperModule:
                 with lock:
                     cleaned_urls, url_map = filter_urls(all_raw_urls, existing_domains=existing_domains)
                 log.info(f"[{thread_name}] 关键词 {kw!r} 清洗去重后剩余 {len(cleaned_urls)} 个 URL")
+                if progress_callback:
+                    progress_callback(f"[{kw}] 清洗去重后: {len(cleaned_urls)} 个URL")
 
                 if not cleaned_urls:
                     log.info(f"[{thread_name}] 关键词 {kw!r} 去重后无新 URL，跳过")
@@ -462,8 +509,12 @@ class DataScraperModule:
 
                 # 3. 平台检测
                 log.info(f"[{thread_name}] 关键词 {kw!r} 开始平台检测: {len(cleaned_urls)} 个URL")
+                if progress_callback:
+                    progress_callback(f"[{kw}] 开始平台检测: {len(cleaned_urls)} 个URL")
                 detection_results = self._detect_platforms(cleaned_urls, url_map, workers)
                 log.info(f"[{thread_name}] 关键词 {kw!r} 平台检测完成: {len(detection_results)} 个Shopify")
+                if progress_callback:
+                    progress_callback(f"[{kw}] 平台检测完成: {len(detection_results)} 个Shopify")
 
                 # 4. 构建店铺数据并存储
                 stores_to_save = []
@@ -508,6 +559,8 @@ class DataScraperModule:
                 # 5. 存入数据库
                 if db and stores_to_save:
                     log.info(f"[{thread_name}] 关键词 {kw!r} 写入数据库: {len(stores_to_save)} 条")
+                    if progress_callback:
+                        progress_callback(f"[{kw}] 写入数据库: {len(stores_to_save)} 条")
                     saved_count, new_count, updated_count = self._save_and_check_duplicates(
                         db, category, stores_to_save
                     )
@@ -517,6 +570,8 @@ class DataScraperModule:
                     keyword_result["new_count"] = new_count
                     keyword_result["updated_count"] = updated_count
                     log.info(f"[{thread_name}] 关键词 {kw!r} 存储完成: 新增 {new_count}, 更新 {updated_count}")
+                    if progress_callback:
+                        progress_callback(f"[{kw}] 存储完成: 新增 {new_count}, 更新 {updated_count}")
 
                 # 6. 导出 Excel（可选）
                 if save_excel and stores_to_save:
@@ -524,10 +579,14 @@ class DataScraperModule:
                         self.export_to_excel(stores_to_save, category)
 
                 log.info(f"[{thread_name}] 关键词 {kw!r} 处理完成")
+                if progress_callback:
+                    progress_callback(f"[{kw}] 处理完成: Shopify {keyword_result['shopify_count']} 个")
 
             except Exception as e:
                 log.error(f"[{thread_name}] 处理关键词 {kw!r} 失败: {e}")
                 keyword_result["error"] = str(e)
+                if progress_callback:
+                    progress_callback(f"[{kw}] 处理失败: {e}")
 
             return keyword_result
 
@@ -586,6 +645,9 @@ class DataScraperModule:
 
         log.info(f"全部处理完成: {result['processed_keywords']}/{result['total_keywords']} 个关键词, "
                  f"Shopify {stats['total_shopify']} 个, 新增 {stats['new_stores']}, 更新 {stats['updated_stores']}")
+        if progress_callback:
+            progress_callback(f"全部处理完成: {result['processed_keywords']}/{result['total_keywords']} 个关键词, "
+                            f"Shopify {stats['total_shopify']} 个, 新增 {stats['new_stores']}, 更新 {stats['updated_stores']}")
 
         return result
 
@@ -620,9 +682,9 @@ class DataScraperModule:
                 log.debug(f"[{thread_name}] 检测失败 {url}: {e}")
                 return url, None
 
-        # 使用全局线程池
+        # 使用平台检测专用线程池
         log.info(f"启动平台检测: {len(urls)} 个URL")
-        futures = {self.executor.submit(_detect_single, url): url for url in urls}
+        futures = {self.detect_executor.submit(_detect_single, url): url for url in urls}
         done_count = 0
         shopify_count = 0
         total_count = len(futures)

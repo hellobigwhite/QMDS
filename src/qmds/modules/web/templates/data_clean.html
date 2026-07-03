@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <h2>🔧 数据二次清洗</h2>
+    <p class="text-muted">对文件夹中的表格数据进行清洗：删除空描述、过滤高价商品、标准化分类字段。提交后可在任务页面查看处理进度和日志。</p>
+</div>
+
+<div class="card">
+    <h3>📋 清洗参数</h3>
+    <form method="POST" action="/tools/data-clean">
+        <div class="grid-2">
+            <div>
+                <label for="folder_path">输入文件夹路径</label>
+                <input type="text" id="folder_path" name="folder_path" placeholder="例如: F:\data\products" required>
+                <small class="text-muted">包含CSV或Excel文件的文件夹路径</small>
+            </div>
+            <div>
+                <label for="output_folder">输出文件夹路径（可选）</label>
+                <input type="text" id="output_folder" name="output_folder" placeholder="默认在输入文件夹下创建cleaned子目录">
+                <small class="text-muted">留空则在输入文件夹下创建cleaned子目录</small>
+            </div>
+        </div>
+        <div class="grid-2">
+            <div>
+                <label for="price_threshold">价格阈值</label>
+                <input type="number" id="price_threshold" name="price_threshold" value="2500" min="0" step="0.01" required>
+                <small class="text-muted">Regular price大于此值的数据将被删除</small>
+            </div>
+            <div>
+                <label>清洗规则</label>
+                <div style="padding: 8px 0; color: #666;">
+                    <div>✓ 删除Description字段为空的数据</div>
+                    <div>✓ 删除Regular price大于阈值的数据</div>
+                    <div>✓ Categories分隔符统一为 |||</div>
+                    <div>✓ Categories单词统一为首字母大写单数形式</div>
+                </div>
+            </div>
+        </div>
+        <div class="mt-4">
+            <button type="submit" class="btn btn-primary">🚀 开始清洗</button>
+            <a href="/tools" class="btn btn-info">返回工具箱</a>
+            <a href="/tasks" class="btn btn-secondary">查看任务</a>
+        </div>
+    </form>
+</div>
+
+{% if result %}
+<div class="card">
+    <h3>📊 清洗结果</h3>
+    <div class="result-box">
+        <div class="stat-row">
+            <span class="stat-label">扫描文件数</span>
+            <span class="stat-value">{{ result.total_files }}</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">成功处理</span>
+            <span class="stat-value" style="color: #2e7d32;">{{ result.processed }}</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">处理失败</span>
+            <span class="stat-value" style="color: #c62828;">{{ result.failed }}</span>
+        </div>
+        {% if result.output_folder %}
+        <div class="stat-row">
+            <span class="stat-label">输出目录</span>
+            <span class="stat-value">{{ result.output_folder }}</span>
+        </div>
+        {% endif %}
+    </div>
+
+    {% if result.details %}
+    <h4 class="mt-4">📁 文件处理详情</h4>
+    <div class="result-box">
+        <div style="max-height: 400px; overflow-y: auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>文件名</th>
+                        <th>状态</th>
+                        <th>原始行数</th>
+                        <th>清洗后行数</th>
+                        <th>删除行数</th>
+                        <th>输出文件</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for detail in result.details %}
+                    <tr>
+                        <td>{{ detail.file }}</td>
+                        <td>
+                            {% if detail.status == 'success' %}
+                            <span style="color: #2e7d32;">✓ 成功</span>
+                            {% else %}
+                            <span style="color: #c62828;">✗ 失败</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ detail.original_count | default('-') }}</td>
+                        <td>{{ detail.cleaned_count | default('-') }}</td>
+                        <td>
+                            {% if detail.original_count is defined and detail.cleaned_count is defined %}
+                            <span style="color: #e65100;">{{ detail.original_count - detail.cleaned_count }}</span>
+                            {% else %}
+                            -
+                            {% endif %}
+                        </td>
+                        <td>{{ detail.output_file | default(detail.reason | default('-')) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+
+{% if error %}
+<div class="card">
+    <h3>❌ 错误信息</h3>
+    <div class="result-box" style="border-color: #f8bbd0; background: #fce4ec;">
+        <p style="color: #c62828;">{{ error }}</p>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

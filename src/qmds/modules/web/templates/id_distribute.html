@@ -1,0 +1,198 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <h2>🔧 商品ID分配</h2>
+    <p class="text-muted">将一串商品ID均匀分配到多个组，同一组内不会出现连续ID</p>
+</div>
+
+<div class="card">
+    <h3>📋 输入参数</h3>
+    <div class="grid-2">
+        <div>
+            <label for="productIds">商品ID（逗号分隔）</label>
+            <textarea id="productIds" rows="4" placeholder="输入ID，如: 1,2,3,4,5,6,7,8,9,10" 
+                style="width:100%;padding:8px 12px;border:1px solid #d9d9d9;border-radius:6px;font-size:14px;resize:vertical;font-family:monospace"></textarea>
+            <small class="text-muted">多个ID用逗号分隔，支持中文逗号</small>
+        </div>
+        <div>
+            <label for="groupCount">分组数量</label>
+            <input type="number" id="groupCount" min="2" value="2" style="width:120px">
+            <small class="text-muted">至少分为2组</small>
+            <div class="mt-4">
+                <button class="btn btn-primary" id="btnDistribute">🚀 开始分配</button>
+                <button class="btn btn-info" id="btnClear" style="margin-left:8px">清空</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card" id="resultCard" style="display:none">
+    <h3>📊 分配结果</h3>
+    <div class="result-box">
+        <div class="stat-row">
+            <span class="stat-label">输入ID数量</span>
+            <span class="stat-value" id="totalCount">0</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">分组数量</span>
+            <span class="stat-value" id="groupCountResult">0</span>
+        </div>
+    </div>
+    
+    <h4 class="mt-4">📋 分配详情（点击可复制）</h4>
+    <div id="resultOutput" style="margin-top:12px"></div>
+</div>
+
+<div class="card">
+    <h3>📝 运行日志 <button class="btn btn-sm btn-danger" id="btnClearLog" style="float:right">清空日志</button></h3>
+    <pre id="logBox" style="min-height:100px;max-height:400px;overflow-y:auto"></pre>
+</div>
+
+<script>
+var LOG_STORAGE_KEY = 'id_distribute_logs';
+
+function saveLogs(logs) {
+    try {
+        localStorage.setItem(LOG_STORAGE_KEY, JSON.stringify(logs));
+    } catch(e) {
+        console.error('保存日志失败:', e);
+    }
+}
+
+function loadLogs() {
+    try {
+        var logs = localStorage.getItem(LOG_STORAGE_KEY);
+        return logs ? JSON.parse(logs) : [];
+    } catch(e) {
+        console.error('加载日志失败:', e);
+        return [];
+    }
+}
+
+function renderLogs(logs) {
+    var box = document.getElementById('logBox');
+    var html = '';
+    for (var i = 0; i < logs.length; i++) {
+        var log = logs[i];
+        var color = log.level === 'error' ? '#ef5350' : log.level === 'success' ? '#4caf50' : '#e0e0e0';
+        html += '<span style="color:' + color + '">[' + log.time + '] ' + log.msg + '</span>\n';
+    }
+    box.innerHTML = html;
+    box.scrollTop = box.scrollHeight;
+}
+
+function appendLog(msg, level) {
+    var t = new Date().toLocaleTimeString('zh-CN', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+    var logs = loadLogs();
+    logs.push({time: t, msg: msg, level: level || 'info'});
+    saveLogs(logs);
+    
+    var box = document.getElementById('logBox');
+    var color = level === 'error' ? '#ef5350' : level === 'success' ? '#4caf50' : '#e0e0e0';
+    box.innerHTML += '<span style="color:' + color + '">[' + t + '] ' + msg + '</span>\n';
+    box.scrollTop = box.scrollHeight;
+}
+
+function clearLogs() {
+    localStorage.removeItem(LOG_STORAGE_KEY);
+    document.getElementById('logBox').innerHTML = '';
+}
+
+function distributeIds(ids, groupCount) {
+    var groups = [];
+    for (var i = 0; i < groupCount; i++) {
+        groups.push([]);
+    }
+    for (var i = 0; i < ids.length; i++) {
+        groups[i % groupCount].push(ids[i]);
+    }
+    return groups;
+}
+
+function copyToClipboard(text) {
+    navigator.clipboard.writeText(text).then(function() {
+        appendLog('已复制到剪贴板', 'success');
+    }).catch(function() {
+        var textarea = document.createElement('textarea');
+        textarea.value = text;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        appendLog('已复制到剪贴板', 'success');
+    });
+}
+
+document.getElementById('btnDistribute').addEventListener('click', function() {
+    var input = document.getElementById('productIds').value.trim();
+    if (!input) {
+        appendLog('错误：请输入商品ID', 'error');
+        return;
+    }
+    
+    var ids = input.split(/[,，]/).map(function(id) { return id.trim(); }).filter(function(id) { return id; });
+    if (ids.length === 0) {
+        appendLog('错误：未识别到有效ID', 'error');
+        return;
+    }
+    
+    var groupCount = parseInt(document.getElementById('groupCount').value);
+    if (groupCount < 2) {
+        appendLog('错误：分组数量至少为2', 'error');
+        return;
+    }
+    if (groupCount > ids.length) {
+        appendLog('错误：分组数量不能大于ID数量(' + ids.length + ')', 'error');
+        return;
+    }
+    
+    appendLog('开始分配 ' + ids.length + ' 个ID到 ' + groupCount + ' 组...', 'info');
+    
+    var groups = distributeIds(ids, groupCount);
+    
+    document.getElementById('totalCount').textContent = ids.length;
+    document.getElementById('groupCountResult').textContent = groupCount;
+    document.getElementById('resultCard').style.display = 'block';
+    
+    var resultHtml = '';
+    for (var i = 0; i < groups.length; i++) {
+        var groupStr = groups[i].join(',');
+        resultHtml += '<div style="margin-bottom:12px;padding:12px;background:#f8f9ff;border:1px solid #e8eaf6;border-radius:6px;">';
+        resultHtml += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">';
+        resultHtml += '<strong style="color:#1a1a2e;">组' + (i + 1) + ' (' + groups[i].length + '个)</strong>';
+        resultHtml += '<button class="btn btn-sm btn-info" onclick="copyToClipboard(\'' + groupStr + '\')">复制</button>';
+        resultHtml += '</div>';
+        resultHtml += '<code style="display:block;padding:8px;background:#1a1a2e;color:#e0e0e0;border-radius:4px;font-size:13px;word-break:break-all;">' + groupStr + '</code>';
+        resultHtml += '</div>';
+    }
+    document.getElementById('resultOutput').innerHTML = resultHtml;
+    
+    appendLog('═══════════════════════════════════════', 'info');
+    appendLog('分配结果：', 'success');
+    for (var i = 0; i < groups.length; i++) {
+        appendLog('组' + (i + 1) + ': ' + groups[i].join(','), 'success');
+    }
+    appendLog('═══════════════════════════════════════', 'info');
+    appendLog('分配完成！可在上方结果区域点击复制按钮复制单组数据', 'success');
+});
+
+document.getElementById('btnClear').addEventListener('click', function() {
+    document.getElementById('productIds').value = '';
+    document.getElementById('groupCount').value = '2';
+    document.getElementById('resultCard').style.display = 'none';
+});
+
+document.getElementById('btnClearLog').addEventListener('click', function() {
+    if (confirm('确定清空所有日志？')) {
+        clearLogs();
+        appendLog('日志已清空', 'info');
+    }
+});
+
+// 页面加载时恢复日志
+var savedLogs = loadLogs();
+if (savedLogs.length > 0) {
+    renderLogs(savedLogs);
+}
+</script>
+{% endblock %}

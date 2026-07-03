@@ -13,9 +13,14 @@
             <select id="clean_category" name="category" style="width:100%;">
                 <option value="__all__">全部类目</option>
                 {% for cat_stat in category_stats|default([]) %}
-                <option value="{{ cat_stat.category }}">{{ cat_stat.category }} (原始: {{ cat_stat.raw_count }}, 清洗后: {{ cat_stat.clean_count }})</option>
+                <option value="{{ cat_stat.category }}">{{ cat_stat.category }} (未清洗: {{ cat_stat.unclean_count|default(0) }}, 已清洗: {{ cat_stat.cleaned_count|default(0) }})</option>
                 {% endfor %}
             </select>
+        </div>
+        <div style="margin-bottom: 12px;">
+            <label>
+                <input type="checkbox" name="force" value="1"> 强制清洗所有数据（包括已清洗的）
+            </label>
         </div>
         <button type="submit" class="btn btn-warning" onclick="return confirm('确定要执行数据清洗吗？');">执行数据清洗</button>
     </form>
@@ -30,6 +35,9 @@
                 <tr>
                     <th>类目</th>
                     <th>原始数据 ({category}_raw)</th>
+                    <th>未清洗</th>
+                    <th>已清洗</th>
+                    <th>清洗失败</th>
                     <th>清洗后数据 ({category}_clean)</th>
                     <th>操作</th>
                 </tr>
@@ -39,11 +47,16 @@
                 <tr>
                     <td>{{ cat_stat.category }}</td>
                     <td>{{ cat_stat.raw_count }}</td>
+                    <td style="color: #f59e0b;">{{ cat_stat.unclean_count|default(0) }}</td>
+                    <td style="color: #10b981;">{{ cat_stat.cleaned_count|default(0) }}</td>
+                    <td style="color: #ef4444;">{{ cat_stat.failed_count|default(0) }}</td>
                     <td>{{ cat_stat.clean_count }}</td>
                     <td>
                         <form method="POST" action="/product-data/clean" style="display: inline;">
                             <input type="hidden" name="category" value="{{ cat_stat.category }}">
-                            <button type="submit" class="btn btn-sm btn-warning" onclick="return confirm('确定要清洗 {{ cat_stat.category }} 的数据吗？');">清洗</button>
+                            <button type="submit" class="btn btn-sm btn-warning" onclick="return confirm('确定要清洗 {{ cat_stat.category }} 的数据吗？');" {% if cat_stat.unclean_count|default(0) == 0 %}disabled{% endif %}>
+                                清洗{% if cat_stat.unclean_count|default(0) > 0 %} ({{ cat_stat.unclean_count }}){% endif %}
+                            </button>
                         </form>
                     </td>
                 </tr>
@@ -74,6 +87,10 @@
         <div class="detail-item">
             <div class="k">清洗效果</div>
             <div class="v">移除无效商品、过滤违禁词、标准化价格和图片字段</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">清洗状态</div>
+            <div class="v"><code>clean_status</code> 字段记录清洗状态：unclean（未清洗）、cleaned（已清洗）、failed（清洗失败）</div>
         </div>
     </div>
 </div>

@@ -67,6 +67,55 @@
     </div>
 
     <div class="card">
+        <h2>WP Rocket 配置</h2>
+        <div class="grid-2">
+            <div>
+                <label>自动清理缓存频率</label>
+                <select name="rocket_cleanup_frequency">
+                    <option value="daily" {{ 'selected' if settings.rocket_cleanup_frequency == 'daily' else '' }}>每日</option>
+                    <option value="weekly" {{ 'selected' if settings.rocket_cleanup_frequency == 'weekly' else '' }}>每周</option>
+                    <option value="monthly" {{ 'selected' if settings.rocket_cleanup_frequency == 'monthly' else '' }}>每月</option>
+                </select>
+            </div>
+            <div>
+                <label>首屏预加载</label>
+                <select name="rocket_preload_links">
+                    <option value="1" {{ 'selected' if settings.rocket_preload_links != '0' else '' }}>启用</option>
+                    <option value="0" {{ 'selected' if settings.rocket_preload_links == '0' else '' }}>禁用</option>
+                </select>
+            </div>
+            <div>
+                <label>CSS 压缩</label>
+                <select name="rocket_minify_css">
+                    <option value="1" {{ 'selected' if settings.rocket_minify_css != '0' else '' }}>启用</option>
+                    <option value="0" {{ 'selected' if settings.rocket_minify_css == '0' else '' }}>禁用</option>
+                </select>
+            </div>
+            <div>
+                <label>JS 压缩</label>
+                <select name="rocket_minify_js">
+                    <option value="1" {{ 'selected' if settings.rocket_minify_js != '0' else '' }}>启用</option>
+                    <option value="0" {{ 'selected' if settings.rocket_minify_js == '0' else '' }}>禁用</option>
+                </select>
+            </div>
+            <div>
+                <label>延迟加载图片</label>
+                <select name="rocket_lazyload">
+                    <option value="1" {{ 'selected' if settings.rocket_lazyload != '0' else '' }}>启用</option>
+                    <option value="0" {{ 'selected' if settings.rocket_lazyload == '0' else '' }}>禁用</option>
+                </select>
+            </div>
+            <div>
+                <label>移除未使用 CSS</label>
+                <select name="rocket_remove_unused_css">
+                    <option value="1" {{ 'selected' if settings.rocket_remove_unused_css != '0' else '' }}>启用</option>
+                    <option value="0" {{ 'selected' if settings.rocket_remove_unused_css == '0' else '' }}>禁用</option>
+                </select>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
         <div class="flex">
             <button type="submit" class="btn btn-primary">保存配置</button>
         </div>

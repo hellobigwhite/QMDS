@@ -63,6 +63,15 @@ class OrderDBClient:
         col.create_index([("domain", ASCENDING), ("order_time", ASCENDING)], unique=True, name="idx_domain_time")
         col.create_index([("order_time", ASCENDING)], name="idx_order_time")
         col.create_index([("order_status", ASCENDING)], name="idx_order_status")
+        # 去重索引
+        col.create_index([
+            ("domain", ASCENDING),
+            ("customer_email", ASCENDING),
+            ("order_amount", ASCENDING)
+        ], name="idx_dedup")
+        # 详情页查询索引
+        col.create_index([("customer_email", ASCENDING)], name="idx_email", sparse=True)
+        col.create_index([("items", ASCENDING)], name="idx_has_details", sparse=True)
 
     # ── 服务器 CRUD ──────────────────────────────────────
 
@@ -122,6 +131,22 @@ class OrderDBClient:
         result = self.servers_col.delete_one({"id": server_id})
         return result.deleted_count > 0
 
+    def delete_all_servers(self) -> int:
+        """删除所有服务器"""
+        result = self.servers_col.delete_many({})
+        return result.deleted_count
+
+    def delete_all_orders(self) -> int:
+        """清空所有订单数据"""
+        deleted = 0
+        # 获取所有订单集合（以orders_开头的集合）
+        for col_name in self.db.list_collection_names():
+            if col_name.startswith("orders_"):
+                result = self.db[col_name].drop()
+                deleted += 1
+        log.info(f"已清空 {deleted} 个订单集合")
+        return deleted
+
     def get_all_ips(self) -> List[str]:
         """获取所有 IP 列表"""
         ips = self.servers_col.distinct("ip", {"ip": {"$ne": ""}})
@@ -160,29 +185,42 @@ class OrderDBClient:
         if date_from and date_to:
             return {
                 "order_time": {
-                    "$gte": f"{date_from}T00:00:00",
-                    "$lte": f"{date_to}T23:59:59",
+                    "$gte": f"{date_from} 00:00:00",
+                    "$lte": f"{date_to} 23:59:59",
                 }
             }
         elif year and month:
-            start = f"{year}-{month:02d}-01T00:00:00"
+            start = f"{year}-{month:02d}-01 00:00:00"
             if month == 12:
-                end = f"{year + 1}-01-01T00:00:00"
+                end = f"{year + 1}-01-01 00:00:00"
             else:
-                end = f"{year}-{month + 1:02d}-01T00:00:00"
+                end = f"{year}-{month + 1:02d}-01 00:00:00"
             return {"order_time": {"$gte": start, "$lt": end}}
         return {}
 
     def get_orders(self, ip: str = "", page: int = 1, limit: int = 30,
-                   year: int = None, month: int = None, date_from: str = "", date_to: str = "") -> dict:
-        """获取订单列表"""
+                   year: int = None, month: int = None, date_from: str = "", date_to: str = "",
+                   sort_by: str = "order_time", sort_order: int = -1) -> dict:
+        """获取订单列表
+        
+        Args:
+            sort_by: 排序字段，可选值: order_time, domain, order_amount, order_category
+            sort_order: 排序方向，1=升序, -1=降序
+        """
         time_filter = self._build_time_filter(date_from, date_to, year, month)
+        
+        # 验证排序字段
+        allowed_sort_fields = {"order_time", "domain", "order_amount", "order_category"}
+        if sort_by not in allowed_sort_fields:
+            sort_by = "order_time"
+        if sort_order not in (1, -1):
+            sort_order = -1
 
         if ip:
             col = self.get_orders_col(ip)
             total = col.count_documents(time_filter)
             skip = (page - 1) * limit
-            cursor = col.find(time_filter, {"_id": 0}).sort("order_time", -1).skip(skip).limit(limit)
+            cursor = col.find(time_filter, {"_id": 0}).sort(sort_by, sort_order).skip(skip).limit(limit)
             rows = list(cursor)
             return {"total": total, "page": page, "limit": limit, "data": rows, "ip": ip}
         else:
@@ -190,9 +228,9 @@ class OrderDBClient:
             all_rows = []
             for pip in all_ips:
                 col = self.get_orders_col(pip)
-                cursor = col.find(time_filter, {"_id": 0}).sort("order_time", -1)
+                cursor = col.find(time_filter, {"_id": 0})
                 all_rows.extend(cursor)
-            all_rows.sort(key=lambda r: r.get("order_time") or "", reverse=True)
+            all_rows.sort(key=lambda r: r.get(sort_by) or (0 if sort_by == "order_amount" else ""), reverse=(sort_order == -1))
             total = len(all_rows)
             skip = (page - 1) * limit
             return {"total": total, "page": page, "limit": limit, "data": all_rows[skip:skip + limit], "ip": ""}
@@ -395,3 +433,303 @@ class OrderDBClient:
                     self.ensure_orders_indexes(ip)
 
         return {"added": added, "updated": updated, "total": len(domains_data)}
+
+    # ── 订单详情操作 ──────────────────────────────────────
+
+    def update_order_details(self, ip: str, domain: str, order_time: str,
+                             customer_email: str = "", order_amount: float = 0,
+                             items: list = None, billing_address: dict = None,
+                             shipping_address: dict = None) -> dict:
+        """更新订单详情，同时进行去重检查
+        
+        Args:
+            ip: 服务器IP
+            domain: 域名
+            order_time: 订单时间
+            customer_email: 客户邮箱
+            order_amount: 订单金额
+            items: 商品列表
+            billing_address: 账单地址
+            shipping_address: 收货地址
+        
+        Returns:
+            {"updated": bool, "deduplicated": int, "duplicate_of": str}
+        """
+        if not ip:
+            return {"updated": False, "deduplicated": 0, "duplicate_of": ""}
+        
+        col = self.get_orders_col(ip)
+        order_date = order_time[:10] if order_time else ""
+        deduplicated = 0
+        duplicate_of = ""
+        
+        # 去重检查（同域名、同日期、同邮箱、同金额）
+        if customer_email and order_date and order_amount:
+            duplicate_filter = {
+                "domain": domain,
+                "order_time": {"$regex": f"^{order_date}"},
+                "customer_email": customer_email,
+                "order_amount": order_amount,
+                "order_time": {"$ne": order_time}  # 排除当前订单
+            }
+            duplicates = list(col.find(duplicate_filter, {"_id": 1, "order_time": 1}))
+            
+            if duplicates:
+                # 按订单时间排序，保留最新的
+                duplicates.sort(key=lambda x: x.get("order_time", ""), reverse=True)
+                
+                # 删除重复记录（保留当前订单，因为它是最新的）
+                dup_ids = [dup["_id"] for dup in duplicates]
+                result = col.delete_many({"_id": {"$in": dup_ids}})
+                deduplicated = result.deleted_count
+                
+                if duplicates:
+                    duplicate_of = duplicates[0].get("order_time", "")
+                
+                log.info(f"去重: 删除 {deduplicated} 条重复订单 (域名={domain}, 日期={order_date}, 邮箱={customer_email}, 金额={order_amount})")
+        
+        # 更新详情
+        update_fields = {}
+        if customer_email:
+            update_fields["customer_email"] = customer_email
+        if items is not None:
+            update_fields["items"] = items
+        if billing_address:
+            update_fields["billing_address"] = billing_address
+        if shipping_address:
+            update_fields["shipping_address"] = shipping_address
+        
+        updated = False
+        if update_fields:
+            update_fields["updated_at"] = datetime.utcnow().isoformat()
+            result = col.update_one(
+                {"domain": domain, "order_time": order_time},
+                {"$set": update_fields}
+            )
+            updated = result.modified_count > 0
+        
+        return {
+            "updated": updated,
+            "deduplicated": deduplicated,
+            "duplicate_of": duplicate_of
+        }
+
+    def get_orders_without_details(self, ip: str, domain: str = None,
+                                   year: int = None, month: int = None) -> list:
+        """获取没有详情信息的订单
+        
+        Args:
+            ip: 服务器IP
+            domain: 域名（可选）
+            year: 年份（可选）
+            month: 月份（可选）
+        
+        Returns:
+            订单列表 [{"order_id": ..., "order_time": ..., "domain": ...}, ...]
+        """
+        if not ip:
+            return []
+        
+        col = self.get_orders_col(ip)
+        
+        # 构建查询条件
+        query = {
+            "$or": [
+                {"items": {"$exists": False}},
+                {"items": None},
+                {"items": []}
+            ]
+        }
+        
+        if domain:
+            query["domain"] = domain
+        
+        if year and month:
+            start = f"{year}-{month:02d}-01 00:00:00"
+            if month == 12:
+                end = f"{year + 1}-01-01 00:00:00"
+            else:
+                end = f"{year}-{month + 1:02d}-01 00:00:00"
+            query["order_time"] = {"$gte": start, "$lt": end}
+        
+        # 查询订单
+        cursor = col.find(query, {
+            "_id": 0,
+            "domain": 1,
+            "order_time": 1,
+            "order_status": 1,
+            "order_amount": 1
+        }).sort("order_time", -1)
+        
+        return list(cursor)
+
+    def get_order_by_domain_time(self, ip: str, domain: str, order_time: str) -> dict:
+        """根据域名和订单时间获取订单"""
+        if not ip:
+            return None
+        col = self.get_orders_col(ip)
+        return col.find_one(
+            {"domain": domain, "order_time": order_time},
+            {"_id": 0}
+        )
+
+    def deduplicate_orders(self, ip: str, domain: str = None,
+                           year: int = None, month: int = None) -> dict:
+        """执行订单去重任务
+        
+        Args:
+            ip: 服务器IP（如果为空则处理所有IP）
+            domain: 域名（可选）
+            year: 年份（可选）
+            month: 月份（可选）
+        
+        Returns:
+            {"duplicates_found": int, "deleted": int, "ips_processed": int}
+        """
+        total_duplicates = 0
+        total_deleted = 0
+        ips_processed = 0
+        
+        # 获取要处理的IP列表
+        if ip:
+            ips = [ip]
+        else:
+            ips = self.get_all_ips()
+        
+        for current_ip in ips:
+            col = self.get_orders_col(current_ip)
+            
+            # 构建匹配条件
+            match_stage = {
+                "customer_email": {"$exists": True, "$ne": ""}
+            }
+            
+            if domain:
+                match_stage["domain"] = domain
+            
+            if year and month:
+                start = f"{year}-{month:02d}-01 00:00:00"
+                if month == 12:
+                    end = f"{year + 1}-01-01 00:00:00"
+                else:
+                    end = f"{year}-{month + 1:02d}-01 00:00:00"
+                match_stage["order_time"] = {"$gte": start, "$lt": end}
+            
+            # 聚合查找重复订单
+            pipeline = [
+                {"$match": match_stage},
+                {"$group": {
+                    "_id": {
+                        "domain": "$domain",
+                        "date": {"$substr": ["$order_time", 0, 10]},
+                        "email": "$customer_email",
+                        "amount": "$order_amount"
+                    },
+                    "count": {"$sum": 1},
+                    "docs": {"$push": {
+                        "_id": "$_id",
+                        "order_time": "$order_time"
+                    }}
+                }},
+                {"$match": {"count": {"$gt": 1}}}
+            ]
+            
+            duplicates = list(col.aggregate(pipeline))
+            total_duplicates += len(duplicates)
+            
+            for dup in duplicates:
+                # 按订单时间排序，保留最新的
+                docs = dup["docs"]
+                docs.sort(key=lambda x: x.get("order_time", ""), reverse=True)
+                to_delete = docs[1:]  # 保留第一个（最新的）
+                
+                if to_delete:
+                    delete_ids = [doc["_id"] for doc in to_delete]
+                    result = col.delete_many({"_id": {"$in": delete_ids}})
+                    total_deleted += result.deleted_count
+            
+            ips_processed += 1
+            
+            if duplicates:
+                log.info(f"IP {current_ip}: 发现 {len(duplicates)} 组重复，删除 {total_deleted} 条")
+        
+        return {
+            "duplicates_found": total_duplicates,
+            "deleted": total_deleted,
+            "ips_processed": ips_processed
+        }
+
+    def get_dedup_stats(self, ip: str = None, domain: str = None,
+                        year: int = None, month: int = None) -> dict:
+        """获取去重统计信息（不执行删除）
+        
+        Returns:
+            {"total_orders": int, "potential_duplicates": int, "groups": list}
+        """
+        total_orders = 0
+        potential_duplicates = 0
+        groups = []
+        
+        # 获取要处理的IP列表
+        if ip:
+            ips = [ip]
+        else:
+            ips = self.get_all_ips()
+        
+        for current_ip in ips:
+            col = self.get_orders_col(current_ip)
+            
+            # 构建匹配条件
+            match_stage = {
+                "customer_email": {"$exists": True, "$ne": ""}
+            }
+            
+            if domain:
+                match_stage["domain"] = domain
+            
+            if year and month:
+                start = f"{year}-{month:02d}-01 00:00:00"
+                if month == 12:
+                    end = f"{year + 1}-01-01 00:00:00"
+                else:
+                    end = f"{year}-{month + 1:02d}-01 00:00:00"
+                match_stage["order_time"] = {"$gte": start, "$lt": end}
+            
+            # 统计总订单数
+            total_orders += col.count_documents(match_stage)
+            
+            # 聚合查找重复组
+            pipeline = [
+                {"$match": match_stage},
+                {"$group": {
+                    "_id": {
+                        "domain": "$domain",
+                        "date": {"$substr": ["$order_time", 0, 10]},
+                        "email": "$customer_email",
+                        "amount": "$order_amount"
+                    },
+                    "count": {"$sum": 1},
+                    "order_times": {"$push": "$order_time"}
+                }},
+                {"$match": {"count": {"$gt": 1}}}
+            ]
+            
+            dup_groups = list(col.aggregate(pipeline))
+            potential_duplicates += len(dup_groups)
+            
+            for group in dup_groups:
+                groups.append({
+                    "ip": current_ip,
+                    "domain": group["_id"]["domain"],
+                    "date": group["_id"]["date"],
+                    "email": group["_id"]["email"],
+                    "amount": group["_id"]["amount"],
+                    "count": group["count"],
+                    "order_times": sorted(group["order_times"], reverse=True)
+                })
+        
+        return {
+            "total_orders": total_orders,
+            "potential_duplicates": potential_duplicates,
+            "groups": groups
+        }

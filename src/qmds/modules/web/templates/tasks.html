@@ -4,64 +4,246 @@
     <h2>任务历史</h2>
     <p class="text-muted mb-4">最近的流水线和爬取任务记录。</p>
     {% if tasks %}
-    <div style="overflow-x:auto;">
-        <table>
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>操作</th>
-                    <th>目标</th>
-                    <th>状态</th>
-                    <th>进度</th>
-                    <th>创建时间</th>
-                    <th>操作</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for task in tasks %}
-                <tr>
-                    <td style="font-family:monospace;font-size:12px;">{{ task.id[:8] }}...</td>
-                    <td><strong>{{ task.action }}</strong></td>
-                    <td><span class="text-muted">{{ task.target[:40] }}</span></td>
-                    <td>
-                        {% if task.status == 'running' %}
-                        <span style="color:#2196f3;font-weight:600;">运行中</span>
-                        {% elif task.status == 'stopping' %}
-                        <span style="color:#ff9800;font-weight:600;">停止中</span>
-                        {% elif task.status == 'stopped' %}
-                        <span style="color:#ff9800;font-weight:600;">已停止</span>
-                        {% elif task.status == 'completed' %}
-                        <span style="color:#4caf50;font-weight:600;">已完成</span>
-                        {% else %}
-                        <span style="color:#c62828;font-weight:600;">{{ task.status }}</span>
-                        {% endif %}
-                    </td>
-                    <td>
-                        {% if task.total > 0 %}
-                        {{ task.current }}/{{ task.total }}
-                        {% elif task.progress > 0 %}
-                        {{ task.progress }}%
-                        {% else %}
-                        -
-                        {% endif %}
-                    </td>
-                    <td class="text-muted">{{ task.created_at[:19] }}</td>
-                    <td>
-                        {% if task.status == 'running' %}
-                        <button class="btn btn-sm btn-danger stop-task-btn" data-task-id="{{ task.id }}" onclick="stopTask('{{ task.id }}')">停止</button>
-                        {% else %}
-                        <span class="text-muted">-</span>
-                        {% endif %}
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+    <div class="task-list">
+        {% for task in tasks %}
+        <div class="task-card" id="task-{{ task.id }}">
+            <div class="task-header">
+                <div class="task-info">
+                    <span class="task-id">{{ task.id[:8] }}...</span>
+                    <span class="task-action">{{ task.action }}</span>
+                    <span class="task-target text-muted">{{ task.target }}</span>
+                </div>
+                <div class="task-status">
+                    {% if task.status == 'running' %}
+                    <span class="status-badge status-running">运行中</span>
+                    {% elif task.status == 'stopping' %}
+                    <span class="status-badge status-stopping">停止中</span>
+                    {% elif task.status == 'stopped' %}
+                    <span class="status-badge status-stopped">已停止</span>
+                    {% elif task.status == 'completed' %}
+                    <span class="status-badge status-completed">已完成</span>
+                    {% else %}
+                    <span class="status-badge status-failed">{{ task.status }}</span>
+                    {% endif %}
+                </div>
+            </div>
+            
+            <div class="task-details">
+                <div class="task-progress">
+                    {% if task.total > 0 %}
+                    <span>进度: {{ task.current }}/{{ task.total }}</span>
+                    {% elif task.progress > 0 %}
+                    <span>进度: {{ task.progress }}%</span>
+                    {% else %}
+                    <span>进度: -</span>
+                    {% endif %}
+                </div>
+                <div class="task-message">
+                    {% if task.status == 'running' %}
+                    <span style="color:#2196f3;">{{ task.message|default('-') }}</span>
+                    {% elif task.status == 'completed' %}
+                    <span style="color:#4caf50;">{{ task.message|default('-') }}</span>
+                    {% elif task.status == 'failed' %}
+                    <span style="color:#c62828;">{{ task.message|default('-') }}</span>
+                    {% else %}
+                    <span style="color:#999;">{{ task.message|default('-') }}</span>
+                    {% endif %}
+                </div>
+                <div class="task-time text-muted">{{ task.created_at[:19] }}</div>
+                <div class="task-actions">
+                    {% if task.status == 'running' %}
+                    <button class="btn btn-sm btn-danger stop-task-btn" data-task-id="{{ task.id }}" onclick="stopTask('{{ task.id }}')">停止</button>
+                    {% endif %}
+                    <button class="btn btn-sm btn-info toggle-logs-btn" data-task-id="{{ task.id }}" onclick="toggleLogs('{{ task.id }}')">查看日志</button>
+                </div>
+            </div>
+            
+            <div class="task-logs" id="logs-{{ task.id }}" style="display: none;">
+                <div class="logs-header">
+                    <span>任务日志</span>
+                    <button class="btn btn-sm btn-secondary refresh-logs-btn" onclick="refreshLogs('{{ task.id }}')">刷新</button>
+                </div>
+                <div class="logs-content" id="logs-content-{{ task.id }}">
+                    <div class="logs-loading">加载中...</div>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
     </div>
     {% else %}
     <p class="text-muted">暂无任务记录，运行流水线后将会在此显示。</p>
     {% endif %}
 </div>
+
+<style>
+.task-list {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.task-card {
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 16px;
+    background: #fff;
+}
+
+.task-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.task-info {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.task-id {
+    font-family: monospace;
+    font-size: 12px;
+    color: #666;
+    background: #f5f5f5;
+    padding: 2px 8px;
+    border-radius: 4px;
+}
+
+.task-action {
+    font-weight: 600;
+    color: #1a1a2e;
+}
+
+.task-target {
+    font-size: 14px;
+}
+
+.status-badge {
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.status-running {
+    background: #e3f2fd;
+    color: #2196f3;
+}
+
+.status-stopping {
+    background: #fff3e0;
+    color: #ff9800;
+}
+
+.status-stopped {
+    background: #fff3e0;
+    color: #ff9800;
+}
+
+.status-completed {
+    background: #e8f5e9;
+    color: #4caf50;
+}
+
+.status-failed {
+    background: #ffebee;
+    color: #c62828;
+}
+
+.task-details {
+    display: grid;
+    grid-template-columns: 1fr 2fr 1fr auto;
+    gap: 16px;
+    align-items: center;
+    padding: 12px 0;
+    border-top: 1px solid #f0f0f0;
+}
+
+.task-progress {
+    font-size: 14px;
+}
+
+.task-message {
+    font-size: 14px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.task-time {
+    font-size: 12px;
+}
+
+.task-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.task-logs {
+    margin-top: 12px;
+    border-top: 1px solid #f0f0f0;
+    padding-top: 12px;
+}
+
+.logs-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    font-weight: 600;
+    color: #333;
+}
+
+.logs-content {
+    background: #1e1e1e;
+    border-radius: 6px;
+    padding: 12px;
+    max-height: 300px;
+    overflow-y: auto;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.logs-loading {
+    color: #888;
+    text-align: center;
+    padding: 20px;
+}
+
+.log-entry {
+    margin-bottom: 4px;
+    padding: 2px 0;
+}
+
+.log-time {
+    color: #6a9955;
+    margin-right: 8px;
+}
+
+.log-level {
+    margin-right: 8px;
+    font-weight: 600;
+}
+
+.log-level-info {
+    color: #569cd6;
+}
+
+.log-level-warning {
+    color: #dcdcaa;
+}
+
+.log-level-error {
+    color: #f44747;
+}
+
+.log-message {
+    color: #d4d4d4;
+}
+</style>
 
 <script>
 function stopTask(taskId) {
@@ -78,13 +260,11 @@ function stopTask(taskId) {
     .then(response => response.json())
     .then(data => {
         if (data.ok) {
-            // 更新按钮状态
-            const btn = document.querySelector(`[data-task-id="${taskId}"]`);
+            const btn = document.querySelector(`[data-task-id="${taskId}"].stop-task-btn`);
             if (btn) {
                 btn.disabled = true;
                 btn.textContent = '停止中...';
             }
-            // 刷新页面以更新状态
             setTimeout(() => {
                 location.reload();
             }, 1000);
@@ -95,6 +275,70 @@ function stopTask(taskId) {
     .catch(error => {
         alert('请求失败: ' + error);
     });
+}
+
+function toggleLogs(taskId) {
+    const logsDiv = document.getElementById(`logs-${taskId}`);
+    const btn = document.querySelector(`[data-task-id="${taskId}"].toggle-logs-btn`);
+    
+    if (logsDiv.style.display === 'none') {
+        logsDiv.style.display = 'block';
+        btn.textContent = '隐藏日志';
+        loadLogs(taskId);
+    } else {
+        logsDiv.style.display = 'none';
+        btn.textContent = '查看日志';
+    }
+}
+
+function loadLogs(taskId) {
+    const contentDiv = document.getElementById(`logs-content-${taskId}`);
+    contentDiv.innerHTML = '<div class="logs-loading">加载中...</div>';
+    
+    fetch(`/api/tasks/${taskId}/logs`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.ok) {
+                renderLogs(taskId, data.logs);
+            } else {
+                contentDiv.innerHTML = '<div class="logs-loading" style="color: #f44747;">加载失败</div>';
+            }
+        })
+        .catch(error => {
+            contentDiv.innerHTML = `<div class="logs-loading" style="color: #f44747;">请求失败: ${error}</div>`;
+        });
+}
+
+function refreshLogs(taskId) {
+    loadLogs(taskId);
+}
+
+function renderLogs(taskId, logs) {
+    const contentDiv = document.getElementById(`logs-content-${taskId}`);
+    
+    if (!logs || logs.length === 0) {
+        contentDiv.innerHTML = '<div class="logs-loading">暂无日志</div>';
+        return;
+    }
+    
+    let html = '';
+    logs.forEach(log => {
+        const levelClass = `log-level-${log.level}`;
+        html += `<div class="log-entry">`;
+        html += `<span class="log-time">${log.time}</span>`;
+        html += `<span class="log-level ${levelClass}">[${log.level.toUpperCase()}]</span>`;
+        html += `<span class="log-message">${escapeHtml(log.message)}</span>`;
+        html += `</div>`;
+    });
+    
+    contentDiv.innerHTML = html;
+    contentDiv.scrollTop = contentDiv.scrollHeight;
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
 }
 </script>
 {% endblock %}

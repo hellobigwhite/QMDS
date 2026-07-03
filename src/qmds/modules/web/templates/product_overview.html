@@ -27,6 +27,22 @@
                 <span class="stat-label">清洗后数据总量</span>
                 <span class="stat-value">{{ total_clean_rows|default(0) }}</span>
             </div>
+            <div class="stat-row">
+                <span class="stat-label">已导出数据总量</span>
+                <span class="stat-value" style="color: #10b981;">{{ total_exported|default(0) }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">未清洗数据</span>
+                <span class="stat-value" style="color: #f59e0b;">{{ total_unclean|default(0) }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">已清洗数据</span>
+                <span class="stat-value" style="color: #10b981;">{{ total_cleaned|default(0) }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">清洗失败</span>
+                <span class="stat-value" style="color: #ef4444;">{{ total_failed|default(0) }}</span>
+            </div>
         </div>
     </div>
 
@@ -50,7 +66,11 @@
                 <tr>
                     <th>类目</th>
                     <th>原始数据 ({category}_raw)</th>
+                    <th>未清洗</th>
+                    <th>已清洗</th>
+                    <th>清洗失败</th>
                     <th>清洗后数据 ({category}_clean)</th>
+                    <th>已导出</th>
                     <th>操作</th>
                 </tr>
             </thead>
@@ -59,10 +79,16 @@
                 <tr>
                     <td>{{ cat_stat.category }}</td>
                     <td>{{ cat_stat.raw_count }}</td>
+                    <td style="color: #f59e0b;">{{ cat_stat.unclean_count|default(0) }}</td>
+                    <td style="color: #10b981;">{{ cat_stat.cleaned_count|default(0) }}</td>
+                    <td style="color: #ef4444;">{{ cat_stat.failed_count|default(0) }}</td>
                     <td>{{ cat_stat.clean_count }}</td>
+                    <td style="color: #10b981; font-weight: 600;">{{ cat_stat.exported_count|default(0) }}</td>
                     <td>
                         <div style="display: flex; gap: 4px;">
-                            <a href="/product-data/clean?category={{ cat_stat.category }}" class="btn btn-sm btn-warning">清洗</a>
+                            <a href="/product-data/clean?category={{ cat_stat.category }}" class="btn btn-sm btn-warning" {% if cat_stat.unclean_count|default(0) == 0 %}disabled{% endif %}>
+                                清洗{% if cat_stat.unclean_count|default(0) > 0 %} ({{ cat_stat.unclean_count }}){% endif %}
+                            </a>
                             {% if cat_stat.clean_count > 0 %}
                             <a href="/product-data/export?category={{ cat_stat.category }}" class="btn btn-sm btn-success">导出</a>
                             {% endif %}
@@ -102,6 +128,10 @@
             <div class="v"><code>{category}_clean</code> - 存储清洗后的商品数据</div>
         </div>
         <div class="detail-item">
+            <div class="k">清洗状态字段</div>
+            <div class="v"><code>clean_status</code> - 记录数据清洗状态：unclean（未清洗）、cleaned（已清洗）、failed（清洗失败）</div>
+        </div>
+        <div class="detail-item">
             <div class="k">类目对应关系</div>
             <div class="v">同一类目的原始数据和清洗后数据通过类目名称对应，如 <code>electronics_raw</code> 和 <code>electronics_clean</code></div>
         </div>
@@ -111,7 +141,7 @@
         </div>
         <div class="detail-item">
             <div class="k">数据清洗流程</div>
-            <div class="v">从 <code>{category}_raw</code> 读取数据 → 过滤无效数据、违禁词处理 → 保存到 <code>{category}_clean</code></div>
+            <div class="v">从 <code>{category}_raw</code> 读取未清洗数据 → 过滤无效数据、违禁词处理 → 保存到 <code>{category}_clean</code> 并更新清洗状态</div>
         </div>
     </div>
 </div>

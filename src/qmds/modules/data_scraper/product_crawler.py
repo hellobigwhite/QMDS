@@ -47,12 +47,9 @@ def get_domain(url: str) -> str:
     return urlparse(url).netloc.replace("www.", "").lower()
 
 
-def product_unique_key(domain: str, product_id: str, title: str, image: str) -> str:
-    """生成商品唯一标识"""
-    normalized_id = str(product_id or "").strip()
-    if normalized_id:
-        return f"{domain}|||id|||{normalized_id}"
-    return f"{domain}|||fallback|||{str(title or '').strip().lower()}|||{str(image or '').strip().lower()}"
+def product_unique_key(title: str) -> str:
+    """生成商品唯一标识 - 以商品标题为唯一主键（全局去重）"""
+    return str(title or "").strip().lower()
 
 
 def convert_price(value, rate):
@@ -119,6 +116,11 @@ class ProductCrawler:
         # 代理配置
         self.proxies = proxies or []
         self.proxy_index = 0
+    
+    def close(self):
+        """关闭会话释放资源"""
+        if self.session:
+            self.session.close()
     
     def get_next_proxy(self) -> Optional[str]:
         """获取下一个代理"""
@@ -241,6 +243,8 @@ class ProductCrawler:
                     product_type = str(product.get("product_type") or "").strip()
                     
                     image = extract_images(images)
+                    if not image:
+                        continue
                     sku, variant_str = extract_variant_info(variants, options)
                     compare_at_price, price = extract_prices(variants)
                     original_price = convert_price(compare_at_price, rate)
@@ -251,7 +255,7 @@ class ProductCrawler:
                         continue
                     
                     product_id = str(product.get("id") or "").strip()
-                    unique_key = product_unique_key(domain, product_id, title, image)
+                    unique_key = product_unique_key(title)
                     
                     if unique_key in seen_unique_keys:
                         continue
@@ -264,7 +268,7 @@ class ProductCrawler:
                         "描述": desc,
                         "子描述": str(product.get("tags") or "").strip(),
                         "图片": image,
-                        "原价": original_price,
+                        "原价": str(original_price) if original_price != "" else "",
                         "折扣价": discount_price,
                         "变体": variant_str,
                         "分类": product_type if product_type else category,
@@ -398,6 +402,8 @@ class ProductCrawler:
                         product_type = str(product.get("product_type") or "").strip()
 
                         image = extract_images(images)
+                        if not image:
+                            continue
                         sku, variant_str = extract_variant_info(variants, options)
                         compare_at_price, price = extract_prices(variants)
                         original_price = convert_price(compare_at_price, rate)
@@ -408,7 +414,7 @@ class ProductCrawler:
                             continue
 
                         product_id = str(product.get("id") or "").strip()
-                        unique_key = product_unique_key(domain, product_id, title, image)
+                        unique_key = product_unique_key(title)
 
                         if unique_key in seen_unique_keys:
                             continue
@@ -421,7 +427,7 @@ class ProductCrawler:
                             "描述": desc,
                             "子描述": str(product.get("tags") or "").strip(),
                             "图片": image,
-                            "原价": original_price,
+                            "原价": str(original_price) if original_price != "" else "",
                             "折扣价": discount_price,
                             "变体": variant_str,
                             "分类": level2 if level2 else (product_type if product_type else category),
@@ -464,10 +470,9 @@ class ProductCrawler:
             return {"success": False, "products": [], "count": 0, "collections": 0, "error": str(e)}
 
     def crawl_category(self, category: str, max_sites: int = 10, progress_callback=None) -> Dict:
-        """基于导航的深度爬取指定类目的商品数据
+        """基础爬取指定类目的商品数据
 
-        从数据库的 {category}_filtered 集合获取店铺URL，解析导航栏按集合逐类爬取。
-        商品分类来自店铺导航栏的两级结构，而非 product_type。
+        从数据库的 {category}_filtered 集合获取店铺URL，通过 products.json API 爬取商品。
 
         Args:
             category: 类目名称
@@ -475,7 +480,7 @@ class ProductCrawler:
             progress_callback: 进度回调函数
 
         Returns:
-            {"total_sites": int, "success_sites": int, "total_products": int, "total_collections": int}
+            {"total_sites": int, "success_sites": int, "total_products": int}
         """
         # 从MongoDB获取_filtered集合中的店铺URL（去重）
         source_db = MongoDBClient()
@@ -502,7 +507,7 @@ class ProductCrawler:
 
         if not store_urls:
             log.warning(f"类目 {category} 无可用URL")
-            return {"total_sites": 0, "success_sites": 0, "total_products": 0, "total_collections": 0, "error": "无可用URL"}
+            return {"total_sites": 0, "success_sites": 0, "total_products": 0, "error": "无可用URL"}
 
         # 限制站点数
         store_urls = store_urls[:max_sites]
@@ -514,7 +519,6 @@ class ProductCrawler:
         total_sites = len(store_urls)
         success_sites = 0
         total_products = 0
-        total_collections = 0
 
         for i, url_doc in enumerate(store_urls):
             url = url_doc.get("url", "")
@@ -524,13 +528,12 @@ class ProductCrawler:
             if progress_callback:
                 progress_callback(f"处理站点 {i+1}/{total_sites}: {url}")
 
-            result = self.crawl_site_with_nav(url, category, progress_callback)
+            result = self.crawl_site(url, category, progress_callback)
 
             if result["success"] and result["products"]:
                 saved_count = product_db.save_raw_products(category, result["products"])
                 total_products += saved_count
                 success_sites += 1
-                total_collections += result.get("collections", 0)
 
                 if progress_callback:
                     progress_callback(f"保存 {saved_count} 件商品到 {category}_raw")
@@ -545,7 +548,6 @@ class ProductCrawler:
             "total_sites": total_sites,
             "success_sites": success_sites,
             "total_products": total_products,
-            "total_collections": total_collections,
         }
 
 

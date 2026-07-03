@@ -26,9 +26,9 @@ class SEOChecker:
         """从scraperapi_keys.txt加载API Key"""
         keys = []
         try:
-            keys_file = Path(__file__).parent.parent.parent.parent / "scraperapi_keys.txt"
-            if keys_file.exists():
-                for line in keys_file.read_text(encoding="utf-8").strip().splitlines():
+            self._keys_file = Path(__file__).parent.parent.parent.parent / "scraperapi_keys.txt"
+            if self._keys_file.exists():
+                for line in self._keys_file.read_text(encoding="utf-8").strip().splitlines():
                     line = line.strip()
                     if line and not line.startswith("#"):
                         keys.append(line)
@@ -36,6 +36,25 @@ class SEOChecker:
             log.error(f"加载ScraperAPI Key失败: {e}")
         log.info(f"加载了 {len(keys)} 个ScraperAPI Key")
         return keys
+    
+    def _comment_out_key(self, key: str):
+        """在文件中注释掉额度用完的key"""
+        if not self._keys_file or not self._keys_file.exists():
+            return
+        try:
+            lines = self._keys_file.read_text(encoding="utf-8").splitlines(keepends=True)
+            modified = False
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if stripped == key:
+                    lines[i] = f"# {stripped}  # 额度用完\n"
+                    modified = True
+                    break
+            if modified:
+                self._keys_file.write_text("".join(lines), encoding="utf-8")
+                log.info("已在文件中注释掉额度用完的ScraperAPI Key")
+        except Exception as e:
+            log.error(f"注释key失败: {e}")
     
     def _get_next_key(self) -> Optional[str]:
         """获取下一个API Key"""
@@ -114,6 +133,8 @@ class SEOChecker:
                 return self._parse_google_result(html)
             elif response.status_code == 403:
                 log.warning("ScraperAPI Key额度已用完")
+                self._comment_out_key(api_key)
+                self._api_keys.remove(api_key)
             else:
                 log.warning(f"ScraperAPI返回状态码: {response.status_code}")
                 

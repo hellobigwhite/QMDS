@@ -1,6 +1,9 @@
 from datetime import datetime
 from typing import Optional
 
+import time
+import threading
+
 from pymongo import MongoClient, ASCENDING
 from pymongo.collection import Collection
 
@@ -10,8 +13,38 @@ from qmds.utils.logger import get_logger
 log = get_logger("site_db")
 
 
+class _TTLCache:
+    """简单的线程安全 TTL 缓存"""
+
+    def __init__(self, ttl_seconds: int = 60):
+        self._ttl = ttl_seconds
+        self._store: dict = {}  # key -> (value, expire_ts)
+        self._lock = threading.Lock()
+
+    def get(self, key: str):
+        with self._lock:
+            item = self._store.get(key)
+            if item and item[1] > time.time():
+                return item[0]
+            self._store.pop(key, None)
+            return None
+
+    def set(self, key: str, value):
+        with self._lock:
+            self._store[key] = (value, time.time() + self._ttl)
+
+    def invalidate(self, key: str = None):
+        with self._lock:
+            if key:
+                self._store.pop(key, None)
+            else:
+                self._store.clear()
+
+
 class SiteDBClient:
     """站点管理数据库客户端 - 使用MongoDB存储站点数据"""
+
+    _stats_cache = _TTLCache(ttl_seconds=60)  # 类级别缓存
 
     def __init__(self, uri: Optional[str] = None, db_name: Optional[str] = None):
         self._uri = uri or settings.mongo_uri
@@ -69,6 +102,7 @@ class SiteDBClient:
             {"$set": site_data, "$setOnInsert": {"created_at": created_at}},
             upsert=True,
         )
+        self._stats_cache.invalidate()
         log.info(f"添加/更新站点: {site_data.get('domain', '')}")
         return str(result.upserted_id or site_data.get("domain", ""))
 
@@ -79,6 +113,8 @@ class SiteDBClient:
             {"domain": domain},
             {"$set": updates}
         )
+        if result.modified_count > 0:
+            self._stats_cache.invalidate()
         return result.modified_count > 0
 
     def update_site_by_id(self, site_id: str, updates: dict) -> bool:
@@ -90,6 +126,8 @@ class SiteDBClient:
                 {"_id": ObjectId(site_id)},
                 {"$set": updates}
             )
+            if result.modified_count > 0:
+                self._stats_cache.invalidate()
             return result.modified_count > 0
         except Exception:
             return False
@@ -97,6 +135,8 @@ class SiteDBClient:
     def delete_site(self, domain: str) -> bool:
         """删除站点"""
         result = self.sites.delete_one({"domain": domain})
+        if result.deleted_count > 0:
+            self._stats_cache.invalidate()
         return result.deleted_count > 0
 
     def delete_sites_by_ids(self, site_ids: list[str]) -> int:
@@ -109,6 +149,8 @@ class SiteDBClient:
             except Exception:
                 continue
         result = self.sites.delete_many({"_id": {"$in": object_ids}})
+        if result.deleted_count > 0:
+            self._stats_cache.invalidate()
         return result.deleted_count
 
     def get_site(self, domain: str) -> Optional[dict]:
@@ -158,26 +200,92 @@ class SiteDBClient:
         return self._paginate({"schedule_enabled": "1", "report_status": {"$ne": "已报"}}, keyword, "schedule_time", 1, page, page_size)
 
     def list_built_sites(self, keyword: str = "", page: int = 1, page_size: int = 20) -> dict:
-        """列出已建站的站点（分页）"""
-        return self._paginate({"build_status": "已建站"}, keyword, "build_time", -1, page, page_size)
+        """列出已建站的站点（分页），未处理的排最前面"""
+        from bson import SON
+
+        query = {"build_status": "已建站"}
+        if keyword:
+            query["domain"] = {"$regex": keyword, "$options": "i"}
+
+        pipeline = [
+            {"$match": query},
+            {"$addFields": {
+                "pending_score": {
+                    "$add": [
+                        {"$cond": [{"$ne": [{"$ifNull": ["$health_status", ""]}, "正常"]}, 1, 0]},
+                        {"$cond": [{"$ne": [{"$ifNull": ["$main_data_status", ""]}, "已上传"]}, 1, 0]},
+                        {"$cond": [{"$ne": [{"$ifNull": ["$extra_data_status", ""]}, "已上传"]}, 1, 0]},
+                        {"$cond": [{"$ne": [{"$ifNull": ["$main_category_status", ""]}, "已上传"]}, 1, 0]},
+                        {"$cond": [{"$ne": [{"$ifNull": ["$auto_category_status", ""]}, "已配置"]}, 1, 0]},
+                        {"$cond": [{"$ne": [{"$ifNull": ["$plugin_status", ""]}, "已配置"]}, 1, 0]},
+                        {"$cond": [{"$ne": [{"$ifNull": ["$media_status", ""]}, "已配置"]}, 1, 0]},
+                    ]
+                }
+            }},
+            {"$sort": SON([("pending_score", -1), ("build_time", -1)])},
+            {"$skip": (page - 1) * page_size},
+            {"$limit": page_size},
+        ]
+
+        total = self.sites.count_documents(query)
+        items = list(self.sites.aggregate(pipeline))
+        return {"items": items, "total": total, "page": page, "page_size": page_size}
 
     # ── 统计操作 ──────────────────────────────────────────────
 
-    def get_stats(self) -> dict:
-        """获取站点统计信息"""
-        total = self.sites.estimated_document_count()
-        reported = self.sites.count_documents({"report_status": "已报"})
-        built = self.sites.count_documents({"build_status": "已建站"})
-        scheduled = self.sites.count_documents({"schedule_enabled": "1", "report_status": {"$ne": "已报"}})
-        local = total - reported
+    def get_stats(self, use_cache: bool = True) -> dict:
+        """获取站点统计信息（单次聚合查询 + 缓存）"""
+        cache_key = "site_stats"
 
-        return {
-            "total_sites": total,
-            "local_sites": local,
-            "reported_sites": reported,
-            "scheduled_sites": scheduled,
-            "built_sites": built,
-        }
+        if use_cache:
+            cached = self._stats_cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+        # 用单次聚合查询获取总数、report_status、build_status 分布
+        pipeline = [
+            {"$facet": {
+                "total": [{"$count": "count"}],
+                "report_status": [
+                    {"$group": {"_id": "$report_status", "count": {"$sum": 1}}}
+                ],
+                "build_status": [
+                    {"$group": {"_id": "$build_status", "count": {"$sum": 1}}}
+                ],
+                "schedule_enabled": [
+                    {"$match": {"schedule_enabled": "1", "report_status": {"$ne": "已报"}}},
+                    {"$count": "count"}
+                ]
+            }}
+        ]
+
+        result = list(self.sites.aggregate(pipeline))
+        if not result:
+            stats = {"total_sites": 0, "local_sites": 0, "reported_sites": 0,
+                     "scheduled_sites": 0, "built_sites": 0}
+        else:
+            facet = result[0]
+            total = facet["total"][0]["count"] if facet.get("total") else 0
+            report_map = {doc["_id"]: doc["count"] for doc in facet.get("report_status", [])}
+            build_map = {doc["_id"]: doc["count"] for doc in facet.get("build_status", [])}
+            scheduled_list = facet.get("schedule_enabled", [])
+
+            reported = report_map.get("已报", 0)
+            built = build_map.get("已建站", 0)
+            scheduled = scheduled_list[0]["count"] if scheduled_list else 0
+
+            stats = {
+                "total_sites": total,
+                "local_sites": total - reported,
+                "reported_sites": reported,
+                "scheduled_sites": scheduled,
+                "built_sites": built,
+            }
+
+        if use_cache:
+            self._stats_cache.set(cache_key, stats)
+
+        return stats
 
     # ── 批量操作 ──────────────────────────────────────────────
 
@@ -196,6 +304,8 @@ class SiteDBClient:
             {"_id": {"$in": object_ids}},
             {"$set": {"report_status": status, "updated_at": ts}}
         )
+        if result.modified_count > 0:
+            self._stats_cache.invalidate()
         return result.modified_count
 
     def batch_update_build_status(self, site_ids: list[str], status: str) -> int:
@@ -213,6 +323,8 @@ class SiteDBClient:
             {"_id": {"$in": object_ids}},
             {"$set": {"build_status": status, "build_time": ts, "updated_at": ts}}
         )
+        if result.modified_count > 0:
+            self._stats_cache.invalidate()
         return result.modified_count
 
     def batch_set_schedule(self, site_ids: list[str], schedule_time: str) -> int:
@@ -230,6 +342,8 @@ class SiteDBClient:
             {"_id": {"$in": object_ids}},
             {"$set": {"schedule_enabled": "1", "schedule_time": schedule_time, "updated_at": ts}}
         )
+        if result.modified_count > 0:
+            self._stats_cache.invalidate()
         return result.modified_count
 
     def batch_clear_schedule(self, site_ids: list[str]) -> int:
@@ -247,9 +361,36 @@ class SiteDBClient:
             {"_id": {"$in": object_ids}},
             {"$set": {"schedule_enabled": "0", "schedule_time": "", "updated_at": ts}}
         )
+        if result.modified_count > 0:
+            self._stats_cache.invalidate()
         return result.modified_count
 
     # ── 导入导出 ──────────────────────────────────────────────
+
+    @staticmethod
+    def _clean_data_source_id(raw) -> str:
+        """清洗数据源ID：去空格、去首尾逗号、浮点数转整数、NaN转空"""
+        import math
+        if raw is None:
+            return ""
+        try:
+            if isinstance(raw, float) and math.isnan(raw):
+                return ""
+        except Exception:
+            pass
+        s = str(raw).strip()
+        if not s or s.lower() in ("nan", "none"):
+            return ""
+        parts = []
+        for part in s.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if part.replace(".", "", 1).isdigit() and "." in part:
+                part = part.split(".")[0]
+            parts.append(part)
+        result = ",".join(parts)
+        return result.strip(",")
 
     def import_from_excel(self, filepath: str) -> dict:
         """从Excel文件导入站点数据"""
@@ -265,14 +406,20 @@ class SiteDBClient:
             if not domain:
                 continue
 
+            # 如果"是否建站"列为"是"，跳过该行
+            build_flag = str(row.get("是否建站", "")).strip()
+            if build_flag == "是":
+                skipped += 1
+                continue
+
             site_data = {
                 "domain": domain,
                 "template": str(row.get("底板", "") or row.get("模板", "") or row.get("template", "")),
                 "server": str(row.get("服务器", "") or row.get("server", "")),
                 "category": str(row.get("大类", "") or row.get("category", "")),
                 "main_category": str(row.get("主分类", "") or row.get("main_category", "")),
-                "main_data_source_id": str(row.get("主分类数据码", "") or row.get("main_data_source_id", "")),
-                "extra_data_source_id": str(row.get("站群数据码", "") or row.get("extra_data_source_id", "")),
+                "main_data_source_id": self._clean_data_source_id(row.get("主分类数据码", "") or row.get("main_data_source_id", "")),
+                "extra_data_source_id": self._clean_data_source_id(row.get("站群数据码", "") or row.get("extra_data_source_id", "")),
                 "title": str(row.get("SEO Title", "") or row.get("SEO Title（最大58字符）", "") or row.get("title", "")),
                 "description": str(row.get("Meta Description", "") or row.get("description", "")),
                 "address": str(row.get("地址", "") or row.get("address", "")),
@@ -299,6 +446,8 @@ class SiteDBClient:
                 created += 1
 
         log.info(f"Excel导入完成: 新增 {created}, 更新 {updated}, 跳过 {skipped}, 错误 {len(errors)}")
+        if created > 0 or updated > 0:
+            self._stats_cache.invalidate()
         return {
             "created": created,
             "updated": updated,
@@ -353,11 +502,15 @@ class SiteDBClient:
             {"_id": {"$in": object_ids}},
             {"$set": {field: value, "updated_at": ts}}
         )
+        if result.modified_count > 0:
+            self._stats_cache.invalidate()
         return result.modified_count
 
     def get_site_count(self) -> int:
-        """获取站点总数"""
-        return self.sites.estimated_document_count()
+        """获取站点总数（精确计数）"""
+        pipeline = [{"$count": "count"}]
+        result = list(self.sites.aggregate(pipeline))
+        return result[0]["count"] if result else 0
 
     # ── 配置管理 ──────────────────────────────────────────────
 
@@ -385,8 +538,8 @@ class SiteDBClient:
         defaults = {
             "report_username": "liwei",
             "report_password": "123456",
-            "erp_username": "linwei",
-            "erp_password": "linwei123",
+            "erp_username": "",
+            "erp_password": "",
             "wp_password": "",
             "media_root": "logo",
         }
@@ -466,8 +619,8 @@ class SiteDBClient:
 
     # ── 已建站配置状态管理 ──────────────────────────────────────
 
-    def batch_update_health_status(self, site_ids: list[str], status: str) -> int:
-        """批量更新健康检查状态"""
+    def _batch_update_field(self, site_ids: list[str], field: str, value, extra_fields: dict = None) -> int:
+        """通用批量更新字段（内部方法）"""
         from bson import ObjectId
         object_ids = []
         for sid in site_ids:
@@ -477,113 +630,45 @@ class SiteDBClient:
                 continue
 
         ts = datetime.utcnow().isoformat()
+        set_data = {field: value, "updated_at": ts}
+        if extra_fields:
+            set_data.update(extra_fields)
+
         result = self.sites.update_many(
             {"_id": {"$in": object_ids}},
-            {"$set": {"health_status": status, "health_time": ts, "updated_at": ts}}
+            {"$set": set_data}
         )
+        if result.modified_count > 0:
+            self._stats_cache.invalidate()
         return result.modified_count
+
+    def batch_update_health_status(self, site_ids: list[str], status: str) -> int:
+        """批量更新健康检查状态"""
+        return self._batch_update_field(site_ids, "health_status", status, {"health_time": datetime.utcnow().isoformat()})
 
     def batch_update_main_data_status(self, site_ids: list[str], status: str) -> int:
         """批量更新主数据上传状态"""
-        from bson import ObjectId
-        object_ids = []
-        for sid in site_ids:
-            try:
-                object_ids.append(ObjectId(sid))
-            except Exception:
-                continue
-
-        ts = datetime.utcnow().isoformat()
-        result = self.sites.update_many(
-            {"_id": {"$in": object_ids}},
-            {"$set": {"main_data_status": status, "main_data_time": ts, "updated_at": ts}}
-        )
-        return result.modified_count
+        return self._batch_update_field(site_ids, "main_data_status", status, {"main_data_time": datetime.utcnow().isoformat()})
 
     def batch_update_extra_data_status(self, site_ids: list[str], status: str) -> int:
         """批量更新补充数据上传状态"""
-        from bson import ObjectId
-        object_ids = []
-        for sid in site_ids:
-            try:
-                object_ids.append(ObjectId(sid))
-            except Exception:
-                continue
-
-        ts = datetime.utcnow().isoformat()
-        result = self.sites.update_many(
-            {"_id": {"$in": object_ids}},
-            {"$set": {"extra_data_status": status, "extra_data_time": ts, "updated_at": ts}}
-        )
-        return result.modified_count
+        return self._batch_update_field(site_ids, "extra_data_status", status, {"extra_data_time": datetime.utcnow().isoformat()})
 
     def batch_update_main_category_status(self, site_ids: list[str], status: str) -> int:
         """批量更新主分类设置状态"""
-        from bson import ObjectId
-        object_ids = []
-        for sid in site_ids:
-            try:
-                object_ids.append(ObjectId(sid))
-            except Exception:
-                continue
-
-        ts = datetime.utcnow().isoformat()
-        result = self.sites.update_many(
-            {"_id": {"$in": object_ids}},
-            {"$set": {"main_category_status": status, "main_category_time": ts, "updated_at": ts}}
-        )
-        return result.modified_count
+        return self._batch_update_field(site_ids, "main_category_status", status, {"main_category_time": datetime.utcnow().isoformat()})
 
     def batch_update_plugin_status(self, site_ids: list[str], status: str) -> int:
         """批量更新插件配置状态"""
-        from bson import ObjectId
-        object_ids = []
-        for sid in site_ids:
-            try:
-                object_ids.append(ObjectId(sid))
-            except Exception:
-                continue
-
-        ts = datetime.utcnow().isoformat()
-        result = self.sites.update_many(
-            {"_id": {"$in": object_ids}},
-            {"$set": {"plugin_status": status, "plugin_time": ts, "updated_at": ts}}
-        )
-        return result.modified_count
+        return self._batch_update_field(site_ids, "plugin_status", status, {"plugin_time": datetime.utcnow().isoformat()})
 
     def batch_update_media_status(self, site_ids: list[str], status: str) -> int:
         """批量更新媒体配置状态"""
-        from bson import ObjectId
-        object_ids = []
-        for sid in site_ids:
-            try:
-                object_ids.append(ObjectId(sid))
-            except Exception:
-                continue
-
-        ts = datetime.utcnow().isoformat()
-        result = self.sites.update_many(
-            {"_id": {"$in": object_ids}},
-            {"$set": {"media_status": status, "media_time": ts, "updated_at": ts}}
-        )
-        return result.modified_count
+        return self._batch_update_field(site_ids, "media_status", status, {"media_time": datetime.utcnow().isoformat()})
 
     def batch_update_auto_category_status(self, site_ids: list[str], status: str) -> int:
         """批量更新菜单/自动分类状态"""
-        from bson import ObjectId
-        object_ids = []
-        for sid in site_ids:
-            try:
-                object_ids.append(ObjectId(sid))
-            except Exception:
-                continue
-
-        ts = datetime.utcnow().isoformat()
-        result = self.sites.update_many(
-            {"_id": {"$in": object_ids}},
-            {"$set": {"auto_category_status": status, "auto_category_time": ts, "updated_at": ts}}
-        )
-        return result.modified_count
+        return self._batch_update_field(site_ids, "auto_category_status", status, {"auto_category_time": datetime.utcnow().isoformat()})
 
     def update_domain_status(self, domain: str, report_id: str, domain_status: str) -> bool:
         """更新域名状态（从上报API同步）"""
@@ -607,39 +692,72 @@ class SiteDBClient:
 
     def batch_update_login_path(self, site_ids: list[str], login_path: str) -> int:
         """批量更新登录路径"""
-        from bson import ObjectId
-        object_ids = []
-        for sid in site_ids:
-            try:
-                object_ids.append(ObjectId(sid))
-            except Exception:
-                continue
+        return self._batch_update_field(site_ids, "login_path", login_path)
 
-        ts = datetime.utcnow().isoformat()
-        result = self.sites.update_many(
-            {"_id": {"$in": object_ids}},
-            {"$set": {"login_path": login_path, "updated_at": ts}}
-        )
-        return result.modified_count
+    def get_built_stats(self, use_cache: bool = True) -> dict:
+        """获取已建站统计信息（单次聚合查询 + 缓存）"""
+        cache_key = "built_stats"
 
-    def get_built_stats(self) -> dict:
-        """获取已建站统计信息"""
-        built = self.sites.count_documents({"build_status": "已建站"})
-        health_ok = self.sites.count_documents({"build_status": "已建站", "health_status": "正常"})
-        main_data_ok = self.sites.count_documents({"build_status": "已建站", "main_data_status": "已上传"})
-        extra_data_ok = self.sites.count_documents({"build_status": "已建站", "extra_data_status": "已上传"})
-        main_category_ok = self.sites.count_documents({"build_status": "已建站", "main_category_status": "已上传"})
-        plugin_ok = self.sites.count_documents({"build_status": "已建站", "plugin_status": "已配置"})
-        media_ok = self.sites.count_documents({"build_status": "已建站", "media_status": "已配置"})
-        auto_category_ok = self.sites.count_documents({"build_status": "已建站", "auto_category_status": "已配置"})
+        if use_cache:
+            cached = self._stats_cache.get(cache_key)
+            if cached is not None:
+                return cached
 
-        return {
-            "built_sites": built,
-            "health_ok": health_ok,
-            "main_data_ok": main_data_ok,
-            "extra_data_ok": extra_data_ok,
-            "main_category_ok": main_category_ok,
-            "plugin_ok": plugin_ok,
-            "media_ok": media_ok,
-            "auto_category_ok": auto_category_ok,
-        }
+        pipeline = [
+            {"$match": {"build_status": "已建站"}},
+            {"$facet": {
+                "total": [{"$count": "count"}],
+                "health": [
+                    {"$group": {"_id": "$health_status", "count": {"$sum": 1}}}
+                ],
+                "main_data": [
+                    {"$group": {"_id": "$main_data_status", "count": {"$sum": 1}}}
+                ],
+                "extra_data": [
+                    {"$group": {"_id": "$extra_data_status", "count": {"$sum": 1}}}
+                ],
+                "main_category": [
+                    {"$group": {"_id": "$main_category_status", "count": {"$sum": 1}}}
+                ],
+                "plugin": [
+                    {"$group": {"_id": "$plugin_status", "count": {"$sum": 1}}}
+                ],
+                "media": [
+                    {"$group": {"_id": "$media_status", "count": {"$sum": 1}}}
+                ],
+                "auto_category": [
+                    {"$group": {"_id": "$auto_category_status", "count": {"$sum": 1}}}
+                ],
+            }}
+        ]
+
+        result = list(self.sites.aggregate(pipeline))
+        if not result:
+            stats = {"built_sites": 0, "health_ok": 0, "main_data_ok": 0,
+                     "extra_data_ok": 0, "main_category_ok": 0, "plugin_ok": 0,
+                     "media_ok": 0, "auto_category_ok": 0}
+        else:
+            facet = result[0]
+            built = facet["total"][0]["count"] if facet.get("total") else 0
+
+            def _count_by_value(facet_key, target_value):
+                for doc in facet.get(facet_key, []):
+                    if doc["_id"] == target_value:
+                        return doc["count"]
+                return 0
+
+            stats = {
+                "built_sites": built,
+                "health_ok": _count_by_value("health", "正常"),
+                "main_data_ok": _count_by_value("main_data", "已上传"),
+                "extra_data_ok": _count_by_value("extra_data", "已上传"),
+                "main_category_ok": _count_by_value("main_category", "已上传"),
+                "plugin_ok": _count_by_value("plugin", "已配置"),
+                "media_ok": _count_by_value("media", "已配置"),
+                "auto_category_ok": _count_by_value("auto_category", "已配置"),
+            }
+
+        if use_cache:
+            self._stats_cache.set(cache_key, stats)
+
+        return stats

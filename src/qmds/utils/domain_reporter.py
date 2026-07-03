@@ -19,6 +19,79 @@ DOMAIN_STATUS_LABELS = {
 
 REPORT_API_BASE_URL = "http://123.60.135.93:8099"
 
+# QMDS 英文分类名 → 远程上报平台中文分类名
+REPORT_CATEGORY_NAME_MAP = {
+    "hardware": "五金",
+    "vehicles_parts": "交通工具",
+    "sporting_goods": "体育用品",
+    "health_beauty": "保健",
+    "office_supplies": "办公用品",
+    "animals_pet_supplies": "动物",
+    "business_industrial": "商业",
+    "baby_toddler": "婴幼儿用品",
+    "media": "媒体",
+    "religious_ceremonial": "宗教",
+    "furniture": "家具",
+    "home_garden": "家居与园艺",
+    "mature": "成人",
+    "apparel_accessories": "服饰与配饰",
+    "toys_games": "玩具",
+    "electronics": "电子产品",
+    "cameras_optics": "相机与光学器件",
+    "luggage_bags": "箱包",
+    "arts_entertainment": "艺术与娱乐",
+    "software": "软件",
+    "food_beverages_tobacco": "饮食",
+}
+
+# QMDS 英文分类名 → 远程上报平台分类 ID
+REPORT_CATEGORY_ID_MAP = {
+    # 英文键
+    "hardware": "1",
+    "vehicles_parts": "2",
+    "sporting_goods": "3",
+    "health_beauty": "4",
+    "office_supplies": "5",
+    "animals_pet_supplies": "6",
+    "business_industrial": "7",
+    "baby_toddler": "8",
+    "media": "9",
+    "religious_ceremonial": "10",
+    "furniture": "11",
+    "home_garden": "12",
+    "mature": "13",
+    "apparel_accessories": "14",
+    "toys_games": "15",
+    "electronics": "16",
+    "cameras_optics": "17",
+    "luggage_bags": "18",
+    "arts_entertainment": "19",
+    "software": "20",
+    "food_beverages_tobacco": "21",
+    # 中文键（兼容数据库中存储中文分类名的情况）
+    "五金": "1",
+    "交通工具": "2",
+    "体育用品": "3",
+    "保健": "4",
+    "办公用品": "5",
+    "动物": "6",
+    "商业": "7",
+    "婴幼儿用品": "8",
+    "媒体": "9",
+    "宗教": "10",
+    "家具": "11",
+    "家居与园艺": "12",
+    "成人": "13",
+    "服饰与配饰": "14",
+    "玩具": "15",
+    "电子产品": "16",
+    "相机与光学器件": "17",
+    "箱包": "18",
+    "艺术与娱乐": "19",
+    "软件": "20",
+    "饮食": "21",
+}
+
 
 class DomainReporter:
     def __init__(self, base_url, username, password):

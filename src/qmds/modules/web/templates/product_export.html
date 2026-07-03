@@ -15,7 +15,7 @@
                     <option value="">请选择类目</option>
                     {% for cat_stat in category_stats|default([]) %}
                     {% if cat_stat.clean_count > 0 %}
-                    <option value="{{ cat_stat.category }}">{{ cat_stat.category }} ({{ cat_stat.clean_count }} 条)</option>
+                    <option value="{{ cat_stat.category }}">{{ cat_stat.category }} ({{ cat_stat.clean_count }} 条，已导出 {{ cat_stat.exported_count|default(0) }})</option>
                     {% endif %}
                     {% endfor %}
                 </select>
@@ -45,6 +45,7 @@
                     <th>类目</th>
                     <th>原始数据 ({category}_raw)</th>
                     <th>清洗后数据 ({category}_clean)</th>
+                    <th>已导出</th>
                     <th>操作</th>
                 </tr>
             </thead>
@@ -54,6 +55,7 @@
                     <td>{{ cat_stat.category }}</td>
                     <td>{{ cat_stat.raw_count }}</td>
                     <td>{{ cat_stat.clean_count }}</td>
+                    <td style="color: #10b981; font-weight: 600;">{{ cat_stat.exported_count|default(0) }}</td>
                     <td>
                         {% if cat_stat.clean_count > 0 %}
                         <form method="POST" action="/product-data/export" style="display: inline;">

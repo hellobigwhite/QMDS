@@ -337,6 +337,8 @@ class WooOrderChecker:
             if page == 1:
                 total_pages = self._get_total_pages(soup)
             rows = self._extract_order_rows(soup)
+            if not rows:  # 当前页没有订单，提前退出
+                break
             all_rows.extend(rows)
             page += 1
         return all_rows, soup if all_rows else None

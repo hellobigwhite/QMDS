@@ -273,8 +273,10 @@ class MongoDBClient:
         return list(docs)
 
     def get_crawled_count(self, category: str) -> int:
-        """获取已爬取URL数量"""
-        return self.crawled_col(category).estimated_document_count()
+        """获取已爬取URL数量（精确计数）"""
+        pipeline = [{"$count": "count"}]
+        result = list(self.crawled_col(category).aggregate(pipeline))
+        return result[0]["count"] if result else 0
 
     # ── 精准类目筛选 ──────────────────────────────────────
 
@@ -503,9 +505,15 @@ class MongoDBClient:
         return [{"url": d.get("url", ""), "domain": d.get("domain", "")} for d in docs if d.get("url")]
 
     def get_stats(self, category: str) -> dict:
-        """获取指定类目的 unfiltered/filtered 数量统计"""
-        uf_count = self.unfiltered_col(category).estimated_document_count()
-        ff_count = self.filtered_col(category).estimated_document_count()
+        """获取指定类目的 unfiltered/filtered 数量统计（精确计数）"""
+        uf_pipeline = [{"$count": "count"}]
+        uf_result = list(self.unfiltered_col(category).aggregate(uf_pipeline))
+        uf_count = uf_result[0]["count"] if uf_result else 0
+
+        ff_pipeline = [{"$count": "count"}]
+        ff_result = list(self.filtered_col(category).aggregate(ff_pipeline))
+        ff_count = ff_result[0]["count"] if ff_result else 0
+
         return {
             "category": category,
             "unfiltered": uf_count,
@@ -528,8 +536,10 @@ class MongoDBClient:
         return list(docs)
 
     def get_unfiltered_count(self, category: str) -> int:
-        """获取指定类目的 unfiltered 数据总数"""
-        return self.unfiltered_col(category).estimated_document_count()
+        """获取指定类目的 unfiltered 数据总数（精确计数）"""
+        pipeline = [{"$count": "count"}]
+        result = list(self.unfiltered_col(category).aggregate(pipeline))
+        return result[0]["count"] if result else 0
 
     # ── 单条记录操作（CRUD） ──────────────────────────────
 
@@ -614,8 +624,10 @@ class MongoDBClient:
         return list(docs)
 
     def get_filtered_count(self, category: str) -> int:
-        """获取指定类目的 filtered 数据总数"""
-        return self.filtered_col(category).estimated_document_count()
+        """获取指定类目的 filtered 数据总数（精确计数）"""
+        pipeline = [{"$count": "count"}]
+        result = list(self.filtered_col(category).aggregate(pipeline))
+        return result[0]["count"] if result else 0
 
     def get_filtered_by_id(self, category: str, doc_id: str) -> Optional[dict]:
         """根据 _id 获取 filtered 记录

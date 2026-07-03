@@ -33,6 +33,14 @@
   .pager button { margin: 0 2px; }
   .svr-row { cursor: pointer; }
   .svr-row:hover td { background: #e3f2fd; }
+  .section-header { display: flex; align-items: center; justify-content: space-between; cursor: pointer; user-select: none; }
+  .section-header h3 { margin: 0; border-left: 3px solid #4fc3f7; padding-left: 10px; font-size: 16px; }
+  .section-header .toggle-icon { transition: transform 0.3s; font-size: 12px; color: #666; }
+  .section-header .toggle-icon.collapsed { transform: rotate(-90deg); }
+  .section-content { transition: max-height 0.3s ease-out; overflow: hidden; }
+  .section-content.collapsed { max-height: 0 !important; padding: 0 !important; margin: 0 !important; }
+  .section-content.expanded { max-height: 2000px; }
+  .limit-select { padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; }
 </style>
 
 <div class="top-bar">
@@ -93,28 +101,33 @@
 </div>
 
 <div class="section">
-  <h3>服务器管理 
-    <div style="float:right;display:flex;gap:6px">
-      <button class="btn btn-sm" id="btnSyncServers" style="background:#4fc3f7;color:#1a1a2e">从上报平台同步</button>
-      <button class="btn btn-sm btn-primary" id="btnShowAdd">+ 添加</button>
-    </div>
-  </h3>
-  <div id="addForm" style="display:none;margin-bottom:12px;border:1px solid #eee;padding:12px;border-radius:6px">
-    <div class="flex-gap">
-      <input type="text" id="svrDomain" placeholder="域名" style="width:160px;padding:6px 10px;border:1px solid #d9d9d9;border-radius:4px">
-      <input type="text" id="svrIp" placeholder="IP" style="width:120px;padding:6px 10px;border:1px solid #d9d9d9;border-radius:4px">
-      <input type="text" id="svrMainCat" placeholder="主类目" style="width:120px;padding:6px 10px;border:1px solid #d9d9d9;border-radius:4px">
-      <button class="btn btn-primary btn-sm" id="btnSaveServer">保存</button>
-      <button class="btn btn-sm" id="btnCancelAdd" style="background:#eee;color:#333">取消</button>
+  <div class="section-header" onclick="toggleSection(this)">
+    <h3>服务器管理</h3>
+    <div style="display:flex;gap:6px;align-items:center">
+      <button class="btn btn-sm" id="btnSyncServers" style="background:#4fc3f7;color:#1a1a2e" onclick="event.stopPropagation()">从上报平台同步</button>
+      <button class="btn btn-sm btn-danger" id="btnDeleteAll" onclick="event.stopPropagation()">一键删除所有</button>
+      <button class="btn btn-sm btn-primary" id="btnShowAdd" onclick="event.stopPropagation()">+ 添加</button>
+      <span class="toggle-icon">▼</span>
     </div>
   </div>
-  <div style="overflow-x:auto;">
-    <table>
-      <thead><tr><th>ID</th><th>域名</th><th>IP</th><th>主类目</th><th>操作</th></tr></thead>
-      <tbody id="svrTableBody"></tbody>
-    </table>
+  <div class="section-content expanded">
+    <div id="addForm" style="display:none;margin-bottom:12px;border:1px solid #eee;padding:12px;border-radius:6px">
+      <div class="flex-gap">
+        <input type="text" id="svrDomain" placeholder="域名" style="width:160px;padding:6px 10px;border:1px solid #d9d9d9;border-radius:4px">
+        <input type="text" id="svrIp" placeholder="IP" style="width:120px;padding:6px 10px;border:1px solid #d9d9d9;border-radius:4px">
+        <input type="text" id="svrMainCat" placeholder="主类目" style="width:120px;padding:6px 10px;border:1px solid #d9d9d9;border-radius:4px">
+        <button class="btn btn-primary btn-sm" id="btnSaveServer">保存</button>
+        <button class="btn btn-sm" id="btnCancelAdd" style="background:#eee;color:#333">取消</button>
+      </div>
+    </div>
+    <div style="overflow-x:auto;">
+      <table>
+        <thead><tr><th>ID</th><th>域名</th><th>IP</th><th>主类目</th><th>操作</th></tr></thead>
+        <tbody id="svrTableBody"></tbody>
+      </table>
+    </div>
+    <div id="svrPager" class="pager"></div>
   </div>
-  <div id="svrPager" class="pager"></div>
 </div>
 
 <div class="section">
@@ -124,14 +137,38 @@
 </div>
 
 <div class="section">
-  <h3>订单数据 <span style="font-size:13px;color:#999;font-weight:normal" id="orderCount"></span> <span id="ipDomains" style="font-size:12px;color:#4fc3f7;font-weight:normal"></span></h3>
-  <div style="overflow-x:auto;">
-    <table>
-      <thead><tr><th>域名</th><th>时间</th><th>状态</th><th>金额</th><th>出单类别</th></tr></thead>
-      <tbody id="orderTableBody"></tbody>
-    </table>
+  <div class="section-header" onclick="toggleSection(this)">
+    <h3>订单数据 <span style="font-size:13px;color:#999;font-weight:normal" id="orderCount"></span> <span id="ipDomains" style="font-size:12px;color:#4fc3f7;font-weight:normal"></span></h3>
+    <div style="display:flex;gap:6px;align-items:center">
+      <select id="sortSelect" style="padding:4px 8px;border:1px solid #ddd;border-radius:4px;font-size:13px" onclick="event.stopPropagation()">
+        <option value="order_time|-1">按时间倒序</option>
+        <option value="order_time|1">按时间正序</option>
+        <option value="domain|1">按域名升序</option>
+        <option value="domain|-1">按域名降序</option>
+        <option value="order_amount|-1">按金额从高到低</option>
+        <option value="order_amount|1">按金额从低到高</option>
+        <option value="order_category|1">按出单类别升序</option>
+        <option value="order_category|-1">按出单类别降序</option>
+      </select>
+      <select id="limitSelect" class="limit-select" onclick="event.stopPropagation()">
+        <option value="10">每页10条</option>
+        <option value="30" selected>每页30条</option>
+        <option value="50">每页50条</option>
+        <option value="100">每页100条</option>
+      </select>
+      <button class="btn btn-sm btn-danger" id="btnDeleteAllOrders" onclick="event.stopPropagation()">清空所有订单</button>
+      <span class="toggle-icon">▼</span>
+    </div>
   </div>
-  <div class="pager" id="orderPager"></div>
+  <div class="section-content expanded">
+    <div style="overflow-x:auto;">
+      <table>
+        <thead><tr><th>域名</th><th>时间</th><th>状态</th><th>金额</th><th>出单类别</th></tr></thead>
+        <tbody id="orderTableBody"></tbody>
+      </table>
+    </div>
+    <div class="pager" id="orderPager"></div>
+  </div>
 </div>
 
 <div class="section">
@@ -150,6 +187,23 @@ var dateFrom = null, dateTo = null;
 var selectingRange = false;
 var orderReqId = 0;
 var chartReqId = 0;
+var currentSortBy = 'order_time';
+var currentSortOrder = -1;
+var currentLimit = 30;
+
+function toggleSection(header) {
+  var content = header.nextElementSibling;
+  var icon = header.querySelector('.toggle-icon');
+  if (content.classList.contains('expanded')) {
+    content.classList.remove('expanded');
+    content.classList.add('collapsed');
+    icon.classList.add('collapsed');
+  } else {
+    content.classList.remove('collapsed');
+    content.classList.add('expanded');
+    icon.classList.remove('collapsed');
+  }
+}
 
 function appendLog(msg, level) {
   var box = document.getElementById('logBox');
@@ -160,16 +214,15 @@ function appendLog(msg, level) {
 }
 
 function listenLog(taskId) {
-  if (eventSource) { eventSource.close(); }
+  if (eventSource) { eventSource.close(); eventSource = null; }
   eventSource = new EventSource('/log-stream/' + taskId);
   eventSource.onmessage = function(e) {
     try {
       var d = JSON.parse(e.data);
       if (d.done) { appendLog('══════ 完成 ══════', 'success'); eventSource.close(); eventSource = null; return; }
       appendLog(d.msg, d.level||'info');
-    } catch(ex) { console.log('SSE:', e.data); }
+    } catch(ex) { console.log('SSE parse error:', e.data); }
   };
-  eventSource.onerror = function() {};
 }
 
 function initYearMonth() {
@@ -387,18 +440,57 @@ document.getElementById('btnSyncServers').addEventListener('click', function() {
   });
 });
 
+document.getElementById('btnDeleteAll').addEventListener('click', function() {
+  if (!confirm('确定删除所有服务器数据？此操作不可恢复！')) return;
+  var btn = this;
+  btn.disabled = true;
+  btn.textContent = '删除中...';
+  fetch('/api/servers/delete-all', {method:'DELETE', headers:{'Content-Type':'application/json'}}).then(function(r){return r.json()}).then(function(d) {
+    btn.disabled = false;
+    btn.textContent = '一键删除所有';
+    if (d.error) { alert(d.error); return; }
+    alert('删除完成：共删除 ' + d.deleted + ' 条');
+    loadServers();
+  }).catch(function(e) {
+    btn.disabled = false;
+    btn.textContent = '一键删除所有';
+    alert('删除失败: ' + e);
+  });
+});
+
+document.getElementById('btnDeleteAllOrders').addEventListener('click', function() {
+  if (!confirm('确定清空所有订单数据？此操作不可恢复！')) return;
+  var btn = this;
+  btn.disabled = true;
+  btn.textContent = '清空中...';
+  fetch('/api/orders/delete-all', {method:'DELETE', headers:{'Content-Type':'application/json'}}).then(function(r){return r.json()}).then(function(d) {
+    btn.disabled = false;
+    btn.textContent = '清空所有订单';
+    if (d.error) { alert(d.error); return; }
+    alert('清空完成：共清空 ' + d.deleted + ' 个订单集合');
+    loadOrders();
+  }).catch(function(e) {
+    btn.disabled = false;
+    btn.textContent = '清空所有订单';
+    alert('清空失败: ' + e);
+  });
+});
+
 function doFetch(url, label, extra) {
-  document.getElementById('logBox').innerHTML = '';
+  var logBox = document.getElementById('logBox');
+  if (!logBox) { alert('日志框未找到'); return; }
+  logBox.innerHTML = '';
   var body = {};
   body.year = currentYear; body.month = currentMonth;
   if (dateFrom) { body.date_from = dateFrom; body.date_to = dateTo || dateFrom; }
   if (extra) { for (var k in extra) body[k] = extra[k]; }
   fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)}).then(function(r){return r.json()}).then(function(data) {
     if (data.error) { alert(data.error); return; }
-    var rangeTxt = dateFrom ? ' (' + (dateTo||dateFrom) + ')' : '';
-    appendLog(label + ' | ' + currentYear + '-' + currentMonth + rangeTxt, 'info');
-    listenLog(data.task_id);
-  }).catch(function(){alert('请求失败');});
+    appendLog(label + ' | ' + currentYear + '-' + currentMonth, 'info');
+    if (data.task_id) {
+      listenLog(data.task_id);
+    }
+  }).catch(function(e){alert('请求失败: ' + e);});
 }
 
 document.getElementById('topBtnFetch').addEventListener('click', function() {
@@ -423,9 +515,10 @@ document.addEventListener('click', function(e) {
 
 function loadOrders(ip, page) {
   var myId = ++orderReqId;
-  var url = '/api/orders?ip=' + encodeURIComponent(ip) + '&page=' + (page||1) + '&limit=30';
+  var url = '/api/orders?ip=' + encodeURIComponent(ip) + '&page=' + (page||1) + '&limit=' + currentLimit;
   if (dateFrom) url += '&date_from=' + dateFrom + '&date_to=' + (dateTo || dateFrom);
   else url += '&year=' + currentYear + '&month=' + currentMonth;
+  url += '&sort_by=' + currentSortBy + '&sort_order=' + currentSortOrder;
   fetch(url).then(function(r){return r.json()}).then(function(data) {
     if (myId != orderReqId) return;
     if (data.error) { document.getElementById('orderTableBody').innerHTML = '<tr><td colspan="5">' + data.error + '</td></tr>'; return; }
@@ -479,12 +572,26 @@ document.getElementById('topSvrSelect').onchange = function() {
 document.getElementById('topYear').onchange = function() {
   currentYear = parseInt(this.value);
   renderCalendar();
-  if (currentIp) { loadOrders(currentIp, 1); renderStatusChart(currentIp); }
+  loadOrders(currentIp, 1);
+  renderStatusChart(currentIp);
 };
 document.getElementById('topMonth').onchange = function() {
   currentMonth = parseInt(this.value);
   renderCalendar();
-  if (currentIp) { loadOrders(currentIp, 1); renderStatusChart(currentIp); }
+  loadOrders(currentIp, 1);
+  renderStatusChart(currentIp);
+};
+
+document.getElementById('sortSelect').onchange = function() {
+  var parts = this.value.split('|');
+  currentSortBy = parts[0];
+  currentSortOrder = parseInt(parts[1]);
+  loadOrders(currentIp || '', 1);
+};
+
+document.getElementById('limitSelect').onchange = function() {
+  currentLimit = parseInt(this.value);
+  loadOrders(currentIp || '', 1);
 };
 
 var statusChart = null;

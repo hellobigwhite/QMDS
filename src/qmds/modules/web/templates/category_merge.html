@@ -2,7 +2,7 @@
 {% block content %}
 <div class="card">
     <h2>🔧 分类数据处理</h2>
-    <p class="text-muted">处理表格中分类数据，将数量过少的分类合并为公共类</p>
+    <p class="text-muted">处理表格中分类数据，将数量过少的分类合并为公共类，完成后自动执行数据二次清洗。提交后可在任务页面查看处理进度和日志。</p>
 </div>
 
 <div class="card">
@@ -27,13 +27,14 @@
             </div>
             <div>
                 <label for="common_category">公共类名称</label>
-                <input type="text" id="common_category" name="common_category" value="Other" required>
-                <small class="text-muted">合并后的分类名称（英文）</small>
+                <textarea id="common_category" name="common_category" rows="3" required>Hot Sale, New Arrival, Best Seller, Limited Offer, Trending, Featured, Premium, Popular, Recommended, Special</textarea>
+                <small class="text-muted">合并后的分类名称（英文），支持多个名称用逗号、分号或换行分隔，将随机选择</small>
             </div>
         </div>
         <div class="mt-4">
             <button type="submit" class="btn btn-primary">🚀 开始处理</button>
             <a href="/tools" class="btn btn-info">返回工具箱</a>
+            <a href="/tasks" class="btn btn-secondary">查看任务</a>
         </div>
     </form>
 </div>
@@ -60,7 +61,7 @@
         </div>
         <div class="stat-row">
             <span class="stat-label">公共类名称</span>
-            <span class="stat-value">{{ result.common_category }}</span>
+            <span class="stat-value">{{ result.common_categories | join(', ') }}</span>
         </div>
     </div>
 

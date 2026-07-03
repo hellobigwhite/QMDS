@@ -65,11 +65,12 @@ PROVIDER_CONFIGS = [
 class KeyPool:
     """单个 provider 的 key 轮换池"""
 
-    def __init__(self, name: str, keys: list[str]):
+    def __init__(self, name: str, keys: list[str], keys_file: Optional[Path] = None):
         self.name = name
         self._keys = keys
         self._exhausted: set[str] = set()
         self._index = 0
+        self._keys_file = keys_file
 
     @property
     def available_count(self) -> int:
@@ -92,6 +93,26 @@ class KeyPool:
             self._exhausted.add(key)
             masked = key[:8] + "..." if len(key) > 8 else key
             log.warning(f"[{self.name}] key 额度用完: {masked} (剩余: {self.available_count})")
+            self._comment_out_key_in_file(key)
+
+    def _comment_out_key_in_file(self, key: str):
+        """在文件中注释掉额度用完的key"""
+        if not self._keys_file or not self._keys_file.exists():
+            return
+        try:
+            lines = self._keys_file.read_text(encoding="utf-8").splitlines(keepends=True)
+            modified = False
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if stripped == key:
+                    lines[i] = f"# {stripped}  # 额度用完\n"
+                    modified = True
+                    break
+            if modified:
+                self._keys_file.write_text("".join(lines), encoding="utf-8")
+                log.info(f"[{self.name}] 已在文件中注释掉额度用完的key")
+        except Exception as e:
+            log.error(f"[{self.name}] 注释key失败: {e}")
 
     def reset(self):
         self._exhausted.clear()
@@ -335,7 +356,7 @@ class SearchManager:
             if not keys:
                 log.debug(f"[{cfg.name}] 无 key，跳过")
                 continue
-            pool = KeyPool(cfg.name, keys)
+            pool = KeyPool(cfg.name, keys, keys_file=filepath)
             cls = PROVIDER_CLASSES.get(cfg.name)
             if cls:
                 provider = cls(cfg, pool)
