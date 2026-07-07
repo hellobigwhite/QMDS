@@ -15,7 +15,7 @@
             </div>
             <div>
                 <label>上报密码</label>
-                <input type="password" name="report_password" value="{{ settings.report_password|default('') }}">
+                <input type="password" name="report_password" value="{{ '.' * (settings.report_password|default('')|length) if settings.report_password|default('') else '' }}">
             </div>
         </div>
     </div>
@@ -29,7 +29,7 @@
             </div>
             <div>
                 <label>ERP 密码</label>
-                <input type="password" name="erp_password" value="{{ settings.erp_password|default('') }}">
+                <input type="password" name="erp_password" value="{{ '.' * (settings.erp_password|default('')|length) if settings.erp_password|default('') else '' }}">
             </div>
         </div>
     </div>
@@ -39,7 +39,7 @@
         <div class="grid-2">
             <div>
                 <label>WordPress 密码</label>
-                <input type="password" name="wp_password" value="{{ settings.wp_password|default('') }}">
+                <input type="password" name="wp_password" value="{{ '.' * (settings.wp_password|default('')|length) if settings.wp_password|default('') else '' }}">
             </div>
             <div>
                 <label>素材根目录</label>
@@ -62,6 +62,25 @@
                 <input type="text" name="seo_api_key" value="{{ settings.seo_api_key|default('') }}" 
                        placeholder="从 serpapi.com 获取的 API Key">
                 <small style="color:#666;font-size:12px;">使用SerpAPI更稳定，<a href="https://serpapi.com" target="_blank">获取API Key</a></small>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>极速AI 配置</h2>
+        <p class="text-muted mb-4">用于批量生成图片功能（Banner和Icon）。</p>
+        <div class="grid-2">
+            <div>
+                <label>极速AI API密钥</label>
+                <input type="password" name="jisuai_api_key" value="{{ '.' * (settings.jisuai_api_key|default('')|length) if settings.jisuai_api_key|default('') else '' }}"
+                       placeholder="从 jisuai.top 获取的 API Key">
+                <small style="color:#666;font-size:12px;">用于生成Banner和Icon，<a href="https://jisuai.top" target="_blank">获取API Key</a></small>
+            </div>
+            <div>
+                <label>Icon专用API密钥（可选）</label>
+                <input type="password" name="jisuai_icon_api_key" value="{{ '.' * (settings.jisuai_icon_api_key|default('')|length) if settings.jisuai_icon_api_key|default('') else '' }}"
+                       placeholder="留空则使用主密钥">
+                <small style="color:#666;font-size:12px;">可为Icon生成单独配置API密钥</small>
             </div>
         </div>
     </div>

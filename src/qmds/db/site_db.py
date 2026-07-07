@@ -181,6 +181,10 @@ class SiteDBClient:
         """列出所有站点（分页）"""
         return self._paginate({}, keyword, "created_at", -1, page, page_size)
 
+    def list_active_sites(self, keyword: str = "", page: int = 1, page_size: int = 20) -> dict:
+        """列出活跃站点（排除已建站，分页）"""
+        return self._paginate({"build_status": {"$ne": "已建站"}}, keyword, "created_at", -1, page, page_size)
+
     def list_local_sites(self, keyword: str = "", page: int = 1, page_size: int = 20) -> dict:
         """列出本地站点（未上报的站点，分页）"""
         return self._paginate({"report_status": {"$ne": "已报"}}, keyword, "created_at", -1, page, page_size)

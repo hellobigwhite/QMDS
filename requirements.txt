@@ -23,3 +23,7 @@ python-dotenv>=1.0
 # Web 界面（按需安装）
 flask>=3.0
 waitress>=3.0
+
+# AI 图片生成（按需安装）
+openai>=1.0
+nest_asyncio>=1.5

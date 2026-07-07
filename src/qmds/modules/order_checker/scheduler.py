@@ -271,6 +271,7 @@ class OrderScheduler:
                 return self._fetch_server_orders(server, year, month, task_id, wp_password)
 
             failed_servers = []
+            servers_with_orders = []  # 记录有订单的服务器
             success_count = 0
             fail_count = 0
 
@@ -284,6 +285,8 @@ class OrderScheduler:
                     svr = futures[future]
                     try:
                         cnt = future.result()
+                        if cnt > 0:  # 记录有订单的服务器
+                            servers_with_orders.append(svr)
                         success_count += 1
                         self._log(task_id, f"[{svr.get('name', '')}] 完成: {cnt} 条订单")
                     except RetryableError as e:
@@ -318,6 +321,8 @@ class OrderScheduler:
                             svr = futures[future]
                             try:
                                 cnt = future.result()
+                                if cnt > 0:  # 重试成功且有订单，记录到有订单列表
+                                    servers_with_orders.append(svr)
                                 success_count += 1
                                 fail_count -= 1
                                 self._log(task_id, f"[重试{attempt}] [{svr.get('name', '')}] 完成: {cnt} 条订单")
@@ -343,7 +348,7 @@ class OrderScheduler:
             
             # 第二阶段：异步获取订单详情
             self._log(task_id, f"\n{'='*50}")
-            self._log(task_id, f"第二阶段: 获取订单详情（商品、邮箱、地址）")
+            self._log(task_id, f"第二阶段: 获取订单详情（{len(servers_with_orders)} 台有订单的服务器）")
             self._log(task_id, f"{'='*50}")
             
             detail_success = 0
@@ -351,7 +356,7 @@ class OrderScheduler:
             detail_dedup = 0
             detail_servers_done = 0
             
-            for svr in servers:
+            for svr in servers_with_orders:  # 只处理有订单的服务器
                 ip = svr.get("ip", "")
                 domain = svr.get("domain", "")
                 

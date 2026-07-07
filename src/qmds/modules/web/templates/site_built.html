@@ -76,6 +76,27 @@
             </div>
         </div>
 
+        <div class="card" style="background:#fff8e1; margin-bottom:16px;">
+            <h3 style="font-size:14px; margin-bottom:12px;">修改状态字段</h3>
+            <div class="flex mb-4" style="flex-wrap:wrap; gap:8px; align-items:center;">
+                <select name="status_field" id="statusField" style="width:150px;" onchange="updateStatusOptions()">
+                    <option value="">-- 选择字段 --</option>
+                    <option value="health_status">健康状态</option>
+                    <option value="main_data_status">主数据</option>
+                    <option value="extra_data_status">补充数据</option>
+                    <option value="main_category_status">主分类</option>
+                    <option value="auto_category_status">菜单</option>
+                    <option value="plugin_status">插件</option>
+                    <option value="media_status">媒体</option>
+                </select>
+                <select name="status_value" id="statusValue" style="width:150px;">
+                    <option value="">-- 选择值 --</option>
+                </select>
+                <button type="submit" class="btn btn-warning" name="action" value="update_status" 
+                        onclick="return confirm('确定批量修改选中站点的状态吗？');">更新状态</button>
+            </div>
+        </div>
+
         <div class="card" style="background:#f0f7ff; margin-bottom:16px;">
             <h3 style="font-size:14px; margin-bottom:12px;">快捷工具</h3>
             <div class="flex mb-4" style="flex-wrap:wrap; gap:8px;">
@@ -117,6 +138,7 @@
                         <th>主数据</th>
                         <th>补充数据</th>
                         <th>主分类</th>
+                        <th>菜单</th>
                         <th>插件</th>
                         <th>媒体</th>
                         <th>建站时间</th>
@@ -140,6 +162,7 @@
                         <td>{{ site.main_data_status or '未上传' }}</td>
                         <td>{{ site.extra_data_status or '未上传' }}</td>
                         <td>{{ site.main_category_status or '未设置' }}</td>
+                        <td>{{ site.auto_category_status or '未设置' }}</td>
                         <td>{{ site.plugin_status or '未配置' }}</td>
                         <td>{{ site.media_status or '未配置' }}</td>
                         <td>{{ site.build_time|default('-') }}</td>
@@ -291,5 +314,56 @@ function submitPendingAction() {
 
 document.getElementById('pendingSelector').addEventListener('change', syncRecommendedAction);
 syncRecommendedAction();
+
+function updateStatusOptions() {
+    const field = document.getElementById('statusField').value;
+    const valueSelect = document.getElementById('statusValue');
+    valueSelect.innerHTML = '';
+    
+    const options = {
+        'health_status': [
+            {'value': '', 'text': '未检查'},
+            {'value': '正常', 'text': '正常'}
+        ],
+        'main_data_status': [
+            {'value': '', 'text': '未上传'},
+            {'value': '已上传', 'text': '已上传'}
+        ],
+        'extra_data_status': [
+            {'value': '', 'text': '未上传'},
+            {'value': '已上传', 'text': '已上传'}
+        ],
+        'main_category_status': [
+            {'value': '', 'text': '未设置'},
+            {'value': '已上传', 'text': '已上传'}
+        ],
+        'auto_category_status': [
+            {'value': '', 'text': '未设置'},
+            {'value': '已配置', 'text': '已配置'}
+        ],
+        'plugin_status': [
+            {'value': '', 'text': '未配置'},
+            {'value': '已配置', 'text': '已配置'}
+        ],
+        'media_status': [
+            {'value': '', 'text': '未配置'},
+            {'value': '已配置', 'text': '已配置'}
+        ]
+    };
+    
+    if (options[field]) {
+        options[field].forEach(function(opt) {
+            const option = document.createElement('option');
+            option.value = opt.value;
+            option.text = opt.text;
+            valueSelect.appendChild(option);
+        });
+    } else {
+        const option = document.createElement('option');
+        option.value = '';
+        option.text = '-- 选择值 --';
+        valueSelect.appendChild(option);
+    }
+}
 </script>
 {% endblock %}

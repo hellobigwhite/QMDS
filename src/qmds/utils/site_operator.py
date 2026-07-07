@@ -1185,160 +1185,183 @@ class SiteOperator:
         return '/cf-updata/plxztp.php?p=OFjToUDQ5mmtU7GB'
 
     def upload_data(self, domain: str, data_source_ids: str,
-                    progress_callback=None) -> dict:
+                    progress_callback=None, start_cs="0", breakpoint_callback=None, stop_callback=None) -> dict:
         """上传数据到WordPress站点（无需登录）
 
         Args:
             domain: 域名
             data_source_ids: 数据源ID (逗号分隔)
             progress_callback: 进度回调
+            start_cs: 起始断点，默认"0"从头开始
+            breakpoint_callback: 断点更新回调，用于实时保存断点
+            stop_callback: 停止检查回调，返回True表示应停止
 
         Returns:
-            {"success": bool, "message": str, "success_count": int, "failure_count": int}
+            {"success": bool, "message": str, "success_count": int, "failure_count": int, "final_cs": str}
         """
-        log.info(f"[{domain}] 上传数据，数据源ID: {data_source_ids}")
+        log.info(f"[{domain}] 上传数据，数据源ID: {data_source_ids}，起始断点: {start_cs}")
 
         domain = str(domain or "").strip().lower().replace("https://", "").replace("http://", "").strip("/")
         if domain.startswith("www."):
             domain = domain[4:]
 
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
-        })
-
         success_count = 0
         failure_count = 0
-        try:
-            site = f"https://www.{domain}"
-            update_img = self._discover_update_img_url(session, site)
+        cs = str(start_cs)
 
-            data_source_ids = self._normalize_data_source_ids(data_source_ids)
-            if not data_source_ids:
-                return {"success": False, "message": "数据源ID为空或格式无效", "success_count": 0, "failure_count": 0}
-            idcode = data_source_ids.replace(",", "%2C")
-            cs = "0"
-            retrytime = 0
-            repeat_count = 0
-            brand_count = 0
-
-            if progress_callback:
-                progress_callback(f"开始上传数据，update_img: {update_img}，断点: {cs}")
-
-            headers = {
+        for outer_retry in range(3):
+            session = requests.Session()
+            session.headers.update({
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
-                "X-Requested-With": "XMLHttpRequest",
-            }
+            })
+            try:
+                site = f"https://www.{domain}"
+                update_img = self._discover_update_img_url(session, site)
 
-            for i in range(800):
-                upload_url = f'{site}{update_img.replace("/plxztp.php?", "/dan_duopsot.php?")}&lv={idcode}&cs={cs}'
-                try:
-                    resp = session.get(upload_url, headers=headers, timeout=120, verify=False)
-                except requests.exceptions.RequestException as exc:
-                    retrytime += 1
-                    if progress_callback:
-                        progress_callback(f"请求异常，重试 {retrytime}/10: {exc}")
-                    if retrytime >= 10:
-                        return {"success": False, "message": str(exc), "success_count": success_count, "failure_count": failure_count}
-                    time.sleep(2)
-                    continue
-
-                payload = self._parse_json_response(resp.text) if resp.status_code == 200 else None
-                if resp.status_code != 200 or payload is None:
-                    retrytime += 1
-                    snippet = (resp.text or "")[:200].replace("\n", " ") if resp.status_code == 200 else ""
-                    if progress_callback:
-                        progress_callback(f"请求失败，重试 {retrytime}/10" + (f" (响应非JSON: {snippet})" if snippet else ""))
-                    if retrytime >= 10:
-                        return {"success": False, "message": f"上传失败 HTTP {resp.status_code}", "success_count": success_count, "failure_count": failure_count}
-                    time.sleep(2)
-                    continue
-
+                data_source_ids = self._normalize_data_source_ids(data_source_ids)
+                if not data_source_ids:
+                    return {"success": False, "message": "数据源ID为空或格式无效", "success_count": 0, "failure_count": 0, "final_cs": cs}
+                idcode = data_source_ids.replace(",", "%2C")
                 retrytime = 0
-                msg = str(payload.get("msg", ""))
+                repeat_count = 0
+                brand_count = 0
+
                 if progress_callback:
-                    progress_callback(f"上传状态: {msg}")
+                    progress_callback(f"开始上传数据，update_img: {update_img}，断点: {cs}")
 
-                progress = self._parse_progress(msg)
-                if progress:
-                    success_count += progress["success"]
-                    failure_count += progress["failure"]
-                    repeat_count += progress["repeat"]
-                    brand_count += progress["brand"]
-                    if progress["cs"] > int(cs):
-                        cs = str(progress["cs"])
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+                    "X-Requested-With": "XMLHttpRequest",
+                }
+
+                for i in range(800):
+                    if stop_callback and stop_callback():
                         if progress_callback:
-                            progress_callback(f"更新断点: {cs}")
+                            progress_callback("收到停止信号，中止上传")
+                        return {"success": False, "message": "用户停止", "success_count": success_count, "failure_count": failure_count, "final_cs": cs}
 
-                if "完成" in msg:
+                    upload_url = f'{site}{update_img.replace("/plxztp.php?", "/dan_duopsot_konbai.php?")}&lv={idcode}&cs={cs}'
+                    try:
+                        resp = session.get(upload_url, headers=headers, timeout=120, verify=False)
+                    except requests.exceptions.RequestException as exc:
+                        retrytime += 1
+                        if progress_callback:
+                            progress_callback(f"请求异常，重试 {retrytime}/10: {exc}")
+                        if retrytime >= 10:
+                            return {"success": False, "message": str(exc), "success_count": success_count, "failure_count": failure_count, "final_cs": cs}
+                        time.sleep(2)
+                        continue
+
+                    payload = self._parse_json_response(resp.text) if resp.status_code == 200 else None
+                    if resp.status_code != 200 or payload is None:
+                        retrytime += 1
+                        snippet = (resp.text or "")[:200].replace("\n", " ") if resp.status_code == 200 else ""
+                        if progress_callback:
+                            progress_callback(f"请求失败，重试 {retrytime}/10" + (f" (响应非JSON: {snippet})" if snippet else ""))
+                        if retrytime >= 10:
+                            return {"success": False, "message": f"上传失败 HTTP {resp.status_code}", "success_count": success_count, "failure_count": failure_count, "final_cs": cs}
+                        time.sleep(2)
+                        continue
+
+                    retrytime = 0
+                    msg = str(payload.get("msg", ""))
                     if progress_callback:
-                        progress_callback(f"完成 已上传{cs} 成功{success_count} 失败{failure_count} 重复{repeat_count}")
-                        progress_callback("开始批量处理图片")
+                        progress_callback(f"上传状态: {msg}")
 
-                    img_retry = 0
-                    for j in range(400):
-                        dimg_url = f'{site}{update_img.replace("/plxztp.php?", "/dimg.php?")}'
-                        try:
-                            img_resp = session.get(dimg_url, headers=headers, timeout=120, verify=False)
-                        except requests.exceptions.RequestException as exc:
-                            img_retry += 1
+                    progress = self._parse_progress(msg)
+                    if progress:
+                        success_count += progress["success"]
+                        failure_count += progress["failure"]
+                        repeat_count += progress["repeat"]
+                        brand_count += progress["brand"]
+                        if progress["cs"] > int(cs):
+                            cs = str(progress["cs"])
                             if progress_callback:
-                                progress_callback(f"图片处理请求异常，重试 {img_retry}/10: {exc}")
-                            if img_retry > 10:
-                                break
-                            time.sleep(2)
-                            continue
+                                progress_callback(f"更新断点: {cs}")
+                            if breakpoint_callback:
+                                breakpoint_callback(cs)
 
-                        img_payload = self._parse_json_response(img_resp.text) if img_resp.status_code == 200 else None
-                        if img_resp.status_code != 200 or img_payload is None:
-                            img_retry += 1
-                            if progress_callback:
-                                progress_callback(f"图片处理失败，重试 {img_retry}/10")
-                            if img_retry > 10:
-                                break
-                            time.sleep(2)
-                            continue
+                    if "完成" in msg:
+                        if progress_callback:
+                            progress_callback(f"完成 已上传{cs} 成功{success_count} 失败{failure_count} 重复{repeat_count}")
+                            progress_callback("开始批量处理图片")
 
                         img_retry = 0
-                        img_msg = str(img_payload.get("msg", ""))
-                        if "成功-0失败-0" in img_msg:
+                        for j in range(400):
+                            if stop_callback and stop_callback():
+                                if progress_callback:
+                                    progress_callback("收到停止信号，中止图片处理")
+                                return {"success": False, "message": "用户停止", "success_count": success_count, "failure_count": failure_count, "final_cs": cs}
+
+                            dimg_url = f'{site}{update_img.replace("/plxztp.php?", "/dimg.php?")}'
+                            try:
+                                img_resp = session.get(dimg_url, headers=headers, timeout=120, verify=False)
+                            except requests.exceptions.RequestException as exc:
+                                img_retry += 1
+                                if progress_callback:
+                                    progress_callback(f"图片处理请求异常，重试 {img_retry}/10: {exc}")
+                                if img_retry > 10:
+                                    break
+                                time.sleep(2)
+                                continue
+
+                            img_payload = self._parse_json_response(img_resp.text) if img_resp.status_code == 200 else None
+                            if img_resp.status_code != 200 or img_payload is None:
+                                img_retry += 1
+                                if progress_callback:
+                                    progress_callback(f"图片处理失败，重试 {img_retry}/10")
+                                if img_retry > 10:
+                                    break
+                                time.sleep(2)
+                                continue
+
+                            img_retry = 0
+                            img_msg = str(img_payload.get("msg", ""))
+                            if "成功-0失败-0" in img_msg:
+                                if progress_callback:
+                                    progress_callback(f"图片处理完成")
+                                break
+
                             if progress_callback:
-                                progress_callback(f"图片处理完成")
-                            break
+                                progress_callback(f"图片处理: {img_msg}")
+                            time.sleep(1)
 
+                        return {"success": True, "message": f"上传完成: 成功{success_count}, 失败{failure_count}, 重复{repeat_count}",
+                                "success_count": success_count, "failure_count": failure_count, "final_cs": "0"}
+
+                    if "code" in payload:
+                        next_cs = str(payload["code"])
+                        if next_cs != cs:
+                            cs = next_cs
+                            if progress_callback:
+                                progress_callback(f"更新断点: {cs}")
+                            if breakpoint_callback:
+                                breakpoint_callback(cs)
+                    else:
                         if progress_callback:
-                            progress_callback(f"图片处理: {img_msg}")
-                        time.sleep(1)
+                            progress_callback("无code返回，结束上传")
+                        return {"success": True, "message": f"上传结束: 成功{success_count}, 失败{failure_count}",
+                                "success_count": success_count, "failure_count": failure_count, "final_cs": "0"}
 
-                    return {"success": True, "message": f"上传完成: 成功{success_count}, 失败{failure_count}, 重复{repeat_count}",
-                            "success_count": success_count, "failure_count": failure_count}
+                    time.sleep(1)
 
-                if "code" in payload:
-                    next_cs = str(payload["code"])
-                    if next_cs != cs:
-                        cs = next_cs
-                        if progress_callback:
-                            progress_callback(f"更新断点: {cs}")
-                else:
-                    if progress_callback:
-                        progress_callback("无code返回，结束上传")
-                    return {"success": True, "message": f"上传结束: 成功{success_count}, 失败{failure_count}",
-                            "success_count": success_count, "failure_count": failure_count}
+                return {"success": True, "message": f"上传结束: 成功{success_count}, 失败{failure_count}",
+                        "success_count": success_count, "failure_count": failure_count, "final_cs": "0"}
 
-                time.sleep(1)
-
-            return {"success": True, "message": f"上传结束: 成功{success_count}, 失败{failure_count}",
-                    "success_count": success_count, "failure_count": failure_count}
-
-        except Exception as e:
-            log.error(f"[{domain}] 上传异常: {e}")
-            return {"success": False, "message": str(e), "success_count": success_count,
-                    "failure_count": failure_count}
-        finally:
-            try:
-                session.close()
-            except Exception:
-                pass
+            except Exception as e:
+                log.error(f"[{domain}] 上传异常 (第{outer_retry + 1}次): {e}")
+                if progress_callback:
+                    progress_callback(f"上传异常，保留断点 {cs}，{'准备重试' if outer_retry < 2 else '结束'}: {e}")
+                if outer_retry < 2:
+                    time.sleep(10)
+                    continue
+                return {"success": False, "message": str(e), "success_count": success_count,
+                        "failure_count": failure_count, "final_cs": cs}
+            finally:
+                try:
+                    session.close()
+                except Exception:
+                    pass
 
     def configure_media(self, domain: str, media_root: str, progress_callback=None) -> dict:
         """配置媒体文件 (Logo, Icon, Banner)

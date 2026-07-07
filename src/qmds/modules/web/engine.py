@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import re
@@ -756,6 +757,17 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
     def product_data():
         return redirect(url_for("product_data_overview"))
 
+    @app.route("/api/product-data/stats")
+    def api_product_data_stats():
+        """异步获取产品数据统计"""
+        try:
+            product_db = _get_product_db()
+            stats = product_db.get_all_stats()
+            return jsonify({"ok": True, "data": stats})
+        except Exception as e:
+            log.error(f"获取产品数据统计失败: {e}")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
     @app.route("/product-data/overview", methods=["GET"])
     def product_data_overview():
         try:
@@ -959,16 +971,8 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
             flash(f"数据清洗任务已启动: {category}，可在任务页面查看进度")
             return redirect(url_for("product_data_clean"))
         
-        # GET请求：获取类目统计信息
-        try:
-            product_db = _get_product_db()
-            stats = product_db.get_all_stats()
-            category_stats = stats["categories"]
-        except Exception as e:
-            log.error(f"获取类目统计失败: {e}")
-            category_stats = []
-        
-        return render_template("product_clean.html", category_stats=category_stats)
+        # GET请求：直接渲染模板，统计数据通过AJAX异步获取
+        return render_template("product_clean.html", category_stats=[])
 
     @app.route("/product-data/export", methods=["GET", "POST"])
     def product_data_export():
@@ -1449,6 +1453,255 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
         finally:
             site_db.close()
 
+    @app.route("/site-management/generate-images", methods=["GET", "POST"])
+    def site_generate_images():
+        """批量生成图片（Banner + Icon + Logo + 合并）"""
+        from qmds.utils.image_generator import ImageGenerator
+
+        # 获取API密钥配置
+        site_db = _get_site_db()
+        try:
+            all_settings = site_db.get_all_settings()
+            jisuai_api_key = all_settings.get("jisuai_api_key", "")
+            jisuai_icon_api_key = all_settings.get("jisuai_icon_api_key", "")
+        except Exception:
+            jisuai_api_key = ""
+            jisuai_icon_api_key = ""
+
+        has_api_key = bool(jisuai_api_key)
+
+        if request.method == "POST":
+            action = request.form.get("action", "")
+
+            if action == "start":
+                selected_ids = request.form.getlist("selected_ids")
+                output_dir = request.form.get("output_dir", "").strip()
+                keyword_source = request.form.get("keyword_source", "main_category")
+                manual_keywords = request.form.get("manual_keywords", "").strip()
+                gen_banner = request.form.get("gen_banner") == "1"
+                gen_icon = request.form.get("gen_icon") == "1"
+                gen_logo = request.form.get("gen_logo") == "1"
+                gen_combine = request.form.get("gen_combine") == "1"
+
+                if not selected_ids:
+                    flash("请选择要生成图片的站点", "error")
+                    return redirect(url_for("site_generate_images"))
+
+                if not has_api_key:
+                    flash("请先在配置页面设置极速AI API密钥", "error")
+                    return redirect(url_for("site_generate_images"))
+
+                if not (gen_banner or gen_icon or gen_logo or gen_combine):
+                    flash("请至少选择一项生成内容", "error")
+                    return redirect(url_for("site_generate_images"))
+
+                if not output_dir:
+                    output_dir = str(settings.data_dir / "logos" / "setting")
+
+                # 解析手动关键词
+                manual_kw_list = [k.strip() for k in manual_keywords.split("\n") if k.strip()] if manual_keywords else []
+
+                # 创建任务
+                task_id = f"img_gen_{int(time.time())}"
+                _task_manager.create(task_id, "generate_images", f"{len(selected_ids)} sites")
+
+                def run_task():
+                    _site_db = SiteDBClient()
+                    try:
+                        # 在任务线程中重新获取API密钥
+                        _all_settings = _site_db.get_all_settings()
+                        _jisuai_api_key = _all_settings.get("jisuai_api_key", "")
+                        _jisuai_icon_api_key = _all_settings.get("jisuai_icon_api_key", "")
+                        
+                        _task_manager.add_log(task_id, f"任务启动: 批量生成图片", "info")
+                        _task_manager.add_log(task_id, f"选中站点: {len(selected_ids)}", "info")
+                        _task_manager.add_log(task_id, f"生成内容: Banner={gen_banner}, Icon={gen_icon}, Logo={gen_logo}, 合并={gen_combine}", "info")
+                        _task_manager.add_log(task_id, f"API密钥长度: {len(_jisuai_api_key) if _jisuai_api_key else 0}", "info")
+
+                        # 获取站点信息和关键词
+                        items = []
+                        for idx, site_id in enumerate(selected_ids):
+                            site = _site_db.get_site_by_id(site_id)
+                            if not site or not site.get("domain"):
+                                continue
+
+                            domain = site["domain"]
+
+                            # 获取关键词
+                            if keyword_source == "manual" and idx < len(manual_kw_list):
+                                keyword = manual_kw_list[idx]
+                            else:
+                                keyword = site.get("main_category", "")
+                                # 如果主分类包含 |||，取最后一个 ||| 后的词
+                                if keyword and "|||" in keyword:
+                                    keyword = keyword.split("|||")[-1].strip()
+                                if not keyword:
+                                    # 从域名提取关键词
+                                    keyword = domain.replace(".com", "").replace(".net", "").replace(".org", "")
+
+                            items.append((domain, keyword))
+
+                        if not items:
+                            _task_manager.update(task_id, status="failed", message="未找到有效域名")
+                            _task_manager.add_log(task_id, "未找到有效域名", "error")
+                            return
+
+                        _task_manager.add_log(task_id, f"有效域名: {len(items)}", "info")
+                        _task_manager.add_log(task_id, f"输出目录: {output_dir}", "info")
+
+                        # 显示域名和关键词映射
+                        for i, (d, k) in enumerate(items[:10], 1):
+                            _task_manager.add_log(task_id, f"  {i}. {d} → {k}", "info")
+                        if len(items) > 10:
+                            _task_manager.add_log(task_id, f"  ... 还有 {len(items) - 10} 个站点", "info")
+
+                        _task_manager.update(task_id, status="running",
+                                           message=f"开始生成 {len(items)} 个站点的图片",
+                                           total=len(items))
+
+                        # 定义进度回调
+                        def progress_callback(step, current, total, domain, result):
+                            if _task_manager.is_stopped(task_id):
+                                generator.stop()
+                                return
+
+                            step_labels = {
+                                "banner": "Banner",
+                                "icon": "Icon",
+                                "logo": "Logo",
+                                "rename": "重命名",
+                                "combine": "合并",
+                            }
+                            step_label = step_labels.get(step, step)
+                            status_icon = "✓" if result.get("success") else "✗"
+                            skipped = " [跳过]" if result.get("skipped") else ""
+
+                            _task_manager.update(
+                                task_id,
+                                progress=int(current / total * 100),
+                                current=current,
+                                message=f"[{step_label}] [{current}/{total}] {status_icon} {domain}{skipped}"
+                            )
+                            _task_manager.add_log(
+                                task_id,
+                                f"[{step_label}] [{current}/{total}] {status_icon} {domain}{skipped}",
+                                "info" if result.get("success") else "warning"
+                            )
+
+                        # 创建生成器并执行
+                        generator = ImageGenerator(
+                            api_key=_jisuai_api_key,
+                            icon_api_key=_jisuai_icon_api_key or _jisuai_api_key
+                        )
+
+                        # 运行异步任务
+                        try:
+                            result = asyncio.run(
+                                generator.generate_batch(
+                                    items=items,
+                                    base_dir=output_dir,
+                                    generate_banner=gen_banner,
+                                    generate_icon=gen_icon,
+                                    generate_logo=gen_logo,
+                                    do_combine=gen_combine,
+                                    progress_callback=progress_callback
+                                )
+                            )
+                        except RuntimeError as e:
+                            # 如果已有事件循环在运行，使用 nest_asyncio
+                            if "cannot be called from a running event loop" in str(e):
+                                import nest_asyncio
+                                nest_asyncio.apply()
+                                result = asyncio.run(
+                                    generator.generate_batch(
+                                        items=items,
+                                        base_dir=output_dir,
+                                        generate_banner=gen_banner,
+                                        generate_icon=gen_icon,
+                                        generate_logo=gen_logo,
+                                        do_combine=gen_combine,
+                                        progress_callback=progress_callback
+                                    )
+                                )
+                            else:
+                                raise
+
+                        if _task_manager.is_stopped(task_id):
+                            _task_manager.update(task_id, status="stopped", message="任务已停止")
+                            _task_manager.add_log(task_id, "任务被用户停止", "warning")
+                            return
+
+                        # 更新站点的logo路径
+                        for domain, _ in items:
+                            logo_path = os.path.join(output_dir, domain, "logo.png")
+                            if os.path.exists(logo_path):
+                                _site_db.update_site(domain, {"logo": logo_path})
+
+                        # 构建完成消息
+                        summary_parts = []
+                        if gen_banner:
+                            summary_parts.append(f"Banner: {result['banner']['success']}/{len(items)}")
+                        if gen_icon:
+                            summary_parts.append(f"Icon: {result['icon']['success']}/{len(items)}")
+                        if gen_logo:
+                            summary_parts.append(f"Logo: {result['logo']['success']}/{len(items)}")
+                        if gen_combine:
+                            summary_parts.append(f"合并: {result['combine']['success']}/{len(items)}")
+
+                        summary = f"完成: {', '.join(summary_parts)}"
+                        _task_manager.update(task_id, status="completed", message=summary, progress=100)
+                        _task_manager.add_log(task_id, summary, "info")
+
+                        if result["errors"]:
+                            for error in result["errors"][:10]:
+                                _task_manager.add_log(task_id, f"错误: {error}", "error")
+
+                    except Exception as e:
+                        log.error(f"图片生成任务失败: {e}")
+                        _task_manager.update(task_id, status="failed", message=str(e))
+                        _task_manager.add_log(task_id, f"任务失败: {e}", "error")
+                    finally:
+                        _site_db.close()
+
+                threading.Thread(target=run_task, daemon=True).start()
+                flash(f"图片生成任务已启动: {len(selected_ids)} 个站点", "success")
+                return redirect(url_for("tasks"))
+
+        # GET请求：显示页面
+        try:
+            q = request.args.get("q", "").strip()
+            page = int(request.args.get("page", 1))
+            page_size = int(request.args.get("page_size", 20))
+            result = site_db.list_active_sites(q, page=page, page_size=page_size)
+            default_output_dir = str(settings.data_dir / "logos" / "setting")
+
+            # 检查每个站点的图片文件是否存在
+            for site in result["items"]:
+                domain = site.get("domain", "")
+                if domain:
+                    site_dir = os.path.join(default_output_dir, domain)
+                    site["has_banner"] = os.path.isfile(os.path.join(site_dir, "banner.jpg"))
+                    site["has_icon"] = os.path.isfile(os.path.join(site_dir, "icon.png"))
+                    site["has_logo"] = os.path.isfile(os.path.join(site_dir, "logo.png"))
+
+            return render_template("site_generate_images.html",
+                                 sites=result["items"],
+                                 total=result["total"],
+                                 page=result["page"],
+                                 page_size=result["page_size"],
+                                 q=q,
+                                 has_api_key=has_api_key,
+                                 default_output_dir=default_output_dir)
+        except Exception as e:
+            log.error(f"图片生成页面错误: {e}")
+            flash(f"加载失败: {e}", "error")
+            return render_template("site_generate_images.html",
+                                 sites=[],
+                                 has_api_key=has_api_key,
+                                 default_output_dir="")
+        finally:
+            site_db.close()
+
     @app.route("/site-management/reported", methods=["GET", "POST"])
     def site_reported():
         """已报域名管理"""
@@ -1504,7 +1757,7 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
                                               message="登录ERP系统...")
                             _task_manager.add_log(task_id, "正在登录ERP系统...", "info")
 
-                            image_root = str(qmds_settings.data_dir / "logos" / "setting")
+                            image_root = str(qmds_settings.data_dir / "logos")
                             erp_username = _site_db.get_setting("erp_username")
                             erp_password = _site_db.get_setting("erp_password")
                             if not erp_username or not erp_password:
@@ -2116,6 +2369,33 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
                     flash(f"已删除 {count} 个站点", "success")
                     return redirect(url_for("site_built", q=q))
 
+                elif action == "update_status":
+                    field = request.form.get("status_field", "").strip()
+                    value = request.form.get("status_value", "").strip()
+
+                    if not field:
+                        flash("请选择要更新的状态字段", "error")
+                        return redirect(url_for("site_built", q=q))
+
+                    status_updaters = {
+                        "health_status": site_db.batch_update_health_status,
+                        "main_data_status": site_db.batch_update_main_data_status,
+                        "extra_data_status": site_db.batch_update_extra_data_status,
+                        "main_category_status": site_db.batch_update_main_category_status,
+                        "auto_category_status": site_db.batch_update_auto_category_status,
+                        "plugin_status": site_db.batch_update_plugin_status,
+                        "media_status": site_db.batch_update_media_status,
+                    }
+
+                    updater = status_updaters.get(field)
+                    if not updater:
+                        flash("不允许修改该字段", "error")
+                        return redirect(url_for("site_built", q=q))
+
+                    count = updater(selected_ids, value)
+                    flash(f"已更新 {count} 个站点的 {field}", "success")
+                    return redirect(url_for("site_built", q=q))
+
                 # ── 任务化操作 ──────────────────────────────
 
                 task_id = f"built_{action}_{int(time.time())}"
@@ -2165,7 +2445,7 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
                         failed = 0
                         errors = []
 
-                        if action in ("upload_main", "upload_extra", "configure_sites"):
+                        if action in ("upload_main", "upload_extra"):
                             completed = 0
                             def _worker(idx_domain):
                                 idx, domain = idx_domain
@@ -2176,94 +2456,140 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
                                     if action == "upload_main":
                                         data_source = site_info.get("main_data_source_id", "")
                                         if not data_source:
-                                            return (domain, False, "未配置主数据源ID")
+                                            return (domain, False, "未配置主数据源ID", None)
                                         from qmds.utils.site_operator import SiteOperator
                                         try:
                                             data_source = SiteOperator._normalize_data_source_ids(data_source)
                                         except ValueError as e:
-                                            return (domain, False, str(e))
+                                            return (domain, False, str(e), None)
+                                        start_cs = site_info.get("main_data_cs", "0")
+                                        if start_cs and start_cs != "0":
+                                            _task_manager.add_log(task_id, f"[{domain}] 从断点 {start_cs} 继续上传")
                                         def progress(msg):
+                                            _task_manager.add_log(task_id, f"[{domain}] {msg}")
                                             _task_manager.update(task_id, current=idx + 1,
                                                               progress=int((idx + 0.5) / total * 100),
                                                               message=f"[{idx + 1}/{total}] [{domain}] {msg}")
-                                        result = operator.upload_data(domain, data_source, progress)
+                                        def save_breakpoint(cs_val):
+                                            _site_db.update_site(domain, {"main_data_cs": cs_val})
+                                        def check_stop():
+                                            return _task_manager.is_stopped(task_id)
+                                        result = operator.upload_data(domain, data_source, progress, start_cs=start_cs, breakpoint_callback=save_breakpoint, stop_callback=check_stop)
+                                        final_cs = result.get("final_cs", "0")
                                         if result["success"]:
-                                            return (domain, True, "")
-                                        return (domain, False, result["message"])
+                                            return (domain, True, "", final_cs)
+                                        return (domain, False, result["message"], final_cs)
                                     elif action == "upload_extra":
                                         extra_source = site_info.get("extra_data_source_id", "")
                                         if not extra_source:
-                                            return (domain, False, "未配置补充数据源ID")
+                                            return (domain, False, "未配置补充数据源ID", None)
                                         from qmds.utils.site_operator import SiteOperator
                                         try:
                                             extra_source = SiteOperator._normalize_data_source_ids(extra_source)
                                         except ValueError as e:
-                                            return (domain, False, str(e))
+                                            return (domain, False, str(e), None)
+                                        start_cs = site_info.get("extra_data_cs", "0")
+                                        if start_cs and start_cs != "0":
+                                            _task_manager.add_log(task_id, f"[{domain}] 从断点 {start_cs} 继续上传")
                                         def progress(msg):
+                                            _task_manager.add_log(task_id, f"[{domain}] {msg}")
                                             _task_manager.update(task_id, current=idx + 1,
                                                               progress=int((idx + 0.5) / total * 100),
                                                               message=f"[{idx + 1}/{total}] [{domain}] {msg}")
-                                        result = operator.upload_data(domain, extra_source, progress)
+                                        def save_breakpoint(cs_val):
+                                            _site_db.update_site(domain, {"extra_data_cs": cs_val})
+                                        def check_stop():
+                                            return _task_manager.is_stopped(task_id)
+                                        result = operator.upload_data(domain, extra_source, progress, start_cs=start_cs, breakpoint_callback=save_breakpoint, stop_callback=check_stop)
+                                        final_cs = result.get("final_cs", "0")
                                         if result["success"]:
-                                            return (domain, True, "")
-                                        return (domain, False, result["message"])
-                                    else:  # configure_sites
-                                        def update_msg(msg):
-                                            _task_manager.update(task_id, current=idx + 1,
-                                                              progress=int((idx + 0.5) / total * 100),
-                                                              message=f"[{idx + 1}/{total}] [{domain}] {msg}")
-                                        update_msg("登录站点...")
-                                        login_result = operator.login(domain)
-                                        if not login_result["success"]:
-                                            raise Exception(f"登录失败: {login_result['message']}")
-                                        update_msg("配置WP Rocket...")
-                                        rocket_result = operator.process_rocket(domain)
-                                        log.info(f"[配置站点] [{domain}] WP Rocket: {rocket_result['message']}")
-                                        if not rocket_result["success"]:
-                                            log.warning(f"[配置站点] [{domain}] WP Rocket配置失败: {rocket_result['message']}")
-                                        update_msg("配置Yoast SEO...")
-                                        yoast_result = operator.process_yoast(domain)
-                                        log.info(f"[配置站点] [{domain}] Yoast: {yoast_result['message']}")
-                                        if not yoast_result["success"]:
-                                            log.warning(f"[配置站点] [{domain}] Yoast配置失败: {yoast_result['message']}")
-                                        _site_db.update_site(domain, {"plugin_status": "已配置",
-                                                                      "plugin_time": datetime.utcnow().isoformat()})
-                                        log.info(f"[配置站点] [{domain}] ✓ 插件已配置")
-                                        update_msg("配置媒体...")
-                                        from qmds.config import settings as qmds_settings
-                                        media_root = str(qmds_settings.data_dir / "logos")
-                                        media_result = operator.configure_media(domain, media_root)
-                                        log.info(f"[配置站点] [{domain}] 媒体: {media_result['message']}")
-                                        _site_db.update_site(domain, {"media_status": "已配置",
-                                                                      "media_time": datetime.utcnow().isoformat()})
-                                        log.info(f"[配置站点] [{domain}] ✓ 媒体已配置")
-                                        return (domain, True, "")
+                                            return (domain, True, "", final_cs)
+                                        return (domain, False, result["message"], final_cs)
                                 except Exception as e:
-                                    return (domain, False, str(e))
+                                    return (domain, False, str(e), None)
 
-                            with ThreadPoolExecutor(max_workers=5) as executor:
+                            with ThreadPoolExecutor(max_workers=10) as executor:
                                 futures = {executor.submit(_worker, (i, d)): d for i, d in enumerate(domains)}
                                 for future in as_completed(futures):
                                     if _task_manager.is_stopped(task_id):
                                         _task_manager.update(task_id, status="stopped", message="任务已停止")
                                         executor.shutdown(wait=False, cancel_futures=True)
                                         return
-                                    domain, ok, msg = future.result()
+                                    domain, ok, msg, final_cs = future.result()
                                     completed += 1
                                     if ok:
                                         if action == "upload_main":
-                                            _site_db.update_site(domain, {"main_data_status": "已上传", "main_data_time": datetime.utcnow().isoformat()})
+                                            _site_db.update_site(domain, {"main_data_status": "已上传", "main_data_time": datetime.utcnow().isoformat(), "main_data_cs": "0"})
                                         elif action == "upload_extra":
-                                            _site_db.update_site(domain, {"extra_data_status": "已上传", "extra_data_time": datetime.utcnow().isoformat()})
+                                            _site_db.update_site(domain, {"extra_data_status": "已上传", "extra_data_time": datetime.utcnow().isoformat(), "extra_data_cs": "0"})
                                         success += 1
+                                        _task_manager.add_log(task_id, f"[{domain}] ✓ 上传成功", "info")
                                         log.info(f"[{label}] [{domain}] ✓ 成功")
                                     else:
+                                        if final_cs and final_cs != "0":
+                                            cs_field = "main_data_cs" if action == "upload_main" else "extra_data_cs"
+                                            _site_db.update_site(domain, {cs_field: final_cs})
+                                            _task_manager.add_log(task_id, f"[{domain}] 断点已保存: {final_cs}", "warning")
                                         failed += 1
                                         errors.append(f"{domain}: {msg}")
+                                        _task_manager.add_log(task_id, f"[{domain}] ✗ 上传失败: {msg}", "error")
                                         log.error(f"[{label}] [{domain}] 失败: {msg}")
                                     _task_manager.update(task_id, current=completed,
                                                       progress=int(completed / total * 100),
                                                       message=f"[{completed}/{total}] [{domain}] {'成功' if ok else '失败'}")
+
+                        elif action == "configure_sites":
+                            for i, domain in enumerate(domains):
+                                if _task_manager.is_stopped(task_id):
+                                    _task_manager.update(task_id, status="stopped", message="任务已停止")
+                                    return
+                                current = i + 1
+                                site_info = site_map.get(domain, {})
+                                try:
+                                    from qmds.utils.site_operator import get_operator
+                                    operator = get_operator()
+                                    _task_manager.update(task_id, current=current,
+                                                      progress=int((current - 0.5) / total * 100),
+                                                      message=f"[{current}/{total}] [{domain}] 登录站点...")
+                                    login_result = operator.login(domain)
+                                    if not login_result["success"]:
+                                        raise Exception(f"登录失败: {login_result['message']}")
+                                    _task_manager.update(task_id, current=current,
+                                                      progress=int((current - 0.4) / total * 100),
+                                                      message=f"[{current}/{total}] [{domain}] 配置WP Rocket...")
+                                    rocket_result = operator.process_rocket(domain)
+                                    log.info(f"[配置站点] [{domain}] WP Rocket: {rocket_result['message']}")
+                                    if not rocket_result["success"]:
+                                        log.warning(f"[配置站点] [{domain}] WP Rocket配置失败: {rocket_result['message']}")
+                                    _task_manager.update(task_id, current=current,
+                                                      progress=int((current - 0.3) / total * 100),
+                                                      message=f"[{current}/{total}] [{domain}] 配置Yoast SEO...")
+                                    yoast_result = operator.process_yoast(domain)
+                                    log.info(f"[配置站点] [{domain}] Yoast: {yoast_result['message']}")
+                                    if not yoast_result["success"]:
+                                        log.warning(f"[配置站点] [{domain}] Yoast配置失败: {yoast_result['message']}")
+                                    _site_db.update_site(domain, {"plugin_status": "已配置",
+                                                                  "plugin_time": datetime.utcnow().isoformat()})
+                                    log.info(f"[配置站点] [{domain}] ✓ 插件已配置")
+                                    _task_manager.update(task_id, current=current,
+                                                      progress=int((current - 0.2) / total * 100),
+                                                      message=f"[{current}/{total}] [{domain}] 配置媒体...")
+                                    from qmds.config import settings as qmds_settings
+                                    media_root = str(qmds_settings.data_dir / "logos")
+                                    media_result = operator.configure_media(domain, media_root)
+                                    log.info(f"[配置站点] [{domain}] 媒体: {media_result['message']}")
+                                    _site_db.update_site(domain, {"media_status": "已配置",
+                                                                  "media_time": datetime.utcnow().isoformat()})
+                                    log.info(f"[配置站点] [{domain}] ✓ 媒体已配置")
+                                    success += 1
+                                    log.info(f"[配置站点] [{domain}] ✓ 成功")
+                                except Exception as e:
+                                    failed += 1
+                                    errors.append(f"{domain}: {e}")
+                                    log.error(f"[配置站点] [{domain}] 失败: {e}")
+                                _task_manager.update(task_id, current=current,
+                                                  progress=int(current / total * 100),
+                                                  message=f"[{current}/{total}] [{domain}] 完成")
 
                         else:
                           for i, domain in enumerate(domains):
@@ -2578,7 +2904,10 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
         site_db = _get_site_db()
         try:
             if request.method == "POST":
-                # 保存配置
+                # 记录表单提交的数据
+                log.info(f"表单提交数据: {dict(request.form)}")
+                
+                # 保存配置（跳过值为...的密码字段）
                 settings_to_save = {
                     "report_username": request.form.get("report_username", ""),
                     "report_password": request.form.get("report_password", ""),
@@ -2586,6 +2915,8 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
                     "erp_password": request.form.get("erp_password", ""),
                     "wp_password": request.form.get("wp_password", ""),
                     "media_root": request.form.get("media_root", ""),
+                    "jisuai_api_key": request.form.get("jisuai_api_key", ""),
+                    "jisuai_icon_api_key": request.form.get("jisuai_icon_api_key", ""),
                     "seo_proxy": request.form.get("seo_proxy", ""),
                     "seo_api_key": request.form.get("seo_api_key", ""),
                     "rocket_cleanup_frequency": request.form.get("rocket_cleanup_frequency", "daily"),
@@ -2595,8 +2926,20 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
                     "rocket_lazyload": request.form.get("rocket_lazyload", "1"),
                     "rocket_remove_unused_css": request.form.get("rocket_remove_unused_css", "1"),
                 }
+                log.info(f"保存配置: {list(settings_to_save.keys())}")
                 for key, value in settings_to_save.items():
-                    site_db.set_setting(key, value)
+                    # 跳过值为点号的密码字段（表示未修改）
+                    if value and all(c == '.' for c in value):
+                        log.info(f"  跳过 {key} (值为点号，未修改)")
+                        continue
+                    result = site_db.set_setting(key, value)
+                    log.info(f"  set_setting({key}) = {result}")
+                
+                # 验证保存结果
+                saved_settings = site_db.get_all_settings()
+                log.info(f"保存后的配置keys: {list(saved_settings.keys())}")
+                log.info(f"jisuai_api_key 保存结果: {saved_settings.get('jisuai_api_key', 'NOT FOUND')}")
+                
                 flash("配置已保存", "success")
                 return redirect(url_for("site_config"))
 
@@ -3104,6 +3447,7 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
         _task_manager.update(task_id, status="running", message=f"开始抓取 {len(servers)} 台服务器")
         
         failed_servers = []  # 记录可重试失败的服务器
+        servers_with_orders = []  # 记录有订单的服务器
         done = 0
         total_servers = len(servers)
         
@@ -3123,6 +3467,8 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
                 done += 1
                 try:
                     cnt = future.result()
+                    if cnt > 0:  # 记录有订单的服务器
+                        servers_with_orders.append(svr)
                     _order_log(task_id, f"[{done}/{total_servers}] [{svr['name']}] ✅ {cnt} 条")
                 except RetryableError as e:
                     _order_log(task_id, f"[{done}/{total_servers}] [{svr['name']}] ⚠️ {e}，待重试", "warning")
@@ -3162,6 +3508,8 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
                         retry_done += 1
                         try:
                             cnt = future.result()
+                            if cnt > 0:  # 重试成功且有订单，记录到有订单列表
+                                servers_with_orders.append(svr)
                             _order_log(task_id, f"[重试{attempt}] [{svr['name']}] ✅ {cnt} 条")
                         except RetryableError:
                             _order_log(task_id, f"[重试{attempt}] [{svr['name']}] ⚠️ 仍然失败", "warning")
@@ -3199,7 +3547,7 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
         # 第二阶段：异步获取订单详情
         if not _task_manager.is_stopped(task_id):
             _order_log(task_id, f"\n{'='*50}")
-            _order_log(task_id, f"第二阶段: 获取订单详情（商品、邮箱、地址）")
+            _order_log(task_id, f"第二阶段: 获取订单详情（{len(servers_with_orders)} 台有订单的服务器）")
             _order_log(task_id, f"{'='*50}")
             
             detail_success = 0
@@ -3207,7 +3555,7 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
             detail_dedup = 0
             detail_servers_done = 0
             
-            for svr in servers:
+            for svr in servers_with_orders:  # 只处理有订单的服务器
                 if _task_manager.is_stopped(task_id):
                     break
                 
@@ -3242,9 +3590,9 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
                     _order_log(task_id, f"[{svr.get('name', '')}] ❌ {e}", "error")
                 
                 detail_servers_done += 1
-                progress = 50 + int(detail_servers_done / len(servers) * 50)
+                progress = 50 + int(detail_servers_done / len(servers_with_orders) * 50) if servers_with_orders else 50
                 _task_manager.update(task_id, progress=progress,
-                                    message=f"第二阶段: {detail_servers_done}/{len(servers)} 台服务器")
+                                    message=f"第二阶段: {detail_servers_done}/{len(servers_with_orders)} 台服务器")
             
             # 输出第二阶段统计
             _order_log(task_id, f"\n{'='*50}")
