@@ -3,7 +3,12 @@
 <div class="card">
     <div class="flex" style="justify-content:space-between;">
         <h2>🖼️ 批量生成图片</h2>
-        <a href="/site-management/local" class="btn btn-secondary">返回本地站点</a>
+        <div class="flex" style="gap:0.5rem;">
+            <form method="POST" action="/site-management/refresh-image-status" style="display:inline;">
+                <button type="submit" class="btn btn-secondary">🔄 刷新图片状态</button>
+            </form>
+            <a href="/site-management/local" class="btn btn-secondary">返回本地站点</a>
+        </div>
     </div>
     <p class="text-muted mb-4">为选中的站点批量生成图片资源（Banner、Icon、Logo），支持一键生成或单独生成。</p>
 </div>

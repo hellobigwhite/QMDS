@@ -9,6 +9,7 @@ from qmds.modules.data_scraper.models.schemas import Product
 
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 WHITESPACE_RE = re.compile(r"\s+")
+CONTROL_CHAR_RE = re.compile(r'[\000-\010]|[\013-\014]|[\016-\037]|\ufffd')
 
 CATEGORY_TXT_DIR = Path(__file__).resolve().parents[2] / "data" / "categories"
 CATEGORY_FILES = [
@@ -120,6 +121,7 @@ class ProductProcessor:
     @staticmethod
     def clean_html(text: str) -> str:
         text = HTML_TAG_RE.sub(" ", text)
+        text = CONTROL_CHAR_RE.sub("", text)
         text = WHITESPACE_RE.sub(" ", text)
         return text.strip()
 

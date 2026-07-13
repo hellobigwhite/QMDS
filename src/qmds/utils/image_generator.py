@@ -114,17 +114,17 @@ class ImageGenerator:
         log.info(f"调用极速AI: model={model_id}, size={size}, api_key长度={len(api_key_to_use) if api_key_to_use else 0}")
         
         try:
-            client = AsyncOpenAI(api_key=api_key_to_use, base_url="https://api.jisuai.top/v1")
-            response = await client.images.generate(model=model_id, prompt=prompt, size=size, n=1)
-            item = response.data[0]
-            if getattr(item, "b64_json", None):
-                log.info("极速AI返回b64_json格式")
-                return base64.b64decode(item.b64_json)
-            if getattr(item, "url", None):
-                log.info(f"极速AI返回url格式: {item.url[:50]}...")
-                return item.url
-            log.warning("极速AI未返回有效数据")
-            return None
+            async with AsyncOpenAI(api_key=api_key_to_use, base_url="https://api.jisuai.top/v1") as client:
+                response = await client.images.generate(model=model_id, prompt=prompt, size=size, n=1)
+                item = response.data[0]
+                if getattr(item, "b64_json", None):
+                    log.info("极速AI返回b64_json格式")
+                    return base64.b64decode(item.b64_json)
+                if getattr(item, "url", None):
+                    log.info(f"极速AI返回url格式: {item.url[:50]}...")
+                    return item.url
+                log.warning("极速AI未返回有效数据")
+                return None
         except Exception as e:
             log.error(f"极速AI调用失败: {e}")
             raise

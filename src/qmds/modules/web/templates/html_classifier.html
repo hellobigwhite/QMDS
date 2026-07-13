@@ -1,0 +1,256 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card" style="max-width:1200px;margin:0 auto;">
+    <h2>🔍 HTML网站分类器</h2>
+    <p class="text-muted" style="margin-bottom:16px;">
+        基于HTML内容分析网站品类，支持单个分类或批量处理Excel文件。
+        分析标题、描述、Collection链接等多维度信息，输出主营类目和垂直类型。
+    </p>
+
+    <!-- 错误提示 -->
+    {% if error %}
+    <div class="flash" style="background:#fce4ec;color:#c62828;border:1px solid #ef9a9a;">
+        ❌ {{ error }}
+    </div>
+    {% endif %}
+
+    <!-- 成功提示 -->
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    {% for category, message in messages %}
+    <div class="flash" style="background:{% if category == 'success' %}#e8f5e9{% else %}#fce4ec{% endif %};color:{% if category == 'success' %}#2e7d32{% else %}#c62828{% endif %};border:1px solid {% if category == 'success' %}#a5d6a7{% else %}#ef9a9a{% endif %};">
+        {{ message }}
+    </div>
+    {% endfor %}
+    {% endif %}
+    {% endwith %}
+
+    <!-- 单个分类 -->
+    <div class="card" style="background:#f8f9ff;border:1px solid #e8eaf6;">
+        <h3 style="font-size:15px;margin-bottom:12px;">单个网站分类</h3>
+        <form method="post" action="/tools/html-classifier">
+            <input type="hidden" name="action" value="single">
+            <div style="display:flex;gap:12px;align-items:flex-end;">
+                <div style="flex:1;">
+                    <label for="url">网站 URL / 域名</label>
+                    <input type="text" id="url" name="url" placeholder="例如: store.myshopify.com 或 https://store.com" value="{{ request.form.get('url', '') }}">
+                </div>
+                <div>
+                    <button type="submit" class="btn btn-primary">🔍 分类</button>
+                </div>
+            </div>
+        </form>
+    </div>
+
+    <!-- 批量分类 -->
+    <div class="card" style="background:#f8f9ff;border:1px solid #e8eaf6;margin-top:16px;">
+        <h3 style="font-size:15px;margin-bottom:12px;">Excel 批量分类</h3>
+        <form id="batchForm" method="post" action="/tools/html-classifier">
+            <input type="hidden" name="action" value="batch">
+            <div class="form-group">
+                <label for="file_path">Excel 文件路径</label>
+                <input type="text" id="file_path" name="file_path" placeholder="例如: F:\Data\stores.xlsx" value="{{ request.form.get('file_path', '') }}" required>
+                <small class="text-muted">表格需包含 domain 列，处理后会在原表格后面添加 5 个字段</small>
+            </div>
+            <button type="submit" class="btn btn-primary">📤 开始分类</button>
+        </form>
+    </div>
+
+    <!-- 任务状态 -->
+    {% if task_result %}
+    <div class="result-box" style="margin-top:20px;">
+        <h3 style="font-size:15px;margin-bottom:12px;">
+            任务状态
+            {% if task_result.status == 'running' %}
+            <span style="color:#1976d2;">⏳ 运行中</span>
+            {% elif task_result.status == 'completed' %}
+            <span style="color:#2e7d32;">✅ 已完成</span>
+            {% elif task_result.status == 'failed' %}
+            <span style="color:#c62828;">❌ 失败</span>
+            {% endif %}
+        </h3>
+        <div class="stat-row">
+            <span class="stat-label">任务ID</span>
+            <span class="stat-value">{{ task_result.id }}</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">状态</span>
+            <span class="stat-value">{{ task_result.status }}</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">消息</span>
+            <span class="stat-value">{{ task_result.message }}</span>
+        </div>
+
+        {% if task_result.status == 'running' %}
+        <div style="margin-top:16px;display:flex;align-items:center;gap:8px;">
+            <div class="spinner"></div>
+            <span style="color:#1976d2;font-size:13px;">处理中，请稍候...</span>
+        </div>
+        <script>
+            setTimeout(function() { window.location.reload(); }, 5000);
+        </script>
+        {% endif %}
+
+        {% if task_result.result %}
+        <div style="margin-top:16px;">
+            <strong style="font-size:13px;color:#666;">统计结果：</strong>
+            <div style="margin-top:8px;">
+                <div class="stat-row">
+                    <span class="stat-label">总数量</span>
+                    <span class="stat-value">{{ task_result.result.total }} 个网站</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">成功</span>
+                    <span class="stat-value" style="color:#2e7d32;">{{ task_result.result.success }} 个</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">失败</span>
+                    <span class="stat-value" style="color:#c62828;">{{ task_result.result.error }} 个</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Shopify站点</span>
+                    <span class="stat-value" style="color:#1976d2;">{{ task_result.result.shopify }} 个</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">文件路径</span>
+                    <span class="stat-value">{{ task_result.result.file_path }}</span>
+                </div>
+            </div>
+
+            {% if task_result.result.type_counts %}
+            <div style="margin-top:16px;">
+                <strong style="font-size:13px;color:#666;">垂直类型分布：</strong>
+                <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:8px;">
+                    {% for vtype, count in task_result.result.type_counts.items() %}
+                    <span style="padding:4px 12px;background:#e3f2fd;border-radius:16px;font-size:13px;">
+                        {{ vtype }}: {{ count }}
+                    </span>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    <!-- 单个分类结果 -->
+    {% if single_result %}
+    <div class="result-box" style="margin-top:20px;">
+        <h3 style="font-size:15px;margin-bottom:12px;">分类结果</h3>
+        <div class="stat-row">
+            <span class="stat-label">网站</span>
+            <span class="stat-value">{{ single_result.url }}</span>
+        </div>
+        {% if single_result.title %}
+        <div class="stat-row">
+            <span class="stat-label">标题</span>
+            <span class="stat-value">{{ single_result.title }}</span>
+        </div>
+        {% endif %}
+        <div class="stat-row">
+            <span class="stat-label">主营类目</span>
+            <span class="stat-value" style="font-weight:700;color:#1976d2;">{{ single_result.primary_category }}</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">置信度</span>
+            <span class="stat-value">
+                <span style="color:{% if single_result.confidence >= 70 %}#2e7d32{% elif single_result.confidence >= 40 %}#e65100{% else %}#c62828{% endif %};font-weight:700;">
+                    {{ single_result.confidence }}%
+                </span>
+            </span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">分类得分</span>
+            <span class="stat-value">{{ single_result.primary_score }}</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">垂直类型</span>
+            <span class="stat-value">
+                {% if single_result.vertical_type == 'strong_vertical' %}
+                <span style="color:#2e7d32;font-weight:700;">强垂直站</span>
+                {% elif single_result.vertical_type == 'vertical' %}
+                <span style="color:#2e7d32;">垂直站</span>
+                {% elif single_result.vertical_type == 'semi_vertical' %}
+                <span style="color:#e65100;">偏垂直站</span>
+                {% elif single_result.vertical_type == 'general' %}
+                <span style="color:#e65100;font-weight:700;">综合站</span>
+                {% elif single_result.vertical_type == 'unclear' %}
+                <span style="color:#999;">信息不足</span>
+                {% else %}
+                <span style="color:#999;">未知</span>
+                {% endif %}
+            </span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">是否Shopify</span>
+            <span class="stat-value">
+                {% if single_result.is_shopify %}
+                <span style="color:#2e7d32;font-weight:700;">是</span>
+                {% else %}
+                <span style="color:#999;">否</span>
+                {% endif %}
+            </span>
+        </div>
+        {% if single_result.error %}
+        <div class="stat-row">
+            <span class="stat-label">错误信息</span>
+            <span class="stat-value" style="color:#c62828;">{{ single_result.error }}</span>
+        </div>
+        {% endif %}
+
+        {% if single_result.all_categories %}
+        <div style="margin-top:16px;">
+            <strong style="font-size:13px;color:#666;">匹配分类（按得分排序）：</strong>
+            <div style="margin-top:8px;">
+                {% for cat in single_result.all_categories %}
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                    <span style="width:160px;font-size:13px;font-weight:{% if loop.index == 1 %}700{% else %}400{% endif %};">{{ cat.category }}</span>
+                    <div style="flex:1;background:#e8eaf6;border-radius:4px;height:20px;">
+                        {% set max_score = single_result.all_categories[0].score %}
+                        {% if max_score > 0 %}
+                        <div style="width:{{ (cat.score / max_score * 100)|int }}%;background:{% if loop.index == 1 %}#3f51b5{% else %}#9fa8da{% endif %};height:100%;border-radius:4px;min-width:2px;"></div>
+                        {% endif %}
+                    </div>
+                    <span style="font-size:12px;color:#666;width:60px;text-align:right;">{{ cat.score }}</span>
+                    <span style="font-size:11px;color:#999;width:40px;text-align:right;">{{ cat.unique_keywords }}词</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    <!-- 使用说明 -->
+    <div style="margin-top:24px;padding:16px;background:#fff3e0;border-radius:8px;border:1px solid #ffe0b2;">
+        <strong style="font-size:13px;color:#e65100;">使用说明</strong>
+        <ul style="margin-top:8px;font-size:13px;color:#666;list-style:disc;padding-left:20px;">
+            <li>分析依据：HTML标题、Meta描述、Collection链接（多维度加权评分）</li>
+            <li>垂直类型：强垂直站（100%）、垂直站（≥60%）、偏垂直站（≥40%）、综合站（≥20%）</li>
+            <li>批量分类会在原表格后面添加 5 个字段：primary_category, confidence, vertical_type, is_shopify, primary_score</li>
+            <li>非英文网站会被自动过滤</li>
+            <li>支持代理池加速（需配置 proxies.txt）</li>
+            <li>批量分类每个网站约需 2-5 秒，任务在后台运行</li>
+        </ul>
+    </div>
+</div>
+
+<style>
+    .spinner {
+        display: inline-block;
+        width: 20px;
+        height: 20px;
+        border: 3px solid #e3f2fd;
+        border-top: 3px solid #1976d2;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        vertical-align: middle;
+    }
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
+</style>
+{% endblock %}

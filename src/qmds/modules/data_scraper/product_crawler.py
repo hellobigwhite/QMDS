@@ -1,8 +1,11 @@
 """产品数据爬取模块 - 基于导航的深度爬取"""
 
+import json
 import re
 import time
 import random
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -14,6 +17,7 @@ from qmds.db.mongodb import MongoDBClient
 from qmds.db.product_db import ProductDBClient
 from qmds.modules.data_scraper.shopify_nav_parser import parse_navigation
 from qmds.utils.logger import get_logger
+from qmds.utils.proxy_manager import ProxyManager
 
 log = get_logger("product_crawler")
 
@@ -105,46 +109,113 @@ def extract_prices(variants):
 class ProductCrawler:
     """产品数据爬取器"""
     
-    def __init__(self, currency_map: Dict[str, float], proxies: Optional[List[str]] = None):
+    def __init__(self, currency_map: Dict[str, float], proxy_manager=None):
         self.currency_map = currency_map
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": random.choice(USER_AGENTS),
-            "Accept": "application/json",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Cache-Control": "max-age=0",
         })
         
-        # 代理配置
-        self.proxies = proxies or []
-        self.proxy_index = 0
+        # 代理管理（支持标记坏代理 + 冷却轮换）
+        self.proxy_manager = proxy_manager
     
     def close(self):
         """关闭会话释放资源"""
         if self.session:
             self.session.close()
     
-    def get_next_proxy(self) -> Optional[str]:
-        """获取下一个代理"""
-        if not self.proxies:
+    def get_next_proxy(self) -> Optional[dict]:
+        """获取下一个可用代理（ProxyManager 自动跳过冷却中的代理）"""
+        if not self.proxy_manager:
             return None
-        proxy = self.proxies[self.proxy_index % len(self.proxies)]
-        self.proxy_index += 1
-        return proxy
+        return self.proxy_manager.get_proxy()
+
+    def mark_proxy_bad(self, proxy_dict: Optional[dict], cooldown: float = 60.0):
+        """标记代理为不可用（触发冷却）"""
+        if self.proxy_manager and proxy_dict:
+            self.proxy_manager.mark_bad(proxy_dict, cooldown=cooldown)
     
     def fetch_json(self, url: str, timeout: int = REQUEST_TIMEOUT) -> Tuple[Optional[dict], int]:
-        """获取JSON数据"""
+        """获取JSON数据（429自动换代理重试，全部失败后降级直连）"""
+        last_status = 0
         for attempt in range(3):
+            proxy = self.get_next_proxy()
             try:
-                proxy = self.get_next_proxy()
-                proxies = {"http": proxy, "https": proxy} if proxy else None
-                
-                response = self.session.get(url, timeout=timeout, proxies=proxies)
-                return response.json(), response.status_code
-            except Exception as e:
+                response = self.session.get(url, timeout=timeout, proxies=proxy)
+                status = response.status_code
+                ct = response.headers.get("Content-Type", "")
+
+                if status != 200:
+                    body = response.text[:150].replace("\n", " ").strip() if response.text else ""
+                    if status == 429:
+                        self.mark_proxy_bad(proxy, cooldown=120.0)
+                        last_status = 429
+                        if attempt < 2:
+                            continue  # 换下一个代理重试，不立即返回
+                        log.warning(f"429限流 {url} | 已尝试{attempt+1}个代理均被限流 | body={body}")
+                    elif status in (403, 401):
+                        log.warning(f"{status}拒绝 {url} | proxy={proxy}")
+                        return None, status
+                    else:
+                        log.warning(f"HTTP {status} {url} | proxy={proxy} | body={body}")
+                        return None, status
+
+                # 200但Content-Type不是JSON
+                if status == 200 and "json" not in ct.lower():
+                    body = response.text[:200].replace("\n", " ").strip() if response.text else ""
+                    self.mark_proxy_bad(proxy, cooldown=60.0)
+                    log.warning(f"非JSON响应 {url} | ct={ct} proxy={proxy} | body={body}")
+                    return None, status
+
+                if status == 200:
+                    return response.json(), status
+
+            except requests.exceptions.Timeout:
+                last_status = 0
                 if attempt == 2:
-                    log.warning(f"请求失败 {url}: {e}")
+                    log.warning(f"请求超时 {url} | proxy={proxy} | timeout={timeout}s")
                     return None, 0
-                time.sleep(1)
-        return None, 0
+            except requests.exceptions.ConnectionError as e:
+                self.mark_proxy_bad(proxy, cooldown=60.0)
+                last_status = 0
+                if attempt == 2:
+                    log.warning(f"连接失败 {url} | proxy={proxy} | {e}")
+                    return None, 0
+            except (json.JSONDecodeError, requests.exceptions.JSONDecodeError):
+                log.warning(f"JSON解析失败 {url} | proxy={proxy}")
+                return None, 0
+            except Exception as e:
+                last_status = 0
+                if attempt == 2:
+                    log.warning(f"请求失败 {url} | proxy={proxy} | {type(e).__name__}: {e}")
+                    return None, 0
+            time.sleep(1)
+
+        # 3次代理全部失败，降级直连（不走代理）
+        if last_status == 429:
+            try:
+                response = self.session.get(url, timeout=timeout)
+                if response.status_code == 200:
+                    ct = response.headers.get("Content-Type", "")
+                    if "json" in ct.lower():
+                        return response.json(), 200
+                log.warning(f"直连降级失败 {url} | HTTP {response.status_code}")
+                return None, response.status_code
+            except Exception as e:
+                log.warning(f"直连降级失败 {url} | {type(e).__name__}: {e}")
+                return None, 0
+
+        return None, last_status
     
     def fetch_currency(self, url: str) -> str:
         """获取货币类型"""
@@ -155,13 +226,15 @@ class ProductCrawler:
             return str(currency).upper() if currency else "USD"
         return ""
     
-    def crawl_site(self, url: str, category: str, progress_callback=None) -> Dict:
+    def crawl_site(self, url: str, category: str, progress_callback=None,
+                   stop_event: threading.Event = None) -> Dict:
         """爬取单个站点的商品数据
         
         Args:
             url: 站点URL
             category: 类目名称
             progress_callback: 进度回调函数
+            stop_event: 停止信号事件（可选）
             
         Returns:
             {"success": bool, "products": list, "count": int}
@@ -212,6 +285,11 @@ class ProductCrawler:
             empty_pages = 0
             
             while empty_pages < MAX_EMPTY_PAGES and page <= MAX_PAGE_LIMIT:
+                if stop_event and stop_event.is_set():
+                    log.info(f"[{domain}] 收到停止信号，已爬取 {len(all_products)} 件")
+                    return {"success": True, "products": all_products, "count": len(all_products),
+                            "domain": domain, "currency": currency}
+
                 products_url = f"{url}/products.json?limit=200&page={page}"
                 data, code = self.fetch_json(products_url)
                 
@@ -266,7 +344,7 @@ class ProductCrawler:
                         "SKU": sku,
                         "标题": title,
                         "描述": desc,
-                        "子描述": str(product.get("tags") or "").strip(),
+                        "子描述": "",
                         "图片": image,
                         "原价": str(original_price) if original_price != "" else "",
                         "折扣价": discount_price,
@@ -286,6 +364,8 @@ class ProductCrawler:
                     progress_callback(f"[{domain}] 第{page}页: 累计{len(all_products)}件")
                 
                 page += 1
+                if stop_event and stop_event.is_set():
+                    break
                 time.sleep(random.uniform(*PAGE_SLEEP_RANGE))
             
             if progress_callback:
@@ -425,7 +505,7 @@ class ProductCrawler:
                             "SKU": sku,
                             "标题": title,
                             "描述": desc,
-                            "子描述": str(product.get("tags") or "").strip(),
+                            "子描述": "",
                             "图片": image,
                             "原价": str(original_price) if original_price != "" else "",
                             "折扣价": discount_price,
@@ -469,15 +549,67 @@ class ProductCrawler:
             log.error(f"[{domain}] 导航爬取异常: {e}")
             return {"success": False, "products": [], "count": 0, "collections": 0, "error": str(e)}
 
-    def crawl_category(self, category: str, max_sites: int = 10, progress_callback=None) -> Dict:
-        """基础爬取指定类目的商品数据
+    def _crawl_single_site(self, url_doc: dict, category: str, site_index: int,
+                           total_sites: int, progress_callback=None,
+                           stop_event: threading.Event = None) -> Dict:
+        """爬取单个站点的商品数据并保存（线程安全，每线程独立 crawler + db 实例）"""
+        url = url_doc.get("url", "")
+        domain = url_doc.get("domain", "")
+
+        if stop_event and stop_event.is_set():
+            log.info(f"[{site_index}/{total_sites}] 跳过（已停止）: {domain}")
+            return {"success": False, "saved": 0, "url": url, "domain": domain, "error": "任务已停止"}
+
+        crawler = create_crawler()
+        product_db = ProductDBClient()
+        try:
+            if progress_callback:
+                progress_callback(f"[{site_index}/{total_sites}] 开始: {domain}")
+
+            result = crawler.crawl_site(url, category, progress_callback, stop_event=stop_event)
+
+            saved_count = 0
+            if result["success"] and result["products"]:
+                saved_count = product_db.save_raw_products(category, result["products"])
+                if progress_callback:
+                    progress_callback(f"[{site_index}/{total_sites}] 保存 {saved_count} 件: {domain}")
+
+            if progress_callback:
+                progress_callback(f"[{site_index}/{total_sites}] 完成: {domain} ({saved_count} 件)")
+
+            return {
+                "success": result["success"],
+                "saved": saved_count,
+                "url": url,
+                "domain": domain,
+                "error": result.get("error"),
+            }
+        except Exception as e:
+            if stop_event and stop_event.is_set():
+                log.info(f"[{site_index}/{total_sites}] 停止: {domain}")
+            else:
+                log.error(f"[{site_index}/{total_sites}] 站点异常 {domain}: {e}")
+            if progress_callback:
+                progress_callback(f"[{site_index}/{total_sites}] 失败: {domain} ({e})")
+            return {"success": False, "saved": 0, "url": url, "domain": domain, "error": str(e)}
+        finally:
+            crawler.close()
+            product_db.close()
+
+    def crawl_category(self, category: str, max_sites: int = 10, workers: int = 1,
+                       progress_callback=None, stop_event: threading.Event = None) -> Dict:
+        """爬取指定类目的商品数据（支持多线程并发）
 
         从数据库的 {category}_filtered 集合获取店铺URL，通过 products.json API 爬取商品。
+        workers=1 时串行执行（与旧行为一致），workers>1 时使用线程池并发爬取。
+        每个线程拥有独立的 ProductCrawler 实例（独立 Session + 代理）和 ProductDBClient 实例。
 
         Args:
             category: 类目名称
             max_sites: 最大爬取站点数
+            workers: 并发线程数（默认 1 串行）
             progress_callback: 进度回调函数
+            stop_event: 停止信号事件（可选，传入后可即时停止所有线程）
 
         Returns:
             {"total_sites": int, "success_sites": int, "total_products": int}
@@ -496,7 +628,6 @@ class ProductCrawler:
             seen_domains.add(domain)
             store_url = doc.get("store_url") or ""
             if not store_url:
-                # 从 collection URL 推导 store URL
                 raw_url = doc.get("url", "")
                 parsed = urlparse(raw_url)
                 store_url = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else ""
@@ -509,40 +640,70 @@ class ProductCrawler:
             log.warning(f"类目 {category} 无可用URL")
             return {"total_sites": 0, "success_sites": 0, "total_products": 0, "error": "无可用URL"}
 
-        # 限制站点数
         store_urls = store_urls[:max_sites]
+        total_sites = len(store_urls)
 
-        # 使用ProductDBClient保存数据
+        # 预创建索引（共享，MongoDB 索引操作本身是幂等的）
         product_db = ProductDBClient()
         product_db.ensure_product_indexes(category)
+        product_db.close()
 
-        total_sites = len(store_urls)
+        log.info(f"开始爬取类目 {category}: {total_sites} 个站点, {workers} 线程")
+        if progress_callback:
+            progress_callback(f"开始爬取: {total_sites} 个站点, {workers} 线程")
+
+        # ── 串行模式 ──
+        if workers <= 1:
+            success_sites = 0
+            total_products = 0
+            for i, url_doc in enumerate(store_urls, 1):
+                if stop_event and stop_event.is_set():
+                    log.info(f"类目 {category}: 收到停止信号，已处理 {i-1}/{total_sites} 站点")
+                    break
+                result = self._crawl_single_site(url_doc, category, i, total_sites,
+                                                 progress_callback, stop_event=stop_event)
+                if result["success"]:
+                    success_sites += 1
+                    total_products += result["saved"]
+                if i < total_sites and not (stop_event and stop_event.is_set()):
+                    time.sleep(random.uniform(*SITE_COOLDOWN_RANGE))
+
+            return {
+                "total_sites": total_sites,
+                "success_sites": success_sites,
+                "total_products": total_products,
+            }
+
+        # ── 并发模式 ──
+        lock = threading.Lock()
         success_sites = 0
         total_products = 0
 
-        for i, url_doc in enumerate(store_urls):
-            url = url_doc.get("url", "")
-            if not url:
-                continue
+        def _worker(idx: int, url_doc: dict) -> dict:
+            nonlocal success_sites, total_products
+            result = self._crawl_single_site(url_doc, category, idx, total_sites,
+                                             progress_callback, stop_event=stop_event)
+            if result["success"]:
+                with lock:
+                    success_sites += 1
+                    total_products += result["saved"]
+            return result
 
-            if progress_callback:
-                progress_callback(f"处理站点 {i+1}/{total_sites}: {url}")
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="crawl_site") as executor:
+            futures = {
+                executor.submit(_worker, i, url_doc): url_doc
+                for i, url_doc in enumerate(store_urls, 1)
+            }
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    url_doc = futures[future]
+                    log.error(f"线程异常 {url_doc.get('domain', '')}: {e}")
 
-            result = self.crawl_site(url, category, progress_callback)
-
-            if result["success"] and result["products"]:
-                saved_count = product_db.save_raw_products(category, result["products"])
-                total_products += saved_count
-                success_sites += 1
-
-                if progress_callback:
-                    progress_callback(f"保存 {saved_count} 件商品到 {category}_raw")
-
-            # 站点间冷却
-            if i < total_sites - 1:
-                time.sleep(random.uniform(*SITE_COOLDOWN_RANGE))
-
-        product_db.close()
+        log.info(f"类目 {category} 爬取完成: {success_sites}/{total_sites} 站点, {total_products} 件商品")
+        if progress_callback:
+            progress_callback(f"爬取完成: {success_sites}/{total_sites} 站点, {total_products} 件商品")
 
         return {
             "total_sites": total_sites,
@@ -574,11 +735,7 @@ def create_crawler() -> ProductCrawler:
         # 默认汇率
         currency_map = {"USD": 1.0, "EUR": 0.92, "GBP": 0.79, "CAD": 1.36, "AUD": 1.53}
     
-    # 加载代理配置
-    proxies_file = settings.data_dir / "proxies.txt"
-    proxies = []
-    if proxies_file.exists():
-        with open(proxies_file, "r", encoding="utf-8") as f:
-            proxies = [line.strip() for line in f if line.strip()]
-    
-    return ProductCrawler(currency_map=currency_map, proxies=proxies)
+    # 加载代理配置（ProxyManager 自动转换格式 + 支持标记坏代理 + 冷却轮换）
+    proxy_manager = ProxyManager.from_settings()
+
+    return ProductCrawler(currency_map=currency_map, proxy_manager=proxy_manager)

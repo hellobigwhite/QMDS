@@ -346,196 +346,196 @@ class OrderScheduler:
 
             self._log(task_id, f"第一阶段完成: 成功 {success_count} 台, 失败 {fail_count} 台")
             
-            # 第二阶段：异步获取订单详情
-            self._log(task_id, f"\n{'='*50}")
-            self._log(task_id, f"第二阶段: 获取订单详情（{len(servers_with_orders)} 台有订单的服务器）")
-            self._log(task_id, f"{'='*50}")
-            
-            detail_success = 0
-            detail_failed = 0
-            detail_dedup = 0
-            detail_servers_done = 0
-            
-            for svr in servers_with_orders:  # 只处理有订单的服务器
-                ip = svr.get("ip", "")
-                domain = svr.get("domain", "")
-                
-                if not ip:
-                    continue
-                
-                # 获取没有详情的订单
-                orders_without_details = order_db.get_orders_without_details(ip, domain, year, month)
-                
-                if not orders_without_details:
-                    self._log(task_id, f"[{svr.get('name', '')}] 无需获取详情")
-                    detail_servers_done += 1
-                    continue
-                
-                self._log(task_id, f"[{svr.get('name', '')}] 待处理: {len(orders_without_details)} 个订单")
-                
-                try:
-                    # 复用 engine.py 中的详情获取函数
-                    from qmds.modules.web.engine import create_app
-                    # 由于 scheduler 是独立模块，需要直接实现详情获取逻辑
-                    
-                    import requests as req
-                    req.packages.urllib3.disable_warnings()
-                    
-                    session = req.Session()
-                    session.verify = False
-                    
-                    # 登录
-                    site_url = f"https://{domain}"
-                    name = domain.replace('www.', '').replace('.com', '').strip()
-                    username = f"Ad{name}Min"
-                    login_url = f"{site_url}/bbwllogin/"
-                    login_data = {
-                        "log": username, 
-                        "pwd": wp_password, 
-                        "wp-submit": "Log In",
-                        "redirect_to": f"{site_url}/wp-admin/", 
-                        "testcookie": "1"
-                    }
-                    headers = {"User-Agent": "Mozilla/5.0", "Referer": login_url}
-                    
-                    session.post(login_url, data=login_data, headers=headers, verify=False, timeout=10)
-                    logged_in = any("wordpress_logged_in" in c.name for c in session.cookies)
-                    
-                    if not logged_in:
-                        check = session.get(f"{site_url}/wp-admin/", verify=False, timeout=10)
-                        logged_in = check.status_code == 200 and "wp-admin" in check.url
-                    
-                    if not logged_in:
-                        self._log(task_id, f"[{svr.get('name', '')}] 登录失败", "warning")
-                        detail_servers_done += 1
-                        continue
-                    
-                    self._log(task_id, f"[{svr.get('name', '')}] Login OK")
-                    
-                    import re
-                    from bs4 import BeautifulSoup
-                    
-                    for i, order in enumerate(orders_without_details, 1):
-                        order_time = order.get("order_time", "")
-                        
-                        # 通过订单时间搜索订单ID
-                        search_url = f"{site_url}/wp-admin/edit.php?post_type=shop_order&s={order_time}"
-                        try:
-                            r = session.get(search_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-                            if r.status_code == 200:
-                                order_id_match = re.search(r'post=(\d+)', r.text)
-                                if order_id_match:
-                                    order_id = order_id_match.group(1)
-                                    
-                                    # 访问订单详情页
-                                    detail_url = f"{site_url}/wp-admin/post.php?post={order_id}&action=edit"
-                                    detail_resp = session.get(detail_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-                                    
-                                    if detail_resp.status_code == 200:
-                                        # 解析详情
-                                        soup = BeautifulSoup(detail_resp.text, "html.parser")
-                                        
-                                        # 解析商品信息
-                                        items = []
-                                        items_table = soup.find("table", class_="woocommerce_order_items")
-                                        if items_table:
-                                            tbody = items_table.find("tbody")
-                                            if tbody:
-                                                for row in tbody.find_all("tr"):
-                                                    item = {}
-                                                    name_cell = row.find("td", class_="name")
-                                                    if name_cell:
-                                                        name_link = name_cell.find("a")
-                                                        if name_link:
-                                                            item["product_name"] = name_link.get_text(strip=True)
-                                                        
-                                                        sku_div = name_cell.find("div", class_="view") or name_cell.find("small")
-                                                        if sku_div:
-                                                            sku_text = sku_div.get_text(strip=True)
-                                                            if "SKU" in sku_text:
-                                                                item["sku"] = sku_text.replace("SKU:", "").strip()
-                                                    
-                                                    qty_cell = row.find("td", class_="quantity")
-                                                    if qty_cell:
-                                                        try:
-                                                            item["quantity"] = int(qty_cell.get_text(strip=True))
-                                                        except ValueError:
-                                                            item["quantity"] = 1
-                                                    
-                                                    total_cell = row.find("td", class_="line_total") or row.find("td", class_="line_cost")
-                                                    if total_cell:
-                                                        nums = re.findall(r'[\d,.]+', total_cell.get_text(strip=True))
-                                                        if nums:
-                                                            try:
-                                                                item["subtotal"] = float(nums[-1].replace(",", ""))
-                                                            except ValueError:
-                                                                item["subtotal"] = 0
-                                                    
-                                                    if item.get("product_name"):
-                                                        items.append(item)
-                                        
-                                        # 解析邮箱
-                                        customer_email = ""
-                                        email_link = soup.find("a", href=re.compile(r"^mailto:"))
-                                        if email_link:
-                                            customer_email = email_link.get("href", "").replace("mailto:", "").strip()
-                                        
-                                        if not customer_email:
-                                            # 备用解析
-                                            order_data_columns = soup.find_all("div", class_="order_data_column")
-                                            for column in order_data_columns:
-                                                text = column.get_text()
-                                                if "@" in text:
-                                                    email_match = re.search(r'[\w.-]+@[\w.-]+\.\w+', text)
-                                                    if email_match:
-                                                        customer_email = email_match.group(0)
-                                                        break
-                                        
-                                        # 更新数据库
-                                        result = order_db.update_order_details(
-                                            ip=ip,
-                                            domain=domain,
-                                            order_time=order_time,
-                                            customer_email=customer_email,
-                                            order_amount=order.get("order_amount", 0),
-                                            items=items
-                                        )
-                                        
-                                        if result.get("updated"):
-                                            detail_success += 1
-                                        
-                                        if result.get("deduplicated", 0) > 0:
-                                            detail_dedup += result["deduplicated"]
-                                            self._log(task_id, f"[{svr.get('name', '')}] [{i}/{len(orders_without_details)}] ⚠️ 去重: 删除 {result['deduplicated']} 条")
-                                        else:
-                                            self._log(task_id, f"[{svr.get('name', '')}] [{i}/{len(orders_without_details)}] ✅ {len(items)}件商品, 邮箱: {customer_email or 'N/A'}")
-                                    else:
-                                        detail_failed += 1
-                                        self._log(task_id, f"[{svr.get('name', '')}] [{i}/{len(orders_without_details)}] ❌ 详情页访问失败")
-                                else:
-                                    detail_failed += 1
-                                    self._log(task_id, f"[{svr.get('name', '')}] [{i}/{len(orders_without_details)}] ❌ 未找到订单ID")
-                            else:
-                                detail_failed += 1
-                                self._log(task_id, f"[{svr.get('name', '')}] [{i}/{len(orders_without_details)}] ❌ 搜索失败")
-                        except Exception as e:
-                            detail_failed += 1
-                            self._log(task_id, f"[{svr.get('name', '')}] [{i}/{len(orders_without_details)}] ❌ {e}")
-                        
-                        time.sleep(0.5)
-                    
-                except Exception as e:
-                    self._log(task_id, f"[{svr.get('name', '')}] ❌ {e}", "error")
-                
-                detail_servers_done += 1
-            
-            # 输出第二阶段统计
-            self._log(task_id, f"\n{'='*50}")
-            self._log(task_id, f"第二阶段完成:")
-            self._log(task_id, f"  详情更新成功: {detail_success} 条")
-            self._log(task_id, f"  详情更新失败: {detail_failed} 条")
-            self._log(task_id, f"  去重删除: {detail_dedup} 条")
-            self._log(task_id, f"{'='*50}")
+            # # 第二阶段：异步获取订单详情（已关闭，如需开启请取消注释）
+            # self._log(task_id, f"\n{'='*50}")
+            # self._log(task_id, f"第二阶段: 获取订单详情（{len(servers_with_orders)} 台有订单的服务器）")
+            # self._log(task_id, f"{'='*50}")
+            # 
+            # detail_success = 0
+            # detail_failed = 0
+            # detail_dedup = 0
+            # detail_servers_done = 0
+            # 
+            # for svr in servers_with_orders:  # 只处理有订单的服务器
+            #     ip = svr.get("ip", "")
+            #     domain = svr.get("domain", "")
+            #     
+            #     if not ip:
+            #         continue
+            #     
+            #     # 获取没有详情的订单
+            #     orders_without_details = order_db.get_orders_without_details(ip, domain, year, month)
+            #     
+            #     if not orders_without_details:
+            #         self._log(task_id, f"[{svr.get('name', '')}] 无需获取详情")
+            #         detail_servers_done += 1
+            #         continue
+            #     
+            #     self._log(task_id, f"[{svr.get('name', '')}] 待处理: {len(orders_without_details)} 个订单")
+            #     
+            #     try:
+            #         # 复用 engine.py 中的详情获取函数
+            #         from qmds.modules.web.engine import create_app
+            #         # 由于 scheduler 是独立模块，需要直接实现详情获取逻辑
+            #         
+            #         import requests as req
+            #         req.packages.urllib3.disable_warnings()
+            #         
+            #         session = req.Session()
+            #         session.verify = False
+            #         
+            #         # 登录
+            #         site_url = f"https://{domain}"
+            #         name = domain.replace('www.', '').replace('.com', '').strip()
+            #         username = f"Ad{name}Min"
+            #         login_url = f"{site_url}/bbwllogin/"
+            #         login_data = {
+            #             "log": username, 
+            #             "pwd": wp_password, 
+            #             "wp-submit": "Log In",
+            #             "redirect_to": f"{site_url}/wp-admin/", 
+            #             "testcookie": "1"
+            #         }
+            #         headers = {"User-Agent": "Mozilla/5.0", "Referer": login_url}
+            #         
+            #         session.post(login_url, data=login_data, headers=headers, verify=False, timeout=10)
+            #         logged_in = any("wordpress_logged_in" in c.name for c in session.cookies)
+            #         
+            #         if not logged_in:
+            #             check = session.get(f"{site_url}/wp-admin/", verify=False, timeout=10)
+            #             logged_in = check.status_code == 200 and "wp-admin" in check.url
+            #         
+            #         if not logged_in:
+            #             self._log(task_id, f"[{svr.get('name', '')}] 登录失败", "warning")
+            #             detail_servers_done += 1
+            #             continue
+            #         
+            #         self._log(task_id, f"[{svr.get('name', '')}] Login OK")
+            #         
+            #         import re
+            #         from bs4 import BeautifulSoup
+            #         
+            #         for i, order in enumerate(orders_without_details, 1):
+            #             order_time = order.get("order_time", "")
+            #             
+            #             # 通过订单时间搜索订单ID
+            #             search_url = f"{site_url}/wp-admin/edit.php?post_type=shop_order&s={order_time}"
+            #             try:
+            #                 r = session.get(search_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+            #                 if r.status_code == 200:
+            #                     order_id_match = re.search(r'post=(\d+)', r.text)
+            #                     if order_id_match:
+            #                         order_id = order_id_match.group(1)
+            #                         
+            #                         # 访问订单详情页
+            #                         detail_url = f"{site_url}/wp-admin/post.php?post={order_id}&action=edit"
+            #                         detail_resp = session.get(detail_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+            #                         
+            #                         if detail_resp.status_code == 200:
+            #                             # 解析详情
+            #                             soup = BeautifulSoup(detail_resp.text, "html.parser")
+            #                             
+            #                             # 解析商品信息
+            #                             items = []
+            #                             items_table = soup.find("table", class_="woocommerce_order_items")
+            #                             if items_table:
+            #                                 tbody = items_table.find("tbody")
+            #                                 if tbody:
+            #                                     for row in tbody.find_all("tr"):
+            #                                         item = {}
+            #                                         name_cell = row.find("td", class_="name")
+            #                                         if name_cell:
+            #                                             name_link = name_cell.find("a")
+            #                                             if name_link:
+            #                                                 item["product_name"] = name_link.get_text(strip=True)
+            #                                             
+            #                                             sku_div = name_cell.find("div", class_="view") or name_cell.find("small")
+            #                                             if sku_div:
+            #                                                 sku_text = sku_div.get_text(strip=True)
+            #                                                 if "SKU" in sku_text:
+            #                                                     item["sku"] = sku_text.replace("SKU:", "").strip()
+            #                                         
+            #                                         qty_cell = row.find("td", class_="quantity")
+            #                                         if qty_cell:
+            #                                             try:
+            #                                                 item["quantity"] = int(qty_cell.get_text(strip=True))
+            #                                             except ValueError:
+            #                                                 item["quantity"] = 1
+            #                                         
+            #                                         total_cell = row.find("td", class_="line_total") or row.find("td", class_="line_cost")
+            #                                         if total_cell:
+            #                                             nums = re.findall(r'[\d,.]+', total_cell.get_text(strip=True))
+            #                                             if nums:
+            #                                                 try:
+            #                                                     item["subtotal"] = float(nums[-1].replace(",", ""))
+            #                                                 except ValueError:
+            #                                                     item["subtotal"] = 0
+            #                                         
+            #                                         if item.get("product_name"):
+            #                                             items.append(item)
+            #                             
+            #                             # 解析邮箱
+            #                             customer_email = ""
+            #                             email_link = soup.find("a", href=re.compile(r"^mailto:"))
+            #                             if email_link:
+            #                                 customer_email = email_link.get("href", "").replace("mailto:", "").strip()
+            #                             
+            #                             if not customer_email:
+            #                                 # 备用解析
+            #                                 order_data_columns = soup.find_all("div", class_="order_data_column")
+            #                                 for column in order_data_columns:
+            #                                     text = column.get_text()
+            #                                     if "@" in text:
+            #                                         email_match = re.search(r'[\w.-]+@[\w.-]+\.\w+', text)
+            #                                         if email_match:
+            #                                             customer_email = email_match.group(0)
+            #                                             break
+            #                             
+            #                             # 更新数据库
+            #                             result = order_db.update_order_details(
+            #                                 ip=ip,
+            #                                 domain=domain,
+            #                                 order_time=order_time,
+            #                                 customer_email=customer_email,
+            #                                 order_amount=order.get("order_amount", 0),
+            #                                 items=items
+            #                             )
+            #                             
+            #                             if result.get("updated"):
+            #                                 detail_success += 1
+            #                             
+            #                             if result.get("deduplicated", 0) > 0:
+            #                                 detail_dedup += result["deduplicated"]
+            #                                 self._log(task_id, f"[{svr.get('name', '')}] [{i}/{len(orders_without_details)}] ⚠️ 去重: 删除 {result['deduplicated']} 条")
+            #                             else:
+            #                                 self._log(task_id, f"[{svr.get('name', '')}] [{i}/{len(orders_without_details)}] ✅ {len(items)}件商品, 邮箱: {customer_email or 'N/A'}")
+            #                         else:
+            #                             detail_failed += 1
+            #                             self._log(task_id, f"[{svr.get('name', '')}] [{i}/{len(orders_without_details)}] ❌ 详情页访问失败")
+            #                     else:
+            #                         detail_failed += 1
+            #                         self._log(task_id, f"[{svr.get('name', '')}] [{i}/{len(orders_without_details)}] ❌ 未找到订单ID")
+            #                 else:
+            #                     detail_failed += 1
+            #                     self._log(task_id, f"[{svr.get('name', '')}] [{i}/{len(orders_without_details)}] ❌ 搜索失败")
+            #             except Exception as e:
+            #                 detail_failed += 1
+            #                 self._log(task_id, f"[{svr.get('name', '')}] [{i}/{len(orders_without_details)}] ❌ {e}")
+            #             
+            #             time.sleep(0.5)
+            #         
+            #     except Exception as e:
+            #         self._log(task_id, f"[{svr.get('name', '')}] ❌ {e}", "error")
+            #     
+            #     detail_servers_done += 1
+            # 
+            # # 输出第二阶段统计
+            # self._log(task_id, f"\n{'='*50}")
+            # self._log(task_id, f"第二阶段完成:")
+            # self._log(task_id, f"  详情更新成功: {detail_success} 条")
+            # self._log(task_id, f"  详情更新失败: {detail_failed} 条")
+            # self._log(task_id, f"  去重删除: {detail_dedup} 条")
+            # self._log(task_id, f"{'='*50}")
             
             self._status = "idle"
             self._run_count += 1

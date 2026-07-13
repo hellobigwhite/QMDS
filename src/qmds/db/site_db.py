@@ -674,6 +674,24 @@ class SiteDBClient:
         """批量更新菜单/自动分类状态"""
         return self._batch_update_field(site_ids, "auto_category_status", status, {"auto_category_time": datetime.utcnow().isoformat()})
 
+    def update_image_status(self, domain: str, has_banner: bool, has_icon: bool, has_logo: bool) -> bool:
+        """更新站点图片生成状态"""
+        ts = datetime.utcnow().isoformat()
+        updates = {
+            "has_banner": has_banner,
+            "has_icon": has_icon,
+            "has_logo": has_logo,
+            "image_status_time": ts,
+            "updated_at": ts,
+        }
+        result = self.sites.update_one(
+            {"domain": domain},
+            {"$set": updates}
+        )
+        if result.modified_count > 0:
+            self._stats_cache.invalidate()
+        return result.modified_count > 0
+
     def update_domain_status(self, domain: str, report_id: str, domain_status: str) -> bool:
         """更新域名状态（从上报API同步）"""
         ts = datetime.utcnow().isoformat()

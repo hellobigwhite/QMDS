@@ -1,9 +1,22 @@
 """产品数据管理数据库客户端"""
 
+import re
 import time
 import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+
+# Excel 写入前兜底清洗：移除 openpyxl 不允许写入工作表的控制字符
+_ILLEGAL_EXCEL_CHARS_RE = re.compile(r'[\000-\010]|[\013-\014]|[\016-\037]')
+
+
+def _clean_excel_illegal_chars(value):
+    """清理 Excel/openpyxl 不允许写入的非法控制字符。"""
+    if isinstance(value, str):
+        value = _ILLEGAL_EXCEL_CHARS_RE.sub('', value)
+        value = value.replace('\ufffd', '')
+    return value
+
 
 from pymongo import MongoClient, ASCENDING
 from pymongo.errors import ConnectionFailure, BulkWriteError
@@ -641,6 +654,8 @@ class ProductDBClient:
                     cell = ""
                 else:
                     cell = str(value).strip()
+                # 清除 openpyxl 不允许的控制字符
+                cell = _clean_excel_illegal_chars(cell)
                 # Excel单元格限制32767字符，截断超长内容
                 if len(cell) > 32000:
                     cell = cell[:32000] + "...[truncated]"

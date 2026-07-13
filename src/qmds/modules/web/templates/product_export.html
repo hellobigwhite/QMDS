@@ -12,13 +12,9 @@
             <div>
                 <label for="export_category">选择类目</label>
                 <select id="export_category" name="category" style="width:100%;" required>
-                    <option value="">请选择类目</option>
-                    {% for cat_stat in category_stats|default([]) %}
-                    {% if cat_stat.clean_count > 0 %}
-                    <option value="{{ cat_stat.category }}">{{ cat_stat.category }} ({{ cat_stat.clean_count }} 条，已导出 {{ cat_stat.exported_count|default(0) }})</option>
-                    {% endif %}
-                    {% endfor %}
+                    <option value="">加载中...</option>
                 </select>
+                <small id="category-loading" class="text-muted">正在加载类目列表...</small>
             </div>
             <div>
                 <label for="export_limit">导出数量</label>
@@ -37,8 +33,17 @@
 
 <div class="card">
     <h2>可导出类目</h2>
-    {% if category_stats %}
-    <div style="overflow-x:auto;">
+    <div id="table-loading" style="text-align:center; padding:20px;">
+        <div class="loading-spinner"></div>
+        <p class="text-muted">正在加载类目统计...</p>
+    </div>
+    <div id="table-empty" style="display:none;">
+        <p class="text-muted">暂无可导出的数据。请先使用数据爬取和清洗功能。</p>
+    </div>
+    <div id="table-error" style="display:none;">
+        <p style="color:#ef4444;">加载统计数据失败，请刷新页面重试。</p>
+    </div>
+    <div id="table-content" style="display:none; overflow-x:auto;">
         <table>
             <thead>
                 <tr>
@@ -49,32 +54,10 @@
                     <th>操作</th>
                 </tr>
             </thead>
-            <tbody>
-                {% for cat_stat in category_stats %}
-                <tr>
-                    <td>{{ cat_stat.category }}</td>
-                    <td>{{ cat_stat.raw_count }}</td>
-                    <td>{{ cat_stat.clean_count }}</td>
-                    <td style="color: #10b981; font-weight: 600;">{{ cat_stat.exported_count|default(0) }}</td>
-                    <td>
-                        {% if cat_stat.clean_count > 0 %}
-                        <form method="POST" action="/product-data/export" style="display: inline;">
-                            <input type="hidden" name="category" value="{{ cat_stat.category }}">
-                            <input type="hidden" name="format" value="excel">
-                            <button type="submit" class="btn btn-sm btn-success">导出</button>
-                        </form>
-                        {% else %}
-                        <span class="text-muted">无数据</span>
-                        {% endif %}
-                    </td>
-                </tr>
-                {% endfor %}
+            <tbody id="stats-tbody">
             </tbody>
         </table>
     </div>
-    {% else %}
-    <p class="text-muted">暂无可导出的数据。请先使用数据爬取和清洗功能。</p>
-    {% endif %}
 </div>
 
 <div class="card">
@@ -98,4 +81,147 @@
         </div>
     </div>
 </div>
+
+<style>
+.loading-spinner {
+    width: 40px;
+    height: 40px;
+    margin: 0 auto;
+    border: 3px solid #f3f3f3;
+    border-top: 3px solid #1a1a2e;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+</style>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    loadCategoryStats();
+});
+
+function loadCategoryStats() {
+    fetch('/api/product-data/stats')
+        .then(function(response) { return response.json(); })
+        .then(function(data) {
+            if (data.ok && data.data) {
+                renderCategoryStats(data.data.categories || []);
+            } else {
+                showError();
+            }
+        })
+        .catch(function(error) {
+            console.error('加载统计数据失败:', error);
+            showError();
+        });
+}
+
+function renderCategoryStats(categories) {
+    // 更新下拉列表
+    var select = document.getElementById('export_category');
+    var loadingHint = document.getElementById('category-loading');
+    loadingHint.style.display = 'none';
+    
+    // 清除加载提示
+    select.innerHTML = '<option value="">请选择类目</option>';
+    
+    // 添加类目选项
+    categories.forEach(function(catStat) {
+        if (catStat.clean_count > 0) {
+            var option = document.createElement('option');
+            option.value = catStat.category;
+            option.textContent = catStat.category + ' (' + catStat.clean_count + ' 条，已导出 ' + (catStat.exported_count || 0) + ')';
+            select.appendChild(option);
+        }
+    });
+    
+    // 更新表格
+    document.getElementById('table-loading').style.display = 'none';
+    
+    if (categories.length === 0) {
+        document.getElementById('table-empty').style.display = 'block';
+        return;
+    }
+    
+    var tbody = document.getElementById('stats-tbody');
+    tbody.innerHTML = '';
+    
+    categories.forEach(function(catStat) {
+        var tr = document.createElement('tr');
+        
+        // 类目名称
+        var tdCategory = document.createElement('td');
+        tdCategory.textContent = catStat.category;
+        tr.appendChild(tdCategory);
+        
+        // 原始数据数量
+        var tdRaw = document.createElement('td');
+        tdRaw.textContent = catStat.raw_count;
+        tr.appendChild(tdRaw);
+        
+        // 清洗后数据数量
+        var tdClean = document.createElement('td');
+        tdClean.textContent = catStat.clean_count;
+        tr.appendChild(tdClean);
+        
+        // 已导出数量
+        var tdExported = document.createElement('td');
+        tdExported.textContent = catStat.exported_count || 0;
+        tdExported.style.color = '#10b981';
+        tdExported.style.fontWeight = '600';
+        tr.appendChild(tdExported);
+        
+        // 操作
+        var tdAction = document.createElement('td');
+        if (catStat.clean_count > 0) {
+            var form = document.createElement('form');
+            form.method = 'POST';
+            form.action = '/product-data/export';
+            form.style.display = 'inline';
+            
+            var inputCategory = document.createElement('input');
+            inputCategory.type = 'hidden';
+            inputCategory.name = 'category';
+            inputCategory.value = catStat.category;
+            form.appendChild(inputCategory);
+            
+            var inputFormat = document.createElement('input');
+            inputFormat.type = 'hidden';
+            inputFormat.name = 'format';
+            inputFormat.value = 'excel';
+            form.appendChild(inputFormat);
+            
+            var btn = document.createElement('button');
+            btn.type = 'submit';
+            btn.className = 'btn btn-sm btn-success';
+            btn.textContent = '导出';
+            form.appendChild(btn);
+            
+            tdAction.appendChild(form);
+        } else {
+            var span = document.createElement('span');
+            span.className = 'text-muted';
+            span.textContent = '无数据';
+            tdAction.appendChild(span);
+        }
+        tr.appendChild(tdAction);
+        
+        tbody.appendChild(tr);
+    });
+    
+    document.getElementById('table-content').style.display = 'block';
+}
+
+function showError() {
+    document.getElementById('category-loading').style.display = 'none';
+    document.getElementById('table-loading').style.display = 'none';
+    document.getElementById('table-error').style.display = 'block';
+    
+    var select = document.getElementById('export_category');
+    select.innerHTML = '<option value="">加载失败，请刷新</option>';
+}
+</script>
 {% endblock %}

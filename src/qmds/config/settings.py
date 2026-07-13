@@ -40,6 +40,9 @@ class Settings:
     # 代理文件
     proxies_file: Optional[Path] = None
 
+    # 网站分类器
+    niche_threshold: float = 0.7  # 主营类目占比阈值（≥此值为专一站）
+
     def __post_init__(self):
         self.data_dir = self.project_root / self.data_dir
         if self.log_file is None:
@@ -51,8 +54,8 @@ class Settings:
 
     def load_proxies(self) -> list[str]:
         """从 proxies.txt 加载代理，支持两种格式：
-        1. ip:port:user:pass
-        2. http://user:pass@ip:port
+        1. http://user:pass@ip:port  （已格式化，直接使用）
+        2. ip:port:user:pass         （自动转换）
         """
         if not self.proxies_file or not self.proxies_file.exists():
             return []
@@ -62,12 +65,15 @@ class Settings:
             line = line.strip()
             if not line:
                 continue
+            # 已是完整 URL 格式，直接使用（必须先于 split 检查）
+            if line.startswith("http://") or line.startswith("https://"):
+                result.append(line)
+                continue
+            # ip:port:user:pass 格式，转换为 http://user:pass@ip:port
             parts = line.split(":")
             if len(parts) == 4:
                 ip, port, user, pw = parts
                 result.append(f"http://{user}:{pw}@{ip}:{port}")
-            elif line.startswith("http://") or line.startswith("https://"):
-                result.append(line)
         return result
 
     @classmethod

@@ -134,6 +134,11 @@ class TaskManager:
                 return self._stop_events[task_id].is_set()
             return False
 
+    def get_stop_event(self, task_id: str):
+        """获取任务的停止事件对象（可传入子模块实现即时停止）"""
+        with self._lock:
+            return self._stop_events.get(task_id)
+
     def cleanup(self, max_age_hours: int = 1):
         """清理已完成/失败/停止的任务，释放内存"""
         cutoff = datetime.now() - timedelta(hours=max_age_hours)
@@ -866,8 +871,11 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
                     
                     # 爬取类目数据
                     _task_manager.add_log(task_id, "开始爬取类目数据...", "info")
+                    stop_event = _task_manager.get_stop_event(task_id)
                     result = crawler.crawl_category(category, max_sites=max_sites,
-                                                    progress_callback=progress_callback)
+                                                    workers=max_workers,
+                                                    progress_callback=progress_callback,
+                                                    stop_event=stop_event)
                     
                     if _task_manager.is_stopped(task_id):
                         _task_manager.update(task_id, status="stopped", message="任务已停止")
@@ -1062,16 +1070,8 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
             flash(f"数据导出任务已启动: {category}，可在任务页面查看进度")
             return redirect(url_for("product_data_export"))
         
-        # GET请求：获取类目统计信息
-        try:
-            product_db = _get_product_db()
-            stats = product_db.get_all_stats()
-            category_stats = stats["categories"]
-        except Exception as e:
-            log.error(f"获取类目统计失败: {e}")
-            category_stats = []
-        
-        return render_template("product_export.html", category_stats=category_stats)
+        # GET请求：直接返回页面，统计数据通过API异步加载
+        return render_template("product_export.html", category_stats=[])
 
     # === 建站管理路由 ===
 
@@ -1631,11 +1631,24 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
                             _task_manager.add_log(task_id, "任务被用户停止", "warning")
                             return
 
-                        # 更新站点的logo路径
+                        # 更新站点的图片路径和状态
                         for domain, _ in items:
-                            logo_path = os.path.join(output_dir, domain, "logo.png")
-                            if os.path.exists(logo_path):
-                                _site_db.update_site(domain, {"logo": logo_path})
+                            site_dir = os.path.join(output_dir, domain)
+                            has_banner = os.path.isfile(os.path.join(site_dir, "banner.jpg"))
+                            has_icon = os.path.isfile(os.path.join(site_dir, "icon.png"))
+                            has_logo = os.path.isfile(os.path.join(site_dir, "logo.png"))
+
+                            update_data = {}
+                            if has_banner:
+                                update_data["banner"] = os.path.join(site_dir, "banner.jpg")
+                            if has_icon:
+                                update_data["icon"] = os.path.join(site_dir, "icon.png")
+                            if has_logo:
+                                update_data["logo"] = os.path.join(site_dir, "logo.png")
+
+                            if update_data:
+                                _site_db.update_site(domain, update_data)
+                            _site_db.update_image_status(domain, has_banner, has_icon, has_logo)
 
                         # 构建完成消息
                         summary_parts = []
@@ -1675,14 +1688,13 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
             result = site_db.list_active_sites(q, page=page, page_size=page_size)
             default_output_dir = str(settings.data_dir / "logos" / "setting")
 
-            # 检查每个站点的图片文件是否存在
+            # 检查每个站点的图片状态 - 优先从DB读取
             for site in result["items"]:
                 domain = site.get("domain", "")
                 if domain:
-                    site_dir = os.path.join(default_output_dir, domain)
-                    site["has_banner"] = os.path.isfile(os.path.join(site_dir, "banner.jpg"))
-                    site["has_icon"] = os.path.isfile(os.path.join(site_dir, "icon.png"))
-                    site["has_logo"] = os.path.isfile(os.path.join(site_dir, "logo.png"))
+                    site["has_banner"] = site.get("has_banner", False)
+                    site["has_icon"] = site.get("has_icon", False)
+                    site["has_logo"] = site.get("has_logo", False)
 
             return render_template("site_generate_images.html",
                                  sites=result["items"],
@@ -1701,6 +1713,36 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
                                  default_output_dir="")
         finally:
             site_db.close()
+
+    @app.route("/site-management/refresh-image-status", methods=["POST"])
+    def refresh_image_status():
+        """从文件系统扫描并更新所有站点的图片状态"""
+        site_db = _get_site_db()
+        try:
+            logos_dir = str(settings.data_dir / "logos")
+            setting_dir = os.path.join(logos_dir, "setting")
+            result = site_db.list_active_sites(page=1, page_size=99999)
+            updated = 0
+
+            for site in result["items"]:
+                domain = site.get("domain", "")
+                if not domain:
+                    continue
+                primary_dir = os.path.join(logos_dir, domain)
+                fallback_dir = os.path.join(setting_dir, domain)
+                has_banner = os.path.isfile(os.path.join(primary_dir, "banner.jpg")) or os.path.isfile(os.path.join(fallback_dir, "banner.jpg"))
+                has_icon = os.path.isfile(os.path.join(primary_dir, "icon.png")) or os.path.isfile(os.path.join(fallback_dir, "icon.png"))
+                has_logo = os.path.isfile(os.path.join(primary_dir, "logo.png")) or os.path.isfile(os.path.join(fallback_dir, "logo.png"))
+                site_db.update_image_status(domain, has_banner, has_icon, has_logo)
+                updated += 1
+
+            flash(f"已刷新 {updated} 个站点的图片状态", "success")
+        except Exception as e:
+            log.error(f"刷新图片状态失败: {e}")
+            flash(f"刷新失败: {e}", "error")
+        finally:
+            site_db.close()
+        return redirect(url_for("site_generate_images"))
 
     @app.route("/site-management/reported", methods=["GET", "POST"])
     def site_reported():
@@ -3544,67 +3586,67 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
             _order_log(task_id, f"第一阶段完成: {msg}")
             _order_log(task_id, f"{'='*50}")
         
-        # 第二阶段：异步获取订单详情
-        if not _task_manager.is_stopped(task_id):
-            _order_log(task_id, f"\n{'='*50}")
-            _order_log(task_id, f"第二阶段: 获取订单详情（{len(servers_with_orders)} 台有订单的服务器）")
-            _order_log(task_id, f"{'='*50}")
-            
-            detail_success = 0
-            detail_failed = 0
-            detail_dedup = 0
-            detail_servers_done = 0
-            
-            for svr in servers_with_orders:  # 只处理有订单的服务器
-                if _task_manager.is_stopped(task_id):
-                    break
-                
-                ip = svr.get("ip", "")
-                domain = svr.get("domain", "")
-                
-                if not ip:
-                    continue
-                
-                # 获取没有详情的订单
-                orders_without_details = order_db.get_orders_without_details(ip, domain, year, month)
-                
-                if not orders_without_details:
-                    _order_log(task_id, f"[{svr.get('name', '')}] 无需获取详情")
-                    detail_servers_done += 1
-                    continue
-                
-                _order_log(task_id, f"[{svr.get('name', '')}] 待处理: {len(orders_without_details)} 个订单")
-                
-                try:
-                    result = _fetch_order_details_for_server(
-                        svr, orders_without_details, _log_wrapper, wp_password, task_id
-                    )
-                    detail_success += result.get("success", 0)
-                    detail_failed += result.get("failed", 0)
-                    detail_dedup += result.get("deduplicated", 0)
-                    
-                    _order_log(task_id, f"[{svr.get('name', '')}] 完成: {result.get('success', 0)} 成功, {result.get('failed', 0)} 失败, {result.get('deduplicated', 0)} 去重")
-                except RetryableError as e:
-                    _order_log(task_id, f"[{svr.get('name', '')}] ⚠️ {e}", "warning")
-                except Exception as e:
-                    _order_log(task_id, f"[{svr.get('name', '')}] ❌ {e}", "error")
-                
-                detail_servers_done += 1
-                progress = 50 + int(detail_servers_done / len(servers_with_orders) * 50) if servers_with_orders else 50
-                _task_manager.update(task_id, progress=progress,
-                                    message=f"第二阶段: {detail_servers_done}/{len(servers_with_orders)} 台服务器")
-            
-            # 输出第二阶段统计
-            _order_log(task_id, f"\n{'='*50}")
-            _order_log(task_id, f"第二阶段完成:")
-            _order_log(task_id, f"  详情更新成功: {detail_success} 条")
-            _order_log(task_id, f"  详情更新失败: {detail_failed} 条")
-            _order_log(task_id, f"  去重删除: {detail_dedup} 条")
-            _order_log(task_id, f"{'='*50}")
+        # # 第二阶段：异步获取订单详情（已关闭，如需开启请取消注释）
+        # if not _task_manager.is_stopped(task_id):
+        #     _order_log(task_id, f"\n{'='*50}")
+        #     _order_log(task_id, f"第二阶段: 获取订单详情（{len(servers_with_orders)} 台有订单的服务器）")
+        #     _order_log(task_id, f"{'='*50}")
+        #     
+        #     detail_success = 0
+        #     detail_failed = 0
+        #     detail_dedup = 0
+        #     detail_servers_done = 0
+        #     
+        #     for svr in servers_with_orders:  # 只处理有订单的服务器
+        #         if _task_manager.is_stopped(task_id):
+        #             break
+        #         
+        #         ip = svr.get("ip", "")
+        #         domain = svr.get("domain", "")
+        #         
+        #         if not ip:
+        #             continue
+        #         
+        #         # 获取没有详情的订单
+        #         orders_without_details = order_db.get_orders_without_details(ip, domain, year, month)
+        #         
+        #         if not orders_without_details:
+        #             _order_log(task_id, f"[{svr.get('name', '')}] 无需获取详情")
+        #             detail_servers_done += 1
+        #             continue
+        #         
+        #         _order_log(task_id, f"[{svr.get('name', '')}] 待处理: {len(orders_without_details)} 个订单")
+        #         
+        #         try:
+        #             result = _fetch_order_details_for_server(
+        #                 svr, orders_without_details, _log_wrapper, wp_password, task_id
+        #             )
+        #             detail_success += result.get("success", 0)
+        #             detail_failed += result.get("failed", 0)
+        #             detail_dedup += result.get("deduplicated", 0)
+        #             
+        #             _order_log(task_id, f"[{svr.get('name', '')}] 完成: {result.get('success', 0)} 成功, {result.get('failed', 0)} 失败, {result.get('deduplicated', 0)} 去重")
+        #         except RetryableError as e:
+        #             _order_log(task_id, f"[{svr.get('name', '')}] ⚠️ {e}", "warning")
+        #         except Exception as e:
+        #             _order_log(task_id, f"[{svr.get('name', '')}] ❌ {e}", "error")
+        #         
+        #         detail_servers_done += 1
+        #         progress = 50 + int(detail_servers_done / len(servers_with_orders) * 50) if servers_with_orders else 50
+        #         _task_manager.update(task_id, progress=progress,
+        #                             message=f"第二阶段: {detail_servers_done}/{len(servers_with_orders)} 台服务器")
+        #     
+        #     # 输出第二阶段统计
+        #     _order_log(task_id, f"\n{'='*50}")
+        #     _order_log(task_id, f"第二阶段完成:")
+        #     _order_log(task_id, f"  详情更新成功: {detail_success} 条")
+        #     _order_log(task_id, f"  详情更新失败: {detail_failed} 条")
+        #     _order_log(task_id, f"  去重删除: {detail_dedup} 条")
+        #     _order_log(task_id, f"{'='*50}")
         
         if not _task_manager.is_stopped(task_id):
             _task_manager.update(task_id, status="completed", 
-                                message=f"完成: 订单列表 + 详情获取", progress=100)
+                                message=f"完成: 订单列表抓取", progress=100)
         
         q = _order_log_queues.get(task_id)
         if q: q.put({"done": True})
@@ -4611,6 +4653,144 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
         except Exception as e:
             log.error(f"分类数据处理失败: {e}")
             return render_template("category_merge.html", error=f"处理失败: {str(e)}")
+
+    # ── HTML网站分类器 ──────────────────────────────────────
+
+    @app.route("/tools/html-classifier", methods=["GET", "POST"])
+    def html_classifier():
+        """基于HTML内容的Shopify网站分类器"""
+        if request.method == "GET":
+            task_id = request.args.get("task_id")
+            task_result = None
+            if task_id:
+                task_result = _task_manager.get(task_id)
+            return render_template("html_classifier.html", task_result=task_result)
+
+        action = request.form.get("action", "single")
+
+        if action == "single":
+            url = request.form.get("url", "").strip()
+            if not url:
+                return render_template("html_classifier.html", error="请输入网站 URL")
+
+            try:
+                from qmds.utils.html_site_classifier import HTMLSiteClassifier
+                classifier = HTMLSiteClassifier(use_proxy=True)
+                result = classifier.classify(url)
+                return render_template("html_classifier.html", single_result=result)
+            except Exception as e:
+                log.error(f"HTML网站分类失败: {e}")
+                return render_template("html_classifier.html", error=f"分类失败: {str(e)}")
+
+        elif action == "batch":
+            file_path = request.form.get("file_path", "").strip()
+            if not file_path:
+                return render_template("html_classifier.html", error="请输入 Excel 文件路径")
+
+            # 清理路径中的不可见字符
+            import re
+            file_path = re.sub(r'[\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069]', '', file_path)
+            file_path = file_path.strip().strip('\u200b').strip('\ufeff')
+
+            if not Path(file_path).exists():
+                return render_template("html_classifier.html", error=f"文件不存在: {file_path}")
+
+            if not file_path.endswith(('.xlsx', '.xls')):
+                return render_template("html_classifier.html", error="请使用 .xlsx 文件")
+
+            # 创建后台任务
+            task_id = f"html_classifier_{int(time.time())}"
+            _task_manager.create(task_id, "html_classifier", f"HTML批量分类: {Path(file_path).name}")
+
+            def run_task():
+                try:
+                    from qmds.utils.html_site_classifier import HTMLSiteClassifier
+                    classifier = HTMLSiteClassifier(use_proxy=True)
+
+                    _task_manager.add_log(task_id, f"开始处理: {file_path}", "info")
+                    stats = classifier.classify_from_excel(file_path)
+
+                    final_msg = f"完成! 总计 {stats['total']}: 成功 {stats['success']}, 失败 {stats['error']}, Shopify {stats['shopify']}"
+                    _task_manager.update(task_id, status="completed", message=final_msg, result=stats, progress=100)
+                    _task_manager.add_log(task_id, final_msg, "success")
+
+                except Exception as e:
+                    log.error(f"HTML批量分类失败: {e}")
+                    _task_manager.update(task_id, status="failed", message=f"失败: {e}")
+                    _task_manager.add_log(task_id, f"失败: {e}", "error")
+
+            threading.Thread(target=run_task, daemon=True).start()
+            flash(f"HTML批量分类任务已启动，可在任务页面查看进度", "success")
+            return redirect(url_for("html_classifier", task_id=task_id))
+
+    # ── 网站分类器 ──────────────────────────────────────
+
+    @app.route("/tools/site-classifier", methods=["GET", "POST"])
+    def site_classifier():
+        """Shopify 网站分类器：判断专一站/综合站"""
+        if request.method == "GET":
+            task_id = request.args.get("task_id")
+            task_result = None
+            if task_id:
+                task_result = _task_manager.get(task_id)
+            return render_template("site_classifier.html", task_result=task_result)
+
+        action = request.form.get("action", "single")
+
+        if action == "single":
+            url = request.form.get("url", "").strip()
+            if not url:
+                return render_template("site_classifier.html", error="请输入网站 URL")
+
+            try:
+                from qmds.utils.site_classifier import SiteClassifier
+                classifier = SiteClassifier(http_client=http)
+                result = classifier.classify(url)
+                return render_template("site_classifier.html", single_result=result)
+            except Exception as e:
+                log.error(f"网站分类失败: {e}")
+                return render_template("site_classifier.html", error=f"分类失败: {str(e)}")
+
+        elif action == "batch":
+            file_path = request.form.get("file_path", "").strip()
+            if not file_path:
+                return render_template("site_classifier.html", error="请输入 Excel 文件路径")
+
+            # 清理路径中的不可见字符（如 Unicode LTR/RTL 标记）
+            import re
+            file_path = re.sub(r'[\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069]', '', file_path)
+            file_path = file_path.strip().strip('\u200b').strip('\ufeff')
+
+            if not Path(file_path).exists():
+                return render_template("site_classifier.html", error=f"文件不存在: {file_path}")
+
+            if not file_path.endswith(('.xlsx', '.xls')):
+                return render_template("site_classifier.html", error="请使用 .xlsx 文件")
+
+            # 创建后台任务
+            task_id = f"classifier_{int(time.time())}"
+            _task_manager.create(task_id, "site_classifier", f"批量分类: {Path(file_path).name}")
+
+            def run_task():
+                try:
+                    from qmds.utils.site_classifier import SiteClassifier
+                    classifier = SiteClassifier(http_client=http)
+
+                    _task_manager.add_log(task_id, f"开始处理: {file_path}", "info")
+                    stats = classifier.classify_from_excel(file_path)
+
+                    final_msg = f"完成! 总计 {stats['total']}: 专一 {stats['niche']}, 综合 {stats['general']}, 未知 {stats['unknown']}, 非英文 {stats['non_english']}"
+                    _task_manager.update(task_id, status="completed", message=final_msg, result=stats, progress=100)
+                    _task_manager.add_log(task_id, final_msg, "success")
+
+                except Exception as e:
+                    log.error(f"批量分类失败: {e}")
+                    _task_manager.update(task_id, status="failed", message=f"失败: {e}")
+                    _task_manager.add_log(task_id, f"失败: {e}", "error")
+
+            threading.Thread(target=run_task, daemon=True).start()
+            flash(f"批量分类任务已启动，可在任务页面查看进度", "success")
+            return redirect(url_for("site_classifier", task_id=task_id))
 
     return app
 
