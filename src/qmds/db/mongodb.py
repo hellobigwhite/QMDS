@@ -214,6 +214,8 @@ class MongoDBClient:
     def move_to_crawled_batch(self, category: str, url_crawl_info_list: list[dict]) -> int:
         """批量将URL从 filtered 移动到 crawled 备份集合
 
+        优化：批量查询 filtered，再逐个写入 crawled 后批量删除。
+
         Args:
             category: 类目名称
             url_crawl_info_list: [{"url": str, "products": int, "success": bool}, ...]
@@ -225,34 +227,47 @@ class MongoDBClient:
         cc = self.crawled_col(category)
         ts = datetime.utcnow().isoformat()
 
-        moved_count = 0
+        # 提取所有有效URL
+        info_map = {}
         for item in url_crawl_info_list:
             url = item.get("url", "")
-            if not url:
-                continue
+            if url:
+                info_map[url] = item
+        if not info_map:
+            return 0
 
-            doc = ff.find_one({"url": url})
-            if not doc:
-                continue
+        # 批量查询 filtered 中存在的记录
+        urls = list(info_map.keys())
+        existing_docs = list(ff.find({"url": {"$in": urls}}))
 
+        if not existing_docs:
+            return 0
+
+        # 逐个写入 crawled（upsert 确保幂等）
+        for doc in existing_docs:
+            url = doc.get("url", "")
+            info = info_map.get(url, {})
             crawled_doc = {
                 **doc,
                 "crawled_at": ts,
-                "crawl_products": item.get("products", 0),
-                "crawl_success": item.get("success", False),
+                "crawl_products": info.get("products", 0),
+                "crawl_success": info.get("success", False),
                 "source_collection": f"{category}_filtered",
             }
-            if "_id" in crawled_doc:
-                del crawled_doc["_id"]
+            crawled_doc.pop("_id", None)
 
             cc.update_one(
                 {"url": url},
                 {"$set": crawled_doc},
                 upsert=True,
             )
-            ff.delete_one({"url": url})
-            moved_count += 1
 
+        # 批量删除 filtered 中已移动的记录
+        moved_urls = [doc["url"] for doc in existing_docs if doc.get("url")]
+        if moved_urls:
+            ff.delete_many({"url": {"$in": moved_urls}})
+
+        moved_count = len(moved_urls)
         if moved_count > 0:
             log.info(f"批量备份完成: {moved_count} 条URL → {category}_crawled")
         return moved_count

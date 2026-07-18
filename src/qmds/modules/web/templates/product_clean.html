@@ -37,9 +37,6 @@
                     <tr>
                         <th>类目</th>
                         <th>原始数据 ({category}_raw)</th>
-                        <th>未清洗</th>
-                        <th>已清洗</th>
-                        <th>清洗失败</th>
                         <th>清洗后数据 ({category}_clean)</th>
                         <th>操作</th>
                     </tr>
@@ -111,7 +108,7 @@ function loadStats() {
     document.getElementById('stats-empty').style.display = 'none';
     document.getElementById('stats-error').style.display = 'none';
 
-    fetch('/api/product-data/stats')
+    fetch('/api/product-data/simple-stats')
         .then(response => response.json())
         .then(data => {
             if (data.ok && data.data) {
@@ -150,7 +147,7 @@ function renderStats(stats) {
     categories.forEach(function(catStat) {
         const option = document.createElement('option');
         option.value = catStat.category;
-        option.textContent = catStat.category + ' (未清洗: ' + (catStat.unclean_count || 0) + ', 已清洗: ' + (catStat.cleaned_count || 0) + ')';
+        option.textContent = catStat.category + ' (原始: ' + catStat.raw_count + ', 清洗后: ' + catStat.clean_count + ')';
         select.appendChild(option);
     });
 
@@ -171,24 +168,6 @@ function renderStats(stats) {
         tdRaw.textContent = catStat.raw_count || 0;
         tr.appendChild(tdRaw);
 
-        // 未清洗
-        const tdUnclean = document.createElement('td');
-        tdUnclean.style.color = '#f59e0b';
-        tdUnclean.textContent = catStat.unclean_count || 0;
-        tr.appendChild(tdUnclean);
-
-        // 已清洗
-        const tdCleaned = document.createElement('td');
-        tdCleaned.style.color = '#10b981';
-        tdCleaned.textContent = catStat.cleaned_count || 0;
-        tr.appendChild(tdCleaned);
-
-        // 清洗失败
-        const tdFailed = document.createElement('td');
-        tdFailed.style.color = '#ef4444';
-        tdFailed.textContent = catStat.failed_count || 0;
-        tr.appendChild(tdFailed);
-
         // 清洗后数据
         const tdClean = document.createElement('td');
         tdClean.textContent = catStat.clean_count || 0;
@@ -196,29 +175,51 @@ function renderStats(stats) {
 
         // 操作
         const tdAction = document.createElement('td');
-        const form = document.createElement('form');
-        form.method = 'POST';
-        form.action = '/product-data/clean';
-        form.style.display = 'inline';
+        const actionDiv = document.createElement('div');
+        actionDiv.style.display = 'flex';
+        actionDiv.style.gap = '4px';
 
-        const input = document.createElement('input');
-        input.type = 'hidden';
-        input.name = 'category';
-        input.value = catStat.category;
-        form.appendChild(input);
-
-        const button = document.createElement('button');
-        button.type = 'submit';
-        button.className = 'btn btn-sm btn-warning';
-        const uncleanCount = catStat.unclean_count || 0;
-        button.textContent = uncleanCount > 0 ? '清洗 (' + uncleanCount + ')' : '清洗';
-        button.disabled = uncleanCount === 0;
-        button.onclick = function() {
+        // 清洗按钮
+        const cleanForm = document.createElement('form');
+        cleanForm.method = 'POST';
+        cleanForm.action = '/product-data/clean';
+        cleanForm.style.display = 'inline';
+        const cleanInput = document.createElement('input');
+        cleanInput.type = 'hidden';
+        cleanInput.name = 'category';
+        cleanInput.value = catStat.category;
+        cleanForm.appendChild(cleanInput);
+        const cleanBtn = document.createElement('button');
+        cleanBtn.type = 'submit';
+        cleanBtn.className = 'btn btn-sm btn-warning';
+        cleanBtn.textContent = '清洗';
+        cleanBtn.onclick = function() {
             return confirm('确定要清洗 ' + catStat.category + ' 的数据吗？');
         };
-        form.appendChild(button);
+        cleanForm.appendChild(cleanBtn);
+        actionDiv.appendChild(cleanForm);
 
-        tdAction.appendChild(form);
+        // 删除已清洗数据按钮
+        const deleteForm = document.createElement('form');
+        deleteForm.method = 'POST';
+        deleteForm.action = '/product-data/delete-cleaned-raw';
+        deleteForm.style.display = 'inline';
+        const deleteInput = document.createElement('input');
+        deleteInput.type = 'hidden';
+        deleteInput.name = 'category';
+        deleteInput.value = catStat.category;
+        deleteForm.appendChild(deleteInput);
+        const deleteBtn = document.createElement('button');
+        deleteBtn.type = 'submit';
+        deleteBtn.className = 'btn btn-sm btn-danger';
+        deleteBtn.textContent = '删除已清洗';
+        deleteBtn.onclick = function() {
+            return confirm('确定要从 ' + catStat.category + '_raw 中删除已清洗和清洗失败的数据吗？此操作不可恢复！');
+        };
+        deleteForm.appendChild(deleteBtn);
+        actionDiv.appendChild(deleteForm);
+
+        tdAction.appendChild(actionDiv);
         tr.appendChild(tdAction);
 
         tbody.appendChild(tr);

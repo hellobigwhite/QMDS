@@ -1,4 +1,5 @@
 import random
+import threading
 import time
 from typing import Optional
 
@@ -29,6 +30,7 @@ class ProxyManager:
 
     def __init__(self, proxies: Optional[list[str]] = None):
         self._proxies: list[Proxy] = [Proxy(p) for p in proxies] if proxies else []
+        self._lock = threading.Lock()
 
     @classmethod
     def from_settings(cls) -> "ProxyManager":
@@ -36,31 +38,36 @@ class ProxyManager:
         return cls(proxies)
 
     def add_proxy(self, url: str):
-        self._proxies.append(Proxy(url))
+        with self._lock:
+            self._proxies.append(Proxy(url))
 
     def get_proxy(self) -> Optional[dict]:
-        available = [p for p in self._proxies if p.is_available]
-        if not available:
-            return None
-        proxy = random.choice(available)
-        return {"http": proxy.url, "https": proxy.url}
+        with self._lock:
+            available = [p for p in self._proxies if p.is_available]
+            if not available:
+                return None
+            proxy = random.choice(available)
+            return {"http": proxy.url, "https": proxy.url}
 
     def mark_bad(self, proxy_dict: Optional[dict], cooldown: float = 60.0):
         if not proxy_dict:
             return
         url = proxy_dict.get("http") or proxy_dict.get("https")
-        for p in self._proxies:
-            if p.url == url:
-                p.mark_bad(cooldown)
-                break
+        with self._lock:
+            for p in self._proxies:
+                if p.url == url:
+                    p.mark_bad(cooldown)
+                    break
 
     def mark_bad_long(self, proxy_dict: Optional[dict]):
         self.mark_bad(proxy_dict, cooldown=300.0)
 
     @property
     def available_count(self) -> int:
-        return sum(1 for p in self._proxies if p.is_available)
+        with self._lock:
+            return sum(1 for p in self._proxies if p.is_available)
 
     @property
     def total_count(self) -> int:
-        return len(self._proxies)
+        with self._lock:
+            return len(self._proxies)

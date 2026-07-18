@@ -596,6 +596,40 @@ class ProductCrawler:
             crawler.close()
             product_db.close()
 
+    def _move_filtered_to_crawled(self, source_db, category: str, crawled_domains: dict):
+        """将已爬取域名的所有集合URL从 {category}_filtered 移动到 {category}_crawled
+
+        Args:
+            source_db: MongoDBClient 实例
+            category: 类目名称
+            crawled_domains: {domain: {"products": int, "success": bool}, ...}
+        """
+        if not crawled_domains:
+            return
+        try:
+            filtered_col = source_db.filtered_col(category)
+            domains = list(crawled_domains.keys())
+            filtered_docs = list(filtered_col.find(
+                {"domain": {"$in": domains}},
+                {"url": 1, "_id": 0}
+            ))
+            if not filtered_docs:
+                return
+            url_crawl_info_list = []
+            for doc in filtered_docs:
+                domain = doc.get("domain", "")
+                info = crawled_domains.get(domain, {})
+                url_crawl_info_list.append({
+                    "url": doc["url"],
+                    "products": info.get("products", 0),
+                    "success": info.get("success", False),
+                })
+            if url_crawl_info_list:
+                moved = source_db.move_to_crawled_batch(category, url_crawl_info_list)
+                log.info(f"[{category}] 已移动 {moved} 条集合URL到 {category}_crawled")
+        except Exception as e:
+            log.error(f"[{category}] 移动URL到 _crawled 失败: {e}")
+
     def crawl_category(self, category: str, max_sites: int = 10, workers: int = 1,
                        progress_callback=None, stop_event: threading.Event = None) -> Dict:
         """爬取指定类目的商品数据（支持多线程并发）
@@ -634,9 +668,8 @@ class ProductCrawler:
             if store_url:
                 store_urls.append({"url": store_url, "domain": domain})
 
-        source_db.close()
-
         if not store_urls:
+            source_db.close()
             log.warning(f"类目 {category} 无可用URL")
             return {"total_sites": 0, "success_sites": 0, "total_products": 0, "error": "无可用URL"}
 
@@ -656,6 +689,7 @@ class ProductCrawler:
         if workers <= 1:
             success_sites = 0
             total_products = 0
+            crawled_domains = {}
             for i, url_doc in enumerate(store_urls, 1):
                 if stop_event and stop_event.is_set():
                     log.info(f"类目 {category}: 收到停止信号，已处理 {i-1}/{total_sites} 站点")
@@ -665,8 +699,12 @@ class ProductCrawler:
                 if result["success"]:
                     success_sites += 1
                     total_products += result["saved"]
+                    crawled_domains[url_doc["domain"]] = {"products": result["saved"], "success": True}
                 if i < total_sites and not (stop_event and stop_event.is_set()):
                     time.sleep(random.uniform(*SITE_COOLDOWN_RANGE))
+
+            self._move_filtered_to_crawled(source_db, category, crawled_domains)
+            source_db.close()
 
             return {
                 "total_sites": total_sites,
@@ -678,15 +716,17 @@ class ProductCrawler:
         lock = threading.Lock()
         success_sites = 0
         total_products = 0
+        crawled_domains = {}
 
         def _worker(idx: int, url_doc: dict) -> dict:
-            nonlocal success_sites, total_products
+            nonlocal success_sites, total_products, crawled_domains
             result = self._crawl_single_site(url_doc, category, idx, total_sites,
                                              progress_callback, stop_event=stop_event)
             if result["success"]:
                 with lock:
                     success_sites += 1
                     total_products += result["saved"]
+                    crawled_domains[url_doc["domain"]] = {"products": result["saved"], "success": True}
             return result
 
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="crawl_site") as executor:
@@ -700,6 +740,9 @@ class ProductCrawler:
                 except Exception as e:
                     url_doc = futures[future]
                     log.error(f"线程异常 {url_doc.get('domain', '')}: {e}")
+
+        self._move_filtered_to_crawled(source_db, category, crawled_domains)
+        source_db.close()
 
         log.info(f"类目 {category} 爬取完成: {success_sites}/{total_sites} 站点, {total_products} 件商品")
         if progress_callback:

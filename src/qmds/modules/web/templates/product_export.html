@@ -48,7 +48,6 @@
             <thead>
                 <tr>
                     <th>类目</th>
-                    <th>原始数据 ({category}_raw)</th>
                     <th>清洗后数据 ({category}_clean)</th>
                     <th>已导出</th>
                     <th>操作</th>
@@ -156,11 +155,6 @@ function renderCategoryStats(categories) {
         var tdCategory = document.createElement('td');
         tdCategory.textContent = catStat.category;
         tr.appendChild(tdCategory);
-        
-        // 原始数据数量
-        var tdRaw = document.createElement('td');
-        tdRaw.textContent = catStat.raw_count;
-        tr.appendChild(tdRaw);
         
         // 清洗后数据数量
         var tdClean = document.createElement('td');

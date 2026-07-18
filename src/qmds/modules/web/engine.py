@@ -773,6 +773,17 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
             log.error(f"获取产品数据统计失败: {e}")
             return jsonify({"ok": False, "error": str(e)}), 500
 
+    @app.route("/api/product-data/simple-stats")
+    def api_product_data_simple_stats():
+        """获取简单产品数据统计（仅总数，使用 estimated_document_count）"""
+        try:
+            product_db = _get_product_db()
+            stats = product_db.get_simple_all_stats()
+            return jsonify({"ok": True, "data": stats})
+        except Exception as e:
+            log.error(f"获取简单统计失败: {e}")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
     @app.route("/product-data/overview", methods=["GET"])
     def product_data_overview():
         try:
@@ -982,6 +993,49 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
         # GET请求：直接渲染模板，统计数据通过AJAX异步获取
         return render_template("product_clean.html", category_stats=[])
 
+    @app.route("/product-data/delete-cleaned-raw", methods=["POST"])
+    def product_data_delete_cleaned_raw():
+        """异步任务：从 {category}_raw 中删除已清洗的数据"""
+        category = request.form.get("category", "").strip()
+        if not category:
+            flash("请指定类目", "error")
+            return redirect(url_for("product_data_clean"))
+
+        task_id = f"delete_cleaned_{category}_{int(time.time())}"
+        _task_manager.create(task_id, "delete_cleaned_raw", category)
+
+        def run_task():
+            product_db = None
+            try:
+                _task_manager.update(task_id, status="running",
+                                     message=f"开始从 {category}_raw 删除已处理数据")
+                _task_manager.add_log(task_id, f"任务启动: 删除 {category}_raw 中的已清洗和清洗失败数据", "info")
+
+                product_db = ProductDBClient()
+                _task_manager.add_log(task_id, "数据库连接成功", "info")
+
+                deleted = product_db.delete_cleaned_from_raw(category)
+
+                _task_manager.update(task_id, status="completed",
+                                     message=f"完成: 从 {category}_raw 删除了 {deleted} 条已处理数据",
+                                     progress=100)
+                _task_manager.add_log(task_id,
+                                     f"任务完成: 从 {category}_raw 中删除了 {deleted} 条数据（已清洗+清洗失败）", "info")
+            except Exception as e:
+                import traceback
+                log.error(f"删除已清洗数据失败: {e}\n{traceback.format_exc()}")
+                _task_manager.update(task_id, status="failed", message=f"失败: {e}")
+                _task_manager.add_log(task_id, f"任务失败: {e}", "error")
+            finally:
+                if product_db:
+                    product_db.close()
+                import gc
+                gc.collect()
+
+        threading.Thread(target=run_task, daemon=True).start()
+        flash(f"删除任务已启动: {category}，可在任务页面查看进度", "info")
+        return redirect(url_for("product_data_clean"))
+
     @app.route("/product-data/export", methods=["GET", "POST"])
     def product_data_export():
         if request.method == "POST":
@@ -1026,7 +1080,7 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
                             _task_manager.add_log(task_id, str(info), "info")
                     
                     _task_manager.add_log(task_id, "开始导出数据...", "info")
-                    filepath = product_db.export_category_to_excel(
+                    export_result = product_db.export_category_to_excel(
                         category, export_dir, limit=limit, progress_callback=progress_callback
                     )
                     
@@ -1035,12 +1089,9 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
                         _task_manager.add_log(task_id, "任务被用户停止", "warning")
                         return
                     
-                    if filepath:
-                        # 获取实际导出数量（用聚合精确计数）
-                        count_pipeline = [{"$count": "count"}]
-                        count_result = list(product_db.clean_col(category).aggregate(count_pipeline))
-                        actual_count = count_result[0]["count"] if count_result else 0
-                        count = min(limit, actual_count) if limit else actual_count
+                    if export_result:
+                        filepath = export_result["filepath"]
+                        count = export_result["count"]
                         
                         _task_manager.update(task_id, status="completed",
                                             message=f"完成: 导出 {count} 条数据到 {os.path.basename(filepath)}",

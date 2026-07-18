@@ -61,6 +61,7 @@ PRODUCT_DB_NAME = "qmds_product_data"
 # 集合后缀
 RAW_SUFFIX = "_raw"
 CLEAN_SUFFIX = "_clean"
+EXPORT_SUFFIX = "_export"
 
 # 清洗状态
 CLEAN_STATUS_UNCLEAN = "unclean"  # 未清洗
@@ -80,7 +81,7 @@ class ProductDBClient:
     
     数据库结构:
     - 数据库: qmds_product_data
-    - 集合命名: {category}_raw (原始数据), {category}_clean (清洗后数据)
+    - 集合命名: {category}_raw (原始数据), {category}_clean (清洗后数据), {category}_export (已导出数据)
     """
 
     _stats_cache = _TTLCache(ttl_seconds=60)  # 类级别缓存，60秒过期
@@ -120,6 +121,10 @@ class ProductDBClient:
     def clean_col(self, category: str) -> Collection:
         """获取 {category}_clean 集合（清洗后数据）"""
         return self.db[f"{category}{CLEAN_SUFFIX}"]
+
+    def export_col(self, category: str) -> Collection:
+        """获取 {category}_export 集合（已导出数据）"""
+        return self.db[f"{category}{EXPORT_SUFFIX}"]
     
     def get_raw_col_name(self, category: str) -> str:
         """获取原始数据集合名称"""
@@ -131,10 +136,10 @@ class ProductDBClient:
     
     def parse_category_from_col(self, col_name: str) -> Optional[str]:
         """从集合名称解析类目"""
-        if col_name.endswith(RAW_SUFFIX):
-            return col_name[:-len(RAW_SUFFIX)]
-        if col_name.endswith(CLEAN_SUFFIX):
-            return col_name[:-len(CLEAN_SUFFIX)]
+        for suffix in (RAW_SUFFIX, CLEAN_SUFFIX, EXPORT_SUFFIX):
+            if col_name.endswith(suffix):
+                name = col_name[:-len(suffix)]
+                return name if name else None
         return None
     
     # ── 索引 ──────────────────────────────────────────────
@@ -143,7 +148,7 @@ class ProductDBClient:
         """为产品数据集合创建索引"""
         # 原始数据索引
         raw = self.raw_col(category)
-        raw.create_index([("unique_key", ASCENDING)], name="idx_unique_key")
+        raw.create_index([("unique_key", ASCENDING)], name="idx_unique_key", unique=True)
         raw.create_index([("source_url", ASCENDING)], name="idx_source_url")
         raw.create_index([("source_domain", ASCENDING)], name="idx_source_domain")
         raw.create_index([("crawl_time", ASCENDING)], name="idx_crawl_time")
@@ -152,7 +157,7 @@ class ProductDBClient:
         
         # 清洗后数据索引
         clean = self.clean_col(category)
-        clean.create_index([("unique_key", ASCENDING)], name="idx_unique_key")
+        clean.create_index([("unique_key", ASCENDING)], name="idx_unique_key", unique=True)
         clean.create_index([("source_url", ASCENDING)], name="idx_source_url")
         clean.create_index([("分类", ASCENDING)], name="idx_category")
         clean.create_index([("clean_time", ASCENDING)], name="idx_clean_time")
@@ -160,6 +165,13 @@ class ProductDBClient:
         clean.create_index([("last_export_time", ASCENDING)], name="idx_last_export_time")
         
         log.info(f"索引已创建: {category}{RAW_SUFFIX}, {category}{CLEAN_SUFFIX}")
+
+    def ensure_export_indexes(self, category: str):
+        """为导出数据集合创建索引"""
+        col = self.export_col(category)
+        col.create_index([("标题", ASCENDING)], name="idx_title")
+        col.create_index([("export_time", ASCENDING)], name="idx_export_time")
+        log.info(f"索引已创建: {category}{EXPORT_SUFFIX}")
     
     # ── 写入（原始数据） ──────────────────────────────────
     
@@ -440,7 +452,9 @@ class ProductDBClient:
                 result = list(self.db[name].aggregate(pipeline))
                 count = result[0]["count"] if result else 0
                 category = self.parse_category_from_col(name)
-                col_type = "raw" if name.endswith(RAW_SUFFIX) else ("clean" if name.endswith(CLEAN_SUFFIX) else "other")
+                col_type = ("raw" if name.endswith(RAW_SUFFIX) else
+                            "clean" if name.endswith(CLEAN_SUFFIX) else
+                            "export" if name.endswith(EXPORT_SUFFIX) else "other")
                 collections.append({
                     "name": name,
                     "count": count,
@@ -450,7 +464,9 @@ class ProductDBClient:
         else:
             for name in col_names:
                 category = self.parse_category_from_col(name)
-                col_type = "raw" if name.endswith(RAW_SUFFIX) else ("clean" if name.endswith(CLEAN_SUFFIX) else "other")
+                col_type = ("raw" if name.endswith(RAW_SUFFIX) else
+                            "clean" if name.endswith(CLEAN_SUFFIX) else
+                            "export" if name.endswith(EXPORT_SUFFIX) else "other")
                 collections.append({
                     "name": name,
                     "count": 0,
@@ -471,24 +487,9 @@ class ProductDBClient:
         status_counts = {doc["_id"]: doc["count"] for doc in raw_col.aggregate(raw_pipeline)}
         raw_count = sum(status_counts.values())
 
-        # clean 聚合：总数 + 已导出数（export_count > 0）
-        clean_pipeline = [
-            {"$facet": {
-                "total": [{"$count": "count"}],
-                "exported": [
-                    {"$match": {"export_count": {"$gt": 0}}},
-                    {"$count": "count"}
-                ]
-            }}
-        ]
-        clean_result = list(clean_col.aggregate(clean_pipeline))
-        if clean_result:
-            facet = clean_result[0]
-            clean_count = facet["total"][0]["count"] if facet.get("total") else 0
-            exported_count = facet["exported"][0]["count"] if facet.get("exported") else 0
-        else:
-            clean_count = 0
-            exported_count = 0
+        # clean 总数：直接计数；已导出数来自 _export 集合
+        clean_count = clean_col.count_documents({})
+        exported_count = self.export_col(category).count_documents({})
 
         return {
             "category": category,
@@ -498,6 +499,16 @@ class ProductDBClient:
             "unclean_count": status_counts.get(CLEAN_STATUS_UNCLEAN, 0),
             "cleaned_count": status_counts.get(CLEAN_STATUS_CLEANED, 0),
             "failed_count": status_counts.get(CLEAN_STATUS_FAILED, 0)
+        }
+    
+    def get_simple_category_stats(self, category: str) -> Dict[str, int]:
+        """获取指定类目的简单统计数据（仅总数，使用 estimated_document_count）"""
+        raw_col = self.raw_col(category)
+        clean_col = self.clean_col(category)
+        return {
+            "category": category,
+            "raw_count": raw_col.estimated_document_count(),
+            "clean_count": clean_col.estimated_document_count()
         }
     
     def get_unclean_products(self, category: str, limit: Optional[int] = None) -> List[Dict]:
@@ -567,6 +578,20 @@ class ProductDBClient:
         self._stats_cache.invalidate()
         return result.modified_count
     
+    def delete_cleaned_from_raw(self, category: str) -> int:
+        """从 {category}_raw 中删除已清洗和清洗失败的数据（clean_status=cleaned/failed）
+        
+        Args:
+            category: 类目名称
+            
+        Returns:
+            删除的文档数量
+        """
+        raw_col = self.raw_col(category)
+        result = raw_col.delete_many({"clean_status": {"$in": [CLEAN_STATUS_CLEANED, CLEAN_STATUS_FAILED]}})
+        self._stats_cache.invalidate()
+        return result.deleted_count
+    
     def get_all_stats(self, use_cache: bool = True) -> Dict[str, Any]:
         """获取所有产品数据统计（带缓存）
 
@@ -615,11 +640,29 @@ class ProductDBClient:
 
         return result
     
+    def get_simple_all_stats(self) -> Dict[str, Any]:
+        """获取所有类目的简单统计数据（仅总数，使用 estimated_document_count）"""
+        categories = self.list_categories()
+        total_raw = 0
+        total_clean = 0
+        category_stats = []
+        for category in categories:
+            stats = self.get_simple_category_stats(category)
+            category_stats.append(stats)
+            total_raw += stats["raw_count"]
+            total_clean += stats["clean_count"]
+        return {
+            "total_categories": len(categories),
+            "total_raw": total_raw,
+            "total_clean": total_clean,
+            "categories": category_stats
+        }
+    
     # ── 导出 ──────────────────────────────────────────────
     
     def export_category_to_excel(self, category: str, export_dir: str, 
-                                  limit: Optional[int] = None, progress_callback=None) -> Optional[str]:
-        """导出指定类目的数据到Excel
+                                  limit: Optional[int] = None, progress_callback=None) -> Optional[Dict[str, Any]]:
+        """导出指定类目的数据到Excel，并将导出数据移至 {category}_export 集合
         
         Args:
             category: 类目名称
@@ -628,13 +671,13 @@ class ProductDBClient:
             progress_callback: 进度回调函数
             
         Returns:
-            导出文件路径，失败返回None
+            成功返回 {"filepath": str, "count": int}，无数据或失败返回None
         """
         import os
         import pandas as pd
         
         clean_col = self.clean_col(category)
-        cursor = clean_col.find({}).sort("export_count", ASCENDING)
+        cursor = clean_col.find({})
         if limit:
             cursor = cursor.limit(limit)
         products = list(cursor)
@@ -674,19 +717,19 @@ class ProductDBClient:
         df = pd.DataFrame(rows, columns=EXPORT_COLUMNS)
         df.to_excel(filepath, index=False, engine="openpyxl")
         
-        # 更新导出次数
+        # 将已导出数据移至 {category}_export 集合
         export_time = datetime.utcnow().isoformat()
         exported_ids = [doc.get("_id") for doc in products if doc.get("_id")]
         if exported_ids:
-            clean_col.update_many(
-                {"_id": {"$in": exported_ids}},
-                [
-                    {"$set": {
-                        "export_count": {"$add": [{"$ifNull": ["$export_count", 0]}, 1]},
-                        "last_export_time": export_time
-                    }}
-                ]
-            )
+            self.ensure_export_indexes(category)
+            export_docs = []
+            for doc in products:
+                export_doc = {k: v for k, v in doc.items() if k != "_id"}
+                export_doc["export_time"] = export_time
+                export_docs.append(export_doc)
+            self.export_col(category).insert_many(export_docs, ordered=False)
+            clean_col.delete_many({"_id": {"$in": exported_ids}})
         
-        log.info(f"导出Excel: {filepath} ({len(rows)} 条)")
-        return filepath
+        self._stats_cache.invalidate()
+        log.info(f"导出Excel: {filepath} ({len(rows)} 条)，已移至 {category}{EXPORT_SUFFIX}")
+        return {"filepath": filepath, "count": len(rows)}
