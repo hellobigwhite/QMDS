@@ -632,6 +632,7 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
                     "url": request.form.get("url", "").strip(),
                     "collection_title": request.form.get("collection_title", "").strip(),
                     "collection_handle": request.form.get("collection_handle", "").strip(),
+                    "subcategory": request.form.get("subcategory", "").strip(),
                 }
                 if db.update_filtered_by_id(category, doc_id, updates):
                     flash("记录已更新", "success")
@@ -658,6 +659,7 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
         category = request.form.get("category", "").strip()
         store_url = request.form.get("store_url", "").strip()
         collection_url = request.form.get("collection_url", "").strip()
+        subcategory = request.form.get("subcategory", "").strip()
 
         if not category or not collection_url:
             flash("类目和 Collection URL 不能为空", "error")
@@ -665,7 +667,7 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
 
         db = _get_mongo_db()
         try:
-            if db.add_filtered_manual(category, store_url, collection_url):
+            if db.add_filtered_manual(category, store_url, collection_url, subcategory=subcategory):
                 flash("已添加记录", "success")
             else:
                 flash("添加失败", "error")
@@ -684,6 +686,9 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
         urls_to_add = []
         errors = []
 
+        # 文本导入时统一设置的二级分类
+        text_subcategory = request.form.get("subcategory", "").strip()
+
         file = request.files.get("file")
         if file and file.filename:
             if not file.filename.endswith(('.xlsx', '.xls', '.txt')):
@@ -700,32 +705,35 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
                     for line in f:
                         line = line.strip()
                         if line and not line.startswith('#'):
+                            entry = {"subcategory": text_subcategory}
                             if '/collections/' in line:
-                                urls_to_add.append({"collection_url": line})
+                                entry["collection_url"] = line
                             elif '.' in line:
-                                # 支持纯域名或带协议的URL
                                 url = line if line.startswith('http') else f"https://{line}"
-                                urls_to_add.append({"store_url": url})
+                                entry["store_url"] = url
+                            urls_to_add.append(entry)
             else:
                 import pandas as pd
                 df = pd.read_excel(filepath)
                 for _, row in df.iterrows():
                     store_url = str(row.get("store_url", "") or row.get("店铺URL", "") or "").strip()
                     collection_url = str(row.get("collection_url", "") or row.get("collection URL", "") or "").strip()
+                    subcategory = str(row.get("subcategory", "") or row.get("二级分类", "") or "").strip()
                     if collection_url:
-                        urls_to_add.append({"store_url": store_url, "collection_url": collection_url})
+                        urls_to_add.append({"store_url": store_url, "collection_url": collection_url, "subcategory": subcategory})
 
         urls_text = request.form.get("urls", "").strip()
         if urls_text:
             for line in urls_text.split('\n'):
                 line = line.strip()
                 if line and not line.startswith('#'):
+                    entry = {"subcategory": text_subcategory}
                     if '/collections/' in line:
-                        urls_to_add.append({"collection_url": line})
+                        entry["collection_url"] = line
                     elif '.' in line:
-                        # 支持纯域名或带协议的URL
                         url = line if line.startswith('http') else f"https://{line}"
-                        urls_to_add.append({"store_url": url})
+                        entry["store_url"] = url
+                    urls_to_add.append(entry)
 
         if not urls_to_add:
             flash("未找到有效的 URL", "error")

@@ -306,7 +306,8 @@ class MongoDBClient:
         return [{"url": d.get("url", ""), "domain": d.get("domain", "")} for d in docs if d.get("url")]
 
     def save_filtered_url(self, category: str, domain: str, store_url: str,
-                          collection_title: str, collection_handle: str) -> bool:
+                          collection_title: str, collection_handle: str,
+                          subcategory: str = "") -> bool:
         """保存匹配到的 collection URL 到 {category}_filtered
 
         Args:
@@ -315,6 +316,7 @@ class MongoDBClient:
             store_url: 店铺完整 URL
             collection_title: collection 标题
             collection_handle: collection handle
+            subcategory: 二级分类
         """
         col = self.filtered_col(category)
         collection_url = f"{store_url.rstrip('/')}/collections/{collection_handle}"
@@ -329,6 +331,7 @@ class MongoDBClient:
                 "collection_title": collection_title,
                 "collection_handle": collection_handle,
                 "category": category,
+                "subcategory": subcategory,
                 "source": "collections_filter",
                 "updated_at": ts,
             }, "$setOnInsert": {
@@ -339,7 +342,8 @@ class MongoDBClient:
         return result.upserted_id is not None or result.modified_count > 0
 
     def add_filtered_manual(self, category: str, store_url: str, collection_url: str,
-                           domain: str = "", collection_title: str = "", collection_handle: str = "") -> bool:
+                           domain: str = "", collection_title: str = "",
+                           collection_handle: str = "", subcategory: str = "") -> bool:
         """手动添加单条记录到 {category}_filtered
 
         Args:
@@ -349,6 +353,7 @@ class MongoDBClient:
             domain: 店铺域名（可选，从 URL 自动提取）
             collection_title: collection 标题（可选）
             collection_handle: collection handle（可选，从 URL 自动提取）
+            subcategory: 二级分类（可选）
         """
         from urllib.parse import urlparse
         col = self.filtered_col(category)
@@ -378,6 +383,7 @@ class MongoDBClient:
                 "collection_title": collection_title,
                 "collection_handle": collection_handle,
                 "category": category,
+                "subcategory": subcategory,
                 "source": "manual",
                 "updated_at": ts,
             }, "$setOnInsert": {
@@ -409,6 +415,7 @@ class MongoDBClient:
             try:
                 store_url = item.get("store_url", "").strip()
                 collection_url = item.get("collection_url", "").strip()
+                subcategory = item.get("subcategory", "").strip()
 
                 # 如果两个都没有，跳过
                 if not store_url and not collection_url:
@@ -450,6 +457,7 @@ class MongoDBClient:
                             "collection_title": collection_title,
                             "collection_handle": collection_handle,
                             "category": category,
+                            "subcategory": subcategory,
                             "source": "manual",
                             "updated_at": ts,
                         }, "$setOnInsert": {
@@ -473,6 +481,7 @@ class MongoDBClient:
                             "collection_title": "",
                             "collection_handle": "",
                             "category": category,
+                            "subcategory": subcategory,
                             "source": "manual",
                             "updated_at": ts,
                         }, "$setOnInsert": {
