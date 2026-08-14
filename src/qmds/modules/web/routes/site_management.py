@@ -1357,6 +1357,392 @@ def site_built():
                 flash(f"已删除 {count} 个站点", "success")
                 return redirect(url_for("site_management.site_built", q=q))
 
+            elif action == "reset_one_click":
+                count = site_db.batch_reset_one_click_progress(selected_ids)
+                flash(f"已重置 {count} 个站点的一键建站进度", "success")
+                return redirect(url_for("site_management.site_built", q=q))
+
+            elif action == "one_click_build":
+                task_id = f"one_click_{int(time.time())}"
+                task_manager.create(task_id, "one_click_build", f"一键建站 ({len(selected_ids)} sites)")
+
+                def run_one_click_task():
+                    _site_db = SiteDBClient()
+                    try:
+                        from qmds.utils.site_operator import get_operator, SiteOperator
+                        from qmds.utils.ai_menu_builder import AiMenuConfigurator
+                        from qmds.config import settings as qmds_settings
+
+                        # 5个步骤的固定顺序：每步保持与单独运行时相同的线程模式
+                        # configure_sites: 单线程顺序; upload_main/upload_extra: 10线程并行;
+                        # set_main_category: 单线程顺序; ai_configure_menu: 单线程顺序
+                        STEPS = [
+                            ("configure_sites", "配置站点"),
+                            ("upload_main", "上传主数据"),
+                            ("set_main_category", "设置主分类"),
+                            ("upload_extra", "上传补充数据"),
+                            ("ai_configure_menu", "AI构建菜单"),
+                        ]
+
+                        task_manager.add_log(task_id, "任务启动: 一键建站", "info")
+                        task_manager.add_log(task_id, f"选中站点: {len(selected_ids)}", "info")
+                        task_manager.add_log(task_id, f"执行步骤顺序: {' -> '.join(label for _, label in STEPS)}", "info")
+
+                        # 读取所有站点
+                        sites = []
+                        for sid in selected_ids:
+                            site = _site_db.get_site_by_id(sid)
+                            if site and site.get("domain"):
+                                sites.append(site)
+
+                        if not sites:
+                            task_manager.update(task_id, status="failed", message="未找到有效站点")
+                            task_manager.add_log(task_id, "未找到有效站点", "error")
+                            return
+
+                        total_sites = len(sites)
+                        total_steps = len(STEPS)
+                        task_manager.add_log(task_id, f"有效站点: {total_sites}", "info")
+
+                        task_manager.update(task_id, status="running",
+                                            message=f"开始一键建站: {total_sites} 个站点",
+                                            total=total_sites, current=0)
+
+                        # 当前待处理的站点列表（domain -> site dict）
+                        pending_sites = {s["domain"]: s for s in sites}
+                        # 统计
+                        total_success_sites = 0
+                        total_failed_sites = 0
+                        all_errors = []
+
+                        # ── 按步骤分批处理 ──────────────────────────────
+                        for step_idx, (step_key, step_label) in enumerate(STEPS):
+                            if task_manager.is_stopped(task_id):
+                                task_manager.update(task_id, status="stopped", message="任务已停止")
+                                task_manager.add_log(task_id, "任务被用户停止", "warning")
+                                return
+
+                            if not pending_sites:
+                                task_manager.add_log(task_id, f"没有待处理站点，跳过步骤 [{step_label}]", "info")
+                                continue
+
+                            step_base_progress = int(step_idx / total_steps * 100)
+                            step_end_progress = int((step_idx + 1) / total_steps * 100)
+                            all_domains = list(pending_sites.keys())
+                            step_total = len(all_domains)
+
+                            task_manager.add_log(task_id, f"========== 步骤 {step_idx + 1}/{total_steps}: {step_label} (共 {step_total} 个站点) ==========", "info")
+                            task_manager.update(task_id, current=step_base_progress, progress=step_base_progress,
+                                                message=f"步骤 {step_idx + 1}/{total_steps}: {step_label} (待处理 {step_total} 站点)")
+
+                            # 该步骤成功的站点集合
+                            step_success_domains = set()
+
+                            # ── 断点记忆：跳过本步骤已成功的站点 ──
+                            current_domains = []
+                            for d in all_domains:
+                                site_info = pending_sites.get(d, {})
+                                step_status = site_info.get(f"one_click_{step_key}", "")
+                                if step_status == "success":
+                                    step_success_domains.add(d)
+                                    task_manager.add_log(task_id, f"[{d}] [{step_label}] 已是成功状态，跳过（断点记忆）", "info")
+                                else:
+                                    current_domains.append(d)
+
+                            run_total = len(current_domains)
+                            if step_success_domains:
+                                task_manager.add_log(task_id, f"步骤 [{step_label}]: 跳过 {len(step_success_domains)} 个已完成, 实际执行 {run_total} 个", "info")
+                            if run_total == 0:
+                                task_manager.add_log(task_id, f"步骤 [{step_label}]: 全部站点已完成，跳过整个步骤", "info")
+                                # 直接进入下一步筛选
+                                new_pending = {}
+                                for d in all_domains:
+                                    if d in step_success_domains:
+                                        new_pending[d] = pending_sites[d]
+                                    else:
+                                        total_failed_sites += 1
+                                pending_sites = new_pending
+                                task_manager.update(task_id, progress=step_end_progress,
+                                                    message=f"步骤 {step_idx + 1}/{total_steps}: {step_label} (全部跳过)")
+                                continue
+
+                            # ── 步骤1: 配置站点 (单线程顺序, 与单独运行 configure_sites 相同) ──
+                            if step_key == "configure_sites":
+                                for i, domain in enumerate(current_domains):
+                                    if task_manager.is_stopped(task_id):
+                                        task_manager.update(task_id, status="stopped", message="任务已停止")
+                                        task_manager.add_log(task_id, "任务被用户停止", "warning")
+                                        return
+                                    current = i + 1
+                                    site_info = pending_sites.get(domain, {})
+                                    intra_progress = int((step_base_progress + (current - 0.5) / run_total * (step_end_progress - step_base_progress)))
+                                    try:
+                                        _site_db.update_one_click_progress(domain, step_key, "running", "")
+                                        from qmds.utils.site_operator import get_operator
+                                        operator = get_operator()
+                                        task_manager.add_log(task_id, f"[{domain}] [配置站点] 登录站点...", "info")
+                                        task_manager.update(task_id, current=current, progress=intra_progress,
+                                                            message=f"[步骤{step_idx+1}] [{current}/{run_total}] [{domain}] 登录站点...")
+                                        login_result = operator.login(domain)
+                                        if not login_result["success"]:
+                                            raise Exception(f"登录失败: {login_result['message']}")
+                                        task_manager.add_log(task_id, f"[{domain}] [配置站点] 登录成功", "info")
+
+                                        task_manager.update(task_id, current=current, progress=intra_progress,
+                                                            message=f"[步骤{step_idx+1}] [{current}/{run_total}] [{domain}] 配置WP Rocket...")
+                                        task_manager.add_log(task_id, f"[{domain}] [配置站点] 配置WP Rocket...", "info")
+                                        rocket_result = operator.process_rocket(domain)
+                                        log.info(f"[配置站点] [{domain}] WP Rocket: {rocket_result['message']}")
+                                        task_manager.add_log(task_id, f"[{domain}] [配置站点] WP Rocket: {rocket_result['message']}", "info" if rocket_result["success"] else "warning")
+
+                                        task_manager.update(task_id, current=current, progress=intra_progress,
+                                                            message=f"[步骤{step_idx+1}] [{current}/{run_total}] [{domain}] 配置Yoast SEO...")
+                                        task_manager.add_log(task_id, f"[{domain}] [配置站点] 配置Yoast SEO...", "info")
+                                        yoast_result = operator.process_yoast(domain)
+                                        log.info(f"[配置站点] [{domain}] Yoast: {yoast_result['message']}")
+                                        task_manager.add_log(task_id, f"[{domain}] [配置站点] Yoast: {yoast_result['message']}", "info" if yoast_result["success"] else "warning")
+                                        _site_db.update_site(domain, {"plugin_status": "已配置",
+                                                                      "plugin_time": datetime.utcnow().isoformat()})
+
+                                        task_manager.update(task_id, current=current, progress=intra_progress,
+                                                            message=f"[步骤{step_idx+1}] [{current}/{run_total}] [{domain}] 配置媒体...")
+                                        task_manager.add_log(task_id, f"[{domain}] [配置站点] 配置媒体...", "info")
+                                        media_root = str(qmds_settings.data_dir / "logos")
+                                        media_result = operator.configure_media(domain, media_root)
+                                        log.info(f"[配置站点] [{domain}] 媒体: {media_result['message']}")
+                                        task_manager.add_log(task_id, f"[{domain}] [配置站点] 媒体: {media_result['message']}", "info" if media_result["success"] else "warning")
+                                        _site_db.update_site(domain, {"media_status": "已配置",
+                                                                      "media_time": datetime.utcnow().isoformat()})
+                                        if not media_result["success"]:
+                                            raise Exception(f"媒体配置失败: {media_result['message']}")
+
+                                        _site_db.update_one_click_progress(domain, step_key, "success", "插件+媒体配置完成")
+                                        task_manager.add_log(task_id, f"[{domain}] ✓ [配置站点] 成功", "info")
+                                        step_success_domains.add(domain)
+                                    except Exception as e:
+                                        err_msg = str(e)
+                                        _site_db.update_one_click_progress(domain, step_key, "failed", err_msg)
+                                        task_manager.add_log(task_id, f"[{domain}] ✗ [配置站点] 失败 - {err_msg}", "error")
+                                        log.error(f"[一键建站] [{domain}] [配置站点] 失败: {err_msg}")
+                                        all_errors.append(f"{domain} [配置站点]: {err_msg}")
+                                    task_manager.update(task_id, current=current,
+                                                        progress=int(step_base_progress + current / run_total * (step_end_progress - step_base_progress)),
+                                                        message=f"[步骤{step_idx+1}] [{current}/{run_total}] [{domain}] 完成")
+
+                            # ── 步骤2/4: 上传主数据/上传补充数据 (10线程并行, 与单独运行 upload_main/upload_extra 相同) ──
+                            elif step_key in ("upload_main", "upload_extra"):
+                                completed = 0
+                                def _upload_worker(idx_domain):
+                                    idx, domain = idx_domain
+                                    site_info = pending_sites.get(domain, {})
+                                    from qmds.utils.site_operator import get_operator
+                                    operator = get_operator()
+                                    try:
+                                        _site_db.update_one_click_progress(domain, step_key, "running", "")
+                                        if step_key == "upload_main":
+                                            data_source = site_info.get("main_data_source_id", "")
+                                            if not data_source:
+                                                return (domain, False, "未配置主数据源ID", None)
+                                            from qmds.utils.site_operator import SiteOperator
+                                            try:
+                                                data_source = SiteOperator._normalize_data_source_ids(data_source)
+                                            except ValueError as e:
+                                                return (domain, False, str(e), None)
+                                            start_cs = site_info.get("main_data_cs", "0")
+                                            cs_field = "main_data_cs"
+                                        else:
+                                            data_source = site_info.get("extra_data_source_id", "")
+                                            if not data_source:
+                                                return (domain, False, "未配置补充数据源ID", None)
+                                            from qmds.utils.site_operator import SiteOperator
+                                            try:
+                                                data_source = SiteOperator._normalize_data_source_ids(data_source)
+                                            except ValueError as e:
+                                                return (domain, False, str(e), None)
+                                            start_cs = site_info.get("extra_data_cs", "0")
+                                            cs_field = "extra_data_cs"
+
+                                        if start_cs and start_cs != "0":
+                                            task_manager.add_log(task_id, f"[{domain}] [{step_label}] 从断点 {start_cs} 继续", "info")
+
+                                        def progress(msg):
+                                            task_manager.add_log(task_id, f"[{domain}] [{step_label}] {msg}", "info")
+                                            task_manager.update(task_id, current=idx + 1,
+                                                                progress=int(step_base_progress + (idx + 0.5) / run_total * (step_end_progress - step_base_progress)),
+                                                                message=f"[步骤{step_idx+1}] [{idx + 1}/{run_total}] [{domain}] {msg}")
+                                        def save_breakpoint(cs_val):
+                                            _site_db.update_site(domain, {cs_field: cs_val})
+                                        def check_stop():
+                                            return task_manager.is_stopped(task_id)
+
+                                        result = operator.upload_data(domain, data_source, progress, start_cs=start_cs, breakpoint_callback=save_breakpoint, stop_callback=check_stop)
+                                        final_cs = result.get("final_cs", "0")
+                                        if result["success"]:
+                                            return (domain, True, "", final_cs)
+                                        return (domain, False, result["message"], final_cs)
+                                    except Exception as e:
+                                        return (domain, False, str(e), None)
+
+                                with ThreadPoolExecutor(max_workers=10) as executor:
+                                    futures = {executor.submit(_upload_worker, (i, d)): d for i, d in enumerate(current_domains)}
+                                    for future in as_completed(futures):
+                                        if task_manager.is_stopped(task_id):
+                                            task_manager.update(task_id, status="stopped", message="任务已停止")
+                                            executor.shutdown(wait=False, cancel_futures=True)
+                                            return
+                                        domain, ok, msg, final_cs = future.result()
+                                        completed += 1
+                                        if ok:
+                                            if step_key == "upload_main":
+                                                _site_db.update_site(domain, {"main_data_status": "已上传", "main_data_time": datetime.utcnow().isoformat(), "main_data_cs": "0"})
+                                            else:
+                                                _site_db.update_site(domain, {"extra_data_status": "已上传", "extra_data_time": datetime.utcnow().isoformat(), "extra_data_cs": "0"})
+                                            _site_db.update_one_click_progress(domain, step_key, "success", "上传成功")
+                                            task_manager.add_log(task_id, f"[{domain}] ✓ [{step_label}] 上传成功", "info")
+                                            log.info(f"[一键建站] [{domain}] [{step_label}] ✓ 成功")
+                                            step_success_domains.add(domain)
+                                        else:
+                                            if final_cs and final_cs != "0":
+                                                cs_field = "main_data_cs" if step_key == "upload_main" else "extra_data_cs"
+                                                _site_db.update_site(domain, {cs_field: final_cs})
+                                                task_manager.add_log(task_id, f"[{domain}] [{step_label}] 断点已保存: {final_cs}", "warning")
+                                            _site_db.update_one_click_progress(domain, step_key, "failed", msg)
+                                            all_errors.append(f"{domain} [{step_label}]: {msg}")
+                                            task_manager.add_log(task_id, f"[{domain}] ✗ [{step_label}] 上传失败: {msg}", "error")
+                                            log.error(f"[一键建站] [{domain}] [{step_label}] 失败: {msg}")
+                                        task_manager.update(task_id, current=completed,
+                                                            progress=int(step_base_progress + completed / run_total * (step_end_progress - step_base_progress)),
+                                                            message=f"[步骤{step_idx+1}] [{completed}/{run_total}] [{domain}] {'成功' if ok else '失败'}")
+
+                            # ── 步骤3: 设置主分类 (单线程顺序, 与单独运行 set_main_category 相同) ──
+                            elif step_key == "set_main_category":
+                                for i, domain in enumerate(current_domains):
+                                    if task_manager.is_stopped(task_id):
+                                        task_manager.update(task_id, status="stopped", message="任务已停止")
+                                        task_manager.add_log(task_id, "任务被用户停止", "warning")
+                                        return
+                                    current = i + 1
+                                    site_info = pending_sites.get(domain, {})
+                                    intra_progress = int(step_base_progress + (current - 0.5) / run_total * (step_end_progress - step_base_progress))
+                                    try:
+                                        _site_db.update_one_click_progress(domain, step_key, "running", "")
+                                        main_cat = site_info.get("main_category", "")
+                                        task_manager.add_log(task_id, f"[{domain}] [设置主分类] 主分类: {main_cat}", "info")
+                                        if not main_cat:
+                                            raise Exception("未配置主分类")
+                                        from qmds.utils.site_operator import get_operator
+                                        operator = get_operator()
+                                        task_manager.add_log(task_id, f"[{domain}] [设置主分类] 登录站点...", "info")
+                                        task_manager.update(task_id, current=current, progress=intra_progress,
+                                                            message=f"[步骤{step_idx+1}] [{current}/{run_total}] [{domain}] 登录站点...")
+                                        login_result = operator.login(domain)
+                                        if not login_result["success"]:
+                                            raise Exception(f"登录失败: {login_result['message']}")
+                                        task_manager.update(task_id, current=current, progress=intra_progress,
+                                                            message=f"[步骤{step_idx+1}] [{current}/{run_total}] [{domain}] 设置分类中...")
+
+                                        def cat_progress(msg):
+                                            task_manager.add_log(task_id, f"[{domain}] [设置主分类] {msg}", "info")
+                                            task_manager.update(task_id, current=current, progress=intra_progress,
+                                                                message=f"[步骤{step_idx+1}] [{current}/{run_total}] [{domain}] {msg}")
+                                        set_result = operator.set_main_category(domain, main_cat, cat_progress)
+                                        if not set_result["success"]:
+                                            raise Exception(set_result["message"])
+                                        _site_db.update_site(domain, {"main_category_status": "已上传",
+                                                                      "main_category_time": datetime.utcnow().isoformat()})
+                                        _site_db.update_one_click_progress(domain, step_key, "success", set_result.get("message", "主分类已设置"))
+                                        task_manager.add_log(task_id, f"[{domain}] ✓ [设置主分类] 成功 - {set_result.get('message', '')}", "info")
+                                        step_success_domains.add(domain)
+                                    except Exception as e:
+                                        err_msg = str(e)
+                                        _site_db.update_one_click_progress(domain, step_key, "failed", err_msg)
+                                        task_manager.add_log(task_id, f"[{domain}] ✗ [设置主分类] 失败 - {err_msg}", "error")
+                                        log.error(f"[一键建站] [{domain}] [设置主分类] 失败: {err_msg}")
+                                        all_errors.append(f"{domain} [设置主分类]: {err_msg}")
+                                    task_manager.update(task_id, current=current,
+                                                        progress=int(step_base_progress + current / run_total * (step_end_progress - step_base_progress)),
+                                                        message=f"[步骤{step_idx+1}] [{current}/{run_total}] [{domain}] 完成")
+
+                            # ── 步骤5: AI构建菜单 (单线程顺序, 与单独运行 ai_configure_menu 相同) ──
+                            elif step_key == "ai_configure_menu":
+                                for i, domain in enumerate(current_domains):
+                                    if task_manager.is_stopped(task_id):
+                                        task_manager.update(task_id, status="stopped", message="任务已停止")
+                                        task_manager.add_log(task_id, "任务被用户停止", "warning")
+                                        return
+                                    current = i + 1
+                                    site_info = pending_sites.get(domain, {})
+                                    intra_progress = int(step_base_progress + (current - 0.5) / run_total * (step_end_progress - step_base_progress))
+                                    try:
+                                        _site_db.update_one_click_progress(domain, step_key, "running", "")
+                                        main_cat = site_info.get("main_category", "")
+                                        task_manager.add_log(task_id, f"[{domain}] [AI构建菜单] 主分类: {main_cat}", "info")
+                                        wp_password = _site_db.get_setting("wp_password") or os.environ.get("WP_PASSWORD", "")
+                                        ai_configurator = AiMenuConfigurator(wp_password)
+                                        task_manager.update(task_id, current=current, progress=intra_progress,
+                                                            message=f"[步骤{step_idx+1}] [{current}/{run_total}] [{domain}] AI构建菜单...")
+
+                                        def ai_menu_progress(msg):
+                                            task_manager.add_log(task_id, f"[{domain}] [AI构建菜单] {msg}", "info")
+                                            task_manager.update(task_id, current=current, progress=intra_progress,
+                                                                message=f"[步骤{step_idx+1}] [{current}/{run_total}] [{domain}] {msg}")
+                                        result = ai_configurator.configure(domain, main_cat=main_cat, progress_callback=ai_menu_progress)
+                                        if not result["success"]:
+                                            raise Exception(result["message"])
+                                        _site_db.update_site(domain, {"auto_category_status": "已配置",
+                                                                      "auto_category_time": datetime.utcnow().isoformat()})
+                                        _site_db.update_one_click_progress(domain, step_key, "success", result.get("message", "AI菜单构建完成"))
+                                        task_manager.add_log(task_id, f"[{domain}] ✓ [AI构建菜单] 成功 - {result.get('message', '')}", "info")
+                                        step_success_domains.add(domain)
+                                    except Exception as e:
+                                        err_msg = str(e)
+                                        _site_db.update_one_click_progress(domain, step_key, "failed", err_msg)
+                                        task_manager.add_log(task_id, f"[{domain}] ✗ [AI构建菜单] 失败 - {err_msg}", "error")
+                                        log.error(f"[一键建站] [{domain}] [AI构建菜单] 失败: {err_msg}")
+                                        all_errors.append(f"{domain} [AI构建菜单]: {err_msg}")
+                                    task_manager.update(task_id, current=current,
+                                                        progress=int(step_base_progress + current / run_total * (step_end_progress - step_base_progress)),
+                                                        message=f"[步骤{step_idx+1}] [{current}/{run_total}] [{domain}] 完成")
+
+                            # ── 本步骤结束：统计并筛选进入下一步的站点 ──
+                            step_success_count = len(step_success_domains)
+                            step_failed_count = step_total - step_success_count
+                            task_manager.add_log(task_id, f"步骤 [{step_label}] 完成: 成功 {step_success_count}, 失败 {step_failed_count}, 共 {step_total}", "info")
+
+                            # 成功站点（含断点跳过的）进入下一步，失败站点从待处理列表移除（断点已保存，下次运行从失败步骤继续）
+                            new_pending = {}
+                            for d in all_domains:
+                                if d in step_success_domains:
+                                    new_pending[d] = pending_sites[d]
+                                else:
+                                    total_failed_sites += 1
+                            pending_sites = new_pending
+
+                        # 所有步骤完成，剩余 pending_sites 即全程成功的站点
+                        total_success_sites = len(pending_sites)
+
+                        summary = f"一键建站完成: 全程成功 {total_success_sites}, 失败 {total_failed_sites}, 共 {total_sites} 个站点"
+                        task_manager.update(task_id, status="completed", message=summary,
+                                            progress=100, current=total_sites, total=total_sites)
+                        task_manager.add_log(task_id, summary, "info")
+
+                        if all_errors:
+                            log.warning("[一键建站] 失败明细:")
+                            for err in all_errors:
+                                log.warning(f"  {err}")
+                                task_manager.add_log(task_id, f"失败: {err}", "error")
+
+                    except Exception as e:
+                        log.error(f"[一键建站] 任务异常: {e}")
+                        task_manager.update(task_id, status="failed", message=f"任务异常: {e}")
+                        task_manager.add_log(task_id, f"任务异常: {e}", "error")
+                    finally:
+                        _site_db.close()
+
+                task_manager.start_task_thread(task_id, run_one_click_task)
+                flash(f"一键建站任务已启动: {len(selected_ids)} 个站点，可在任务页面查看进度", "success")
+                return redirect(url_for("core.tasks"))
+
             elif action == "update_status":
                 field = request.form.get("status_field", "").strip()
                 value = request.form.get("status_value", "").strip()

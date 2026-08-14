@@ -65,6 +65,10 @@
         <div class="card" style="background:#f8f9fa; margin-bottom:16px;">
             <h3 style="font-size:14px; margin-bottom:12px;">批量操作</h3>
             <div class="flex mb-4" style="flex-wrap:wrap;">
+                <button type="submit" class="btn btn-success" name="action" value="one_click_build"
+                        onclick="return confirm('将对选中站点按步骤分批处理：\n1.配置站点(单线程) → 2.上传主数据(10线程) → 3.设置主分类(单线程) → 4.上传补充数据(10线程) → 5.AI构建菜单(单线程)。\n每步成功站点才进入下一步，失败站点跳过。支持断点记忆。确认开始？');"
+                        style="background:#7c3aed; color:#fff;">🚀 一键建站</button>
+                <span style="color:#999; align-self:center; margin:0 4px;">|</span>
                 <button type="submit" class="btn btn-warning" name="action" value="health_check">健康检查</button>
                 <button type="submit" class="btn btn-primary" name="action" value="upload_main">上传主数据</button>
                 <button type="submit" class="btn btn-primary" name="action" value="upload_extra">上传补充数据</button>
@@ -73,8 +77,11 @@
                 <button type="submit" class="btn btn-secondary" name="action" value="configure_menu">设置菜单</button>
                 <button type="submit" class="btn btn-secondary" name="action" value="ai_configure_menu">AI构建菜单</button>
                 <button type="submit" class="btn btn-success" name="action" value="configure_sites">配置站点</button>
+                <button type="submit" class="btn btn-secondary" name="action" value="reset_one_click"
+                        onclick="return confirm('确定重置选中站点的一键建站进度吗？重置后将从头开始执行所有步骤。');">重置一键进度</button>
                 <button type="submit" class="btn btn-danger" name="action" value="delete_selected" onclick="return confirm('确定删除选中的已建站站点吗？');">删除选中</button>
             </div>
+            <p class="text-muted" style="font-size:12px;">一键建站: 按步骤分批处理。先对所有站点执行「配置站点」(单线程)，成功站点进入「上传主数据」(10线程并行)，再进入「设置主分类」(单线程)、「上传补充数据」(10线程并行)、「AI构建菜单」(单线程)。每步线程模式与单独运行相同，失败站点不再进入后续步骤，支持断点记忆。</p>
         </div>
 
         <div class="card" style="background:#fff8e1; margin-bottom:16px;">
@@ -172,6 +179,7 @@
                         <th>菜单</th>
                         <th>插件</th>
                         <th>媒体</th>
+                        <th>一键建站</th>
                         <th>建站时间</th>
                         <th>详情</th>
                         <th>操作</th>
@@ -196,6 +204,15 @@
                         <td>{{ site.auto_category_status or '未设置' }}</td>
                         <td>{{ site.plugin_status or '未配置' }}</td>
                         <td>{{ site.media_status or '未配置' }}</td>
+                        <td id="one-click-cell-{{ site._id }}">
+                            <div id="one-click-status-{{ site._id }}" data-domain="{{ site.domain }}"
+                                 data-configure="{{ site.one_click_configure_sites or '' }}"
+                                 data-main="{{ site.one_click_upload_main or '' }}"
+                                 data-cat="{{ site.one_click_set_main_category or '' }}"
+                                 data-extra="{{ site.one_click_upload_extra or '' }}"
+                                 data-ai="{{ site.one_click_ai_configure_menu or '' }}">
+                            </div>
+                        </td>
                         <td>{{ site.build_time|default('-') }}</td>
                         <td>
                             <details class="detail-box">
@@ -221,6 +238,12 @@
                                     <div><strong>插件时间:</strong> {{ site.plugin_time|default('-') }}</div>
                                     <div><strong>媒体状态:</strong> {{ site.media_status or '未配置' }}</div>
                                     <div><strong>媒体时间:</strong> {{ site.media_time|default('-') }}</div>
+                                    <div style="margin-top:6px; border-top:1px dashed #ddd; padding-top:6px;"><strong>一键建站进度:</strong></div>
+                                    <div><strong>配置站点:</strong> {{ site.one_click_configure_sites or '未执行' }}</div>
+                                    <div><strong>上传主数据:</strong> {{ site.one_click_upload_main or '未执行' }}</div>
+                                    <div><strong>设置主分类:</strong> {{ site.one_click_set_main_category or '未执行' }}</div>
+                                    <div><strong>上传补充数据:</strong> {{ site.one_click_upload_extra or '未执行' }}</div>
+                                    <div><strong>AI构建菜单:</strong> {{ site.one_click_ai_configure_menu or '未执行' }}</div>
                                     <div><strong>标题:</strong> {{ site.title|default('-') }}</div>
                                     <div><strong>描述:</strong> {{ site.description|default('-') }}</div>
                                     <div><strong>地址:</strong> {{ site.address|default('-') }}</div>
@@ -410,5 +433,61 @@ function updateStatusOptions() {
         valueSelect.appendChild(option);
     }
 }
+
+// 一键建站步骤状态渲染
+const ONE_CLICK_STEPS = [
+    {key: 'configure', label: '配置', short: '配'},
+    {key: 'main', label: '主数据', short: '主'},
+    {key: 'cat', label: '主分类', short: '类'},
+    {key: 'extra', label: '补充', short: '补'},
+    {key: 'ai', label: 'AI菜单', short: 'AI'},
+];
+const ONE_CLICK_STATUS_STYLE = {
+    'success': {color: '#16a34a', bg: '#dcfce7', icon: '✓', text: '成功'},
+    'failed': {color: '#dc2626', bg: '#fee2e2', icon: '✗', text: '失败'},
+    'running': {color: '#2563eb', bg: '#dbeafe', icon: '…', text: '执行中'},
+    'pending': {color: '#6b7280', bg: '#f3f4f6', icon: '·', text: '待执行'},
+};
+
+function renderOneClickStatuses() {
+    document.querySelectorAll('[id^="one-click-status-"]').forEach(function(el) {
+        const steps = ONE_CLICK_STEPS.map(function(s) {
+            const v = el.dataset[s.key] || '';
+            const style = ONE_CLICK_STATUS_STYLE[v] || null;
+            return {label: s.label, short: s.short, value: v, style: style};
+        });
+
+        // 概览徽章
+        const allSuccess = steps.every(function(s) { return s.value === 'success'; });
+        const anyFailed = steps.some(function(s) { return s.value === 'failed'; });
+        const anyRunning = steps.some(function(s) { return s.value === 'running'; });
+
+        let summaryBadge;
+        if (allSuccess) {
+            summaryBadge = '<span style="background:#dcfce7; color:#16a34a; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:bold;">✓ 全部完成</span>';
+        } else if (anyFailed) {
+            const failedStep = steps.find(function(s) { return s.value === 'failed'; });
+            summaryBadge = '<span style="background:#fee2e2; color:#dc2626; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:bold;">✗ 卡在' + failedStep.label + '</span>';
+        } else if (anyRunning) {
+            summaryBadge = '<span style="background:#dbeafe; color:#2563eb; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:bold;">… 执行中</span>';
+        } else {
+            const done = steps.filter(function(s) { return s.value === 'success'; }).length;
+            summaryBadge = '<span style="background:#f3f4f6; color:#6b7280; padding:2px 6px; border-radius:4px; font-size:11px;">' + done + '/5 步</span>';
+        }
+
+        // 步骤徽章组（带 tooltip）
+        const stepBadges = steps.map(function(s) {
+            if (!s.style) {
+                return '<span title="' + s.label + ': 未执行" style="display:inline-block; width:18px; height:18px; line-height:18px; text-align:center; border-radius:3px; background:#f3f4f6; color:#9ca3af; font-size:10px; margin-right:2px;">' + s.short + '</span>';
+            }
+            return '<span title="' + s.label + ': ' + s.style.text + '" style="display:inline-block; width:18px; height:18px; line-height:18px; text-align:center; border-radius:3px; background:' + s.style.bg + '; color:' + s.style.color + '; font-size:10px; font-weight:bold; margin-right:2px;">' + s.style.icon + '</span>';
+        }).join('');
+
+        el.innerHTML = '<div>' + summaryBadge + '</div><div style="margin-top:3px;">' + stepBadges + '</div>';
+    });
+}
+
+renderOneClickStatuses();
+
 </script>
 {% endblock %}

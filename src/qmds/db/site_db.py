@@ -684,6 +684,86 @@ class SiteDBClient:
         """批量更新菜单/自动分类状态"""
         return self._batch_update_field(site_ids, "auto_category_status", status, {"auto_category_time": datetime.utcnow().isoformat()})
 
+    def update_one_click_progress(self, domain: str, step: str, status: str, detail: str = "") -> bool:
+        """更新一键建站单步进度（断点记忆）
+
+        step 取值: configure_sites | upload_main | set_main_category | upload_extra | ai_configure_menu
+        status 取值: pending | running | success | failed
+        """
+        ts = datetime.utcnow().isoformat()
+        field = f"one_click_{step}"
+        updates = {
+            field: status,
+            "one_click_current_step": step,
+            "one_click_last_update": ts,
+            "updated_at": ts,
+        }
+        if detail:
+            updates[f"one_click_{step}_detail"] = detail
+        result = self.sites.update_one(
+            {"domain": domain},
+            {"$set": updates}
+        )
+        if result.modified_count > 0:
+            self._stats_cache.invalidate()
+        return result.modified_count > 0
+
+    def reset_one_click_progress(self, domain: str) -> bool:
+        """重置一键建站进度（清除所有步骤状态）"""
+        ts = datetime.utcnow().isoformat()
+        unset_fields = {
+            f"one_click_{s}": ""
+            for s in ("configure_sites", "upload_main", "set_main_category",
+                      "upload_extra", "ai_configure_menu")
+        }
+        unset_fields.update({
+            f"one_click_{s}_detail": ""
+            for s in ("configure_sites", "upload_main", "set_main_category",
+                      "upload_extra", "ai_configure_menu")
+        })
+        result = self.sites.update_one(
+            {"domain": domain},
+            {
+                "$unset": unset_fields,
+                "$set": {"one_click_current_step": "", "one_click_last_update": ts, "updated_at": ts},
+            }
+        )
+        if result.modified_count > 0:
+            self._stats_cache.invalidate()
+        return result.modified_count > 0
+
+    def batch_reset_one_click_progress(self, site_ids: list[str]) -> int:
+        """批量重置一键建站进度"""
+        from bson import ObjectId
+        object_ids = []
+        for sid in site_ids:
+            try:
+                object_ids.append(ObjectId(sid))
+            except Exception:
+                continue
+
+        ts = datetime.utcnow().isoformat()
+        unset_fields = {
+            f"one_click_{s}": ""
+            for s in ("configure_sites", "upload_main", "set_main_category",
+                      "upload_extra", "ai_configure_menu")
+        }
+        unset_fields.update({
+            f"one_click_{s}_detail": ""
+            for s in ("configure_sites", "upload_main", "set_main_category",
+                      "upload_extra", "ai_configure_menu")
+        })
+        result = self.sites.update_many(
+            {"_id": {"$in": object_ids}},
+            {
+                "$unset": unset_fields,
+                "$set": {"one_click_current_step": "", "one_click_last_update": ts, "updated_at": ts},
+            }
+        )
+        if result.modified_count > 0:
+            self._stats_cache.invalidate()
+        return result.modified_count
+
     def update_image_status(self, domain: str, has_banner: bool, has_icon: bool, has_logo: bool) -> bool:
         """更新站点图片生成状态"""
         ts = datetime.utcnow().isoformat()
