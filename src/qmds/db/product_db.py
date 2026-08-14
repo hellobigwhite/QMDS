@@ -68,6 +68,9 @@ class _TTLCache:
 # 数据库名称
 PRODUCT_DB_NAME = "qmds_product_data"
 
+# 计数器集合名（与 mongodb.py 保持一致，存放各集合的状态计数）
+COUNTERS_COLLECTION = "_counters"
+
 # 向后兼容的旧后缀常量（已废弃，仅为避免外部脚本引用报错；新代码不应使用）
 RAW_SUFFIX = "_raw"
 CLEAN_SUFFIX = "_clean"
@@ -129,6 +132,148 @@ class ProductDBClient:
         if self._client:
             self._client.close()
             self._client = None
+
+    # ── 计数器（_counters 集合，用 $inc 原子维护各产品集合的清洗/导出状态计数） ──
+
+    def _counters_col(self) -> Collection:
+        """获取 _counters 集合（与产品数据同库 qmds_product_data）"""
+        return self.db[COUNTERS_COLLECTION]
+
+    def ensure_counters_indexes(self):
+        """为 _counters 集合创建索引（_id 即集合名，天然唯一）"""
+        col = self._counters_col()
+        col.create_index([("collection_type", ASCENDING)], name="idx_collection_type")
+        col.create_index([("category", ASCENDING)], name="idx_category")
+        log.info(f"索引已创建: {COUNTERS_COLLECTION}")
+
+    def _set_counter_type(self, collection_key: str, collection_type: str,
+                          category: str = "", subcategory: str = ""):
+        """设置计数器文档的元信息（collection_type/category/subcategory）
+
+        在 $inc 之前调用 upsert 设置元信息，确保文档存在。
+        """
+        self._counters_col().update_one(
+            {"_id": collection_key},
+            {"$set": {
+                "collection_type": collection_type,
+                "category": category,
+                "subcategory": subcategory,
+                "updated_at": datetime.utcnow().isoformat(),
+            }},
+            upsert=True,
+        )
+
+    def _inc_counters(self, collection_key: str, increments: dict):
+        """批量增减多个状态计数（单次 $inc 操作）
+
+        Args:
+            collection_key: 集合名（如 "hardware__tools"）
+            increments: {"unclean": -1, "cleaned": 1} -- 各状态的增减量
+        """
+        inc_doc = {f"counts.{k}": v for k, v in increments.items()}
+        inc_doc["total"] = sum(increments.values())
+        self._counters_col().update_one(
+            {"_id": collection_key},
+            {
+                "$inc": inc_doc,
+                "$set": {"updated_at": datetime.utcnow().isoformat()},
+            },
+            upsert=True,
+        )
+
+    def _rebuild_single_product_counter(self, category: str, subcategory: str = ""):
+        """重建单个产品集合的计数器（用 aggregate $group 统计，覆盖写入 _counters）
+
+        Args:
+            category: 一级分类名称
+            subcategory: 二级分类名称
+        """
+        prefix = make_collection_prefix(category, subcategory)
+        col = self.collection(category, subcategory)
+
+        # 按 clean_status 聚合
+        clean_counts = {}
+        for doc in col.aggregate([{"$group": {"_id": "$clean_status", "count": {"$sum": 1}}}]):
+            status = doc["_id"] if doc["_id"] is not None else "unknown"
+            clean_counts[status] = doc["count"]
+
+        # 按 export_status 聚合
+        export_counts = {}
+        for doc in col.aggregate([{"$group": {"_id": "$export_status", "count": {"$sum": 1}}}]):
+            status = doc["_id"] if doc["_id"] is not None else "unknown"
+            export_counts[status] = doc["count"]
+
+        # 合并到 counts：clean_status 用原名，export 加前缀避免冲突
+        counts = {
+            CLEAN_STATUS_UNCLEAN: clean_counts.get(CLEAN_STATUS_UNCLEAN, 0),
+            CLEAN_STATUS_CLEANED: clean_counts.get(CLEAN_STATUS_CLEANED, 0),
+            CLEAN_STATUS_FAILED: clean_counts.get(CLEAN_STATUS_FAILED, 0),
+            "exported": export_counts.get(EXPORT_STATUS_EXPORTED, 0),
+            "unexported": export_counts.get(EXPORT_STATUS_UNEXPORTED, 0),
+        }
+        total = sum(clean_counts.values()) if clean_counts else col.estimated_document_count()
+
+        self._counters_col().update_one(
+            {"_id": prefix},
+            {"$set": {
+                "collection_type": "product",
+                "category": category,
+                "subcategory": normalize_subcategory(subcategory),
+                "counts": counts,
+                "total": total,
+                "updated_at": datetime.utcnow().isoformat(),
+            }},
+            upsert=True,
+        )
+
+    def rebuild_product_counters(self) -> dict:
+        """全量重建所有产品集合的计数器，修复 $inc 漂移
+
+        遍历所有产品集合，用 aggregate $group 统计各状态计数，覆盖写入 _counters。
+
+        Returns:
+            {"rebuilt": N, "errors": [...]} -- 重建的计数器数量和错误列表
+        """
+        self.ensure_counters_indexes()
+        # 只删除 product 类型的计数器，不影响同库可能存在的其它类型
+        self._counters_col().delete_many({"collection_type": "product"})
+
+        rebuilt = 0
+        errors = []
+
+        for item in self.list_categories_with_sub():
+            category = item["category"]
+            subcategory = item["subcategory"]
+            try:
+                self._rebuild_single_product_counter(category, subcategory)
+                rebuilt += 1
+            except Exception as e:
+                errors.append(f"product {item['prefix']}: {e}")
+
+        log.info(f"产品计数器重建完成: {rebuilt} 个集合, {len(errors)} 个错误")
+        return {"rebuilt": rebuilt, "errors": errors}
+
+    def get_all_collection_counts(self) -> dict:
+        """一次性返回所有产品集合的计数，供 API / 脚本使用
+
+        Returns:
+            按 collection_type 分组的计数:
+            {
+                "product": [{"_id": "hardware__tools", "category": "...", "subcategory": "...",
+                              "counts": {...}, "total": N}, ...],
+                ...（可能含同库其它类型，一并返回）
+            }
+        """
+        col = self._counters_col()
+        docs = list(col.find({}, {"_id": 1, "collection_type": 1, "category": 1,
+                                   "subcategory": 1, "counts": 1, "total": 1}))
+        result: Dict[str, list] = {}
+        for doc in docs:
+            ctype = doc.get("collection_type", "unknown")
+            if ctype not in result:
+                result[ctype] = []
+            result[ctype].append(doc)
+        return result
 
     # ── 集合命名 ──────────────────────────────────────────
 
@@ -438,18 +583,9 @@ class ProductDBClient:
                 )
 
         # 同步 _counters（修复：之前漏掉导致前端计数不更新）
-        if not force:
-            # 非 force：查询条件 clean_status=unclean，所有处理的文档原本都是 unclean
-            updated = len(passed_keys) + len(failed_keys)
-            if updated > 0:
-                incs = {CLEAN_STATUS_UNCLEAN: -updated,
-                        CLEAN_STATUS_CLEANED: len(passed_keys),
-                        CLEAN_STATUS_FAILED: len(failed_keys)}
-                self._set_counter_type(prefix, "product", category, normalize_subcategory(subcategory))
-                self._inc_counters(prefix, incs)
-        else:
-            # force：遍历了全部文档，$in 列表过大时 aggregate 会超 16MB，直接重建该集合计数器
-            self._rebuild_single_product_counter(category, subcategory)
+        # 统一用 _rebuild_single_product_counter 重建单集合计数器，避免增量计算导致 export 计数漂移
+        # （清洗只改 clean_status 不改 export_status，增量更新难以准确推算 export 计数变化）
+        self._rebuild_single_product_counter(category, subcategory)
 
         self._stats_cache.invalidate()
 
@@ -467,11 +603,15 @@ class ProductDBClient:
     def list_categories(self) -> List[str]:
         """列出所有产品数据集合的前缀（{category}__{subcategory}）
 
-        单一集合模式下，扫描所有非系统集合，排除带旧后缀的集合。
+        单一集合模式下，扫描所有非系统集合，排除带旧后缀的集合，
+        以及 _counters 等内部集合。
         """
         prefixes = set()
         for name in self.db.list_collection_names():
             if name.startswith("system."):
+                continue
+            # 排除内部集合（_counters 等）
+            if name.startswith("_"):
                 continue
             # 排除带旧后缀的集合（理论上不应存在）
             if name.endswith(RAW_SUFFIX) or name.endswith(CLEAN_SUFFIX) or name.endswith(EXPORT_SUFFIX):
@@ -537,16 +677,38 @@ class ProductDBClient:
         return collections
 
     def get_category_stats(self, category: str, subcategory: str = "") -> Dict[str, int]:
-        """获取指定分类的统计数据（单集合内按 clean_status/export_status 聚合）"""
-        prefix = make_collection_prefix(category, subcategory)
-        col = self.collection(category, subcategory)
+        """获取指定分类的统计数据（优先读 _counters，O(1)；计数器缺失时回退到 aggregate）
 
-        # clean_status 聚合
+        单集合内按 clean_status / export_status 统计。_counters 由 clean_category /
+        rebuild_product_counters 维护，避免对大集合实时 aggregate 导致前端超时。
+        """
+        prefix = make_collection_prefix(category, subcategory)
+
+        # 优先从 _counters 读取（O(1)）
+        doc = self._counters_col().find_one(
+            {"_id": prefix},
+            {"counts": 1, "total": 1, "_id": 0}
+        )
+        if doc and doc.get("counts"):
+            counts = doc["counts"]
+            return {
+                "category": category,
+                "subcategory": normalize_subcategory(subcategory),
+                "prefix": prefix,
+                "raw_count": doc.get("total", sum(counts.values())),
+                "clean_count": counts.get(CLEAN_STATUS_CLEANED, 0),
+                "exported_count": counts.get("exported", 0),
+                "unclean_count": counts.get(CLEAN_STATUS_UNCLEAN, 0),
+                "cleaned_count": counts.get(CLEAN_STATUS_CLEANED, 0),
+                "failed_count": counts.get(CLEAN_STATUS_FAILED, 0),
+            }
+
+        # 回退：实时 aggregate（计数器缺失时）
+        col = self.collection(category, subcategory)
         pipeline = [{"$group": {"_id": "$clean_status", "count": {"$sum": 1}}}]
         status_counts = {doc["_id"]: doc["count"] for doc in col.aggregate(pipeline)}
         total_count = sum(status_counts.values())
 
-        # export_status 聚合
         export_pipeline = [{"$group": {"_id": "$export_status", "count": {"$sum": 1}}}]
         export_counts = {doc["_id"]: doc["count"] for doc in col.aggregate(export_pipeline)}
 
@@ -563,16 +725,35 @@ class ProductDBClient:
         }
 
     def get_simple_category_stats(self, category: str, subcategory: str = "") -> Dict[str, int]:
-        """获取指定分类的简单统计数据（仅总数）"""
+        """获取指定分类的简单统计数据（优先读 _counters，O(1)）
+
+        返回 raw_count（总数）和 clean_count（已清洗数）。两者均从 _counters 读取，
+        避免 estimated_document_count / aggregate 扫描大集合。
+        """
         prefix = make_collection_prefix(category, subcategory)
-        col = self.collection(category, subcategory)
-        total = col.estimated_document_count()
+        # 优先从 _counters 读取 total 和 cleaned（O(1)）
+        doc = self._counters_col().find_one(
+            {"_id": prefix},
+            {"total": 1, "counts.cleaned": 1, "counts.unclean": 1, "_id": 0}
+        )
+        if doc:
+            counts = doc.get("counts", {}) or {}
+            total = doc.get("total", 0)
+            clean_count = counts.get("cleaned", 0)
+            unclean_count = counts.get("unclean", 0)
+        else:
+            # 回退：estimated_document_count + count_documents（计数器缺失时）
+            col = self.collection(category, subcategory)
+            total = col.estimated_document_count()
+            clean_count = col.count_documents({"clean_status": CLEAN_STATUS_CLEANED})
+            unclean_count = col.count_documents({"clean_status": CLEAN_STATUS_UNCLEAN})
         return {
             "category": category,
             "subcategory": normalize_subcategory(subcategory),
             "prefix": prefix,
             "raw_count": total,
-            "clean_count": 0  # 简单统计不区分
+            "clean_count": clean_count,
+            "unclean_count": unclean_count,
         }
 
     def get_unclean_products(self, category: str, subcategory: str = "", limit: Optional[int] = None) -> List[Dict]:
@@ -610,19 +791,50 @@ class ProductDBClient:
     def reset_clean_status(self, category: str, subcategory: str = "") -> int:
         """重置指定分类的清洗状态为未清洗"""
         col = self.collection(category, subcategory)
+        prefix = make_collection_prefix(category, subcategory)
+        # 先统计将被重置的各状态数量，用于同步 _counters
+        reset_cleaned = col.count_documents({"clean_status": CLEAN_STATUS_CLEANED})
+        reset_failed = col.count_documents({"clean_status": CLEAN_STATUS_FAILED})
         result = col.update_many(
             {"clean_status": {"$ne": CLEAN_STATUS_UNCLEAN}},
             {"$set": {"clean_status": CLEAN_STATUS_UNCLEAN, "clean_time": None}}
         )
+        modified = result.modified_count
+        # 同步 _counters：cleaned/failed 减少对应数量，unclean 增加 modified
+        if modified > 0:
+            incs = {CLEAN_STATUS_UNCLEAN: modified,
+                    CLEAN_STATUS_CLEANED: -reset_cleaned,
+                    CLEAN_STATUS_FAILED: -reset_failed}
+            self._set_counter_type(prefix, "product", category, normalize_subcategory(subcategory))
+            self._inc_counters(prefix, incs)
         self._stats_cache.invalidate()
-        return result.modified_count
+        return modified
 
     def delete_cleaned_from_raw(self, category: str, subcategory: str = "") -> int:
         """从集合中删除已清洗和清洗失败的数据（clean_status=cleaned/failed）"""
         col = self.collection(category, subcategory)
+        prefix = make_collection_prefix(category, subcategory)
+        # 先统计将被删除的各状态数量，用于同步 _counters
+        del_cleaned = col.count_documents({"clean_status": CLEAN_STATUS_CLEANED})
+        del_failed = col.count_documents({"clean_status": CLEAN_STATUS_FAILED})
+        del_exported = col.count_documents(
+            {"clean_status": {"$in": [CLEAN_STATUS_CLEANED, CLEAN_STATUS_FAILED]},
+             "export_status": EXPORT_STATUS_EXPORTED})
+        del_unexported = col.count_documents(
+            {"clean_status": {"$in": [CLEAN_STATUS_CLEANED, CLEAN_STATUS_FAILED]},
+             "export_status": EXPORT_STATUS_UNEXPORTED})
         result = col.delete_many({"clean_status": {"$in": [CLEAN_STATUS_CLEANED, CLEAN_STATUS_FAILED]}})
+        deleted = result.deleted_count
+        # 同步 _counters：各状态减少对应数量
+        if deleted > 0:
+            incs = {CLEAN_STATUS_CLEANED: -del_cleaned,
+                    CLEAN_STATUS_FAILED: -del_failed,
+                    "exported": -del_exported,
+                    "unexported": -del_unexported}
+            self._set_counter_type(prefix, "product", category, normalize_subcategory(subcategory))
+            self._inc_counters(prefix, incs)
         self._stats_cache.invalidate()
-        return result.deleted_count
+        return deleted
 
     def get_all_stats(self, use_cache: bool = True) -> Dict[str, Any]:
         """获取所有产品数据统计（带缓存）"""
@@ -741,12 +953,12 @@ class ProductDBClient:
             if doc.get("_id"):
                 exported_ids.append(doc["_id"])
 
-        # 创建导出目录（按分类前缀分文件夹）
-        category_dir = os.path.join(export_dir, prefix)
+        # 创建导出目录（按日期/分类前缀分文件夹，如 exports/20260807/cameras_optics__binoculars/）
+        date_str = datetime.now().strftime("%Y%m%d")
+        category_dir = os.path.join(export_dir, date_str, prefix)
         os.makedirs(category_dir, exist_ok=True)
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{prefix}_export_{timestamp}.xlsx"
+        filename = f"{prefix}_{len(rows)}.xlsx"
         filepath = os.path.join(category_dir, filename)
 
         # 导出到 Excel
@@ -755,8 +967,9 @@ class ProductDBClient:
 
         # 在同一集合中标记为已导出（不再移动到 _export 集合）
         export_time = datetime.utcnow().isoformat()
+        marked = 0
         if exported_ids:
-            col.update_many(
+            result = col.update_many(
                 {"_id": {"$in": exported_ids}},
                 {"$set": {
                     "export_status": EXPORT_STATUS_EXPORTED,
@@ -764,7 +977,147 @@ class ProductDBClient:
                     "last_export_time": export_time,
                 }, "$inc": {"export_count": 1}}
             )
+            marked = result.modified_count
+
+        # 同步 _counters 的导出计数
+        if marked > 0:
+            self._set_counter_type(prefix, "product", category, normalize_subcategory(subcategory))
+            self._inc_counters(prefix, {"unexported": -marked, "exported": marked})
 
         self._stats_cache.invalidate()
         log.info(f"导出Excel: {filepath} ({len(rows)} 条)，已标记为已导出")
         return {"filepath": filepath, "count": len(rows)}
+
+    def merge_export_category(self, category: str, export_dir: str,
+                              limit: Optional[int] = None,
+                              progress_callback=None) -> Optional[Dict[str, Any]]:
+        """合并导出一级分类下所有二级分类的已清洗未导出数据到一个 Excel
+
+        遍历该一级分类下的所有二级集合，查询 clean_status=cleaned 且 export_status=unexported
+        的文档，按 EXPORT_COLUMNS 提取字段，按"标题"去重后合并写入单个 Excel 文件，
+        并在各集合中标记为已导出。
+
+        Args:
+            category: 一级分类名称
+            export_dir: 导出根目录
+            limit: 每个二级分类的导出数量限制，None 表示全部
+            progress_callback: 进度回调函数
+
+        Returns:
+            成功返回 {"filepath", "count", "dedup_count", "sub_count", "marked_count"}，
+            无数据返回 None
+        """
+        import os
+        import pandas as pd
+
+        # 收集该一级分类下所有二级分类
+        all_cats = self.list_categories_with_sub()
+        sub_items = [item for item in all_cats if item["category"] == category]
+        if not sub_items:
+            log.info(f"合并导出 {category}: 无子分类")
+            return None
+
+        sub_count = 0
+        all_rows = []
+        # 记录每个二级分类参与导出的文档 _id，用于后续标记
+        # 结构: {prefix: [_id, _id, ...]}
+        exported_ids_by_prefix: Dict[str, list] = {}
+
+        for idx, item in enumerate(sub_items):
+            sub = item["subcategory"]
+            prefix = item["prefix"]
+            col = self.collection(category, sub)
+
+            query = {
+                "clean_status": CLEAN_STATUS_CLEANED,
+                "export_status": EXPORT_STATUS_UNEXPORTED,
+            }
+            cursor = col.find(query)
+            if limit:
+                cursor = cursor.limit(limit)
+
+            docs = list(cursor)
+            if not docs:
+                continue
+
+            sub_count += 1
+            ids = []
+            for doc in docs:
+                row = {}
+                for c in EXPORT_COLUMNS:
+                    value = doc.get(c)
+                    if isinstance(value, list):
+                        cell = ", ".join(str(it).strip() for it in value if str(it).strip())
+                    elif value is None:
+                        cell = ""
+                    else:
+                        cell = str(value).strip()
+                    cell = _clean_excel_illegal_chars(cell)
+                    if len(cell) > 32000:
+                        cell = cell[:32000] + "...[truncated]"
+                    row[c] = cell
+                all_rows.append(row)
+                if doc.get("_id"):
+                    ids.append(doc["_id"])
+            if ids:
+                exported_ids_by_prefix[prefix] = ids
+
+            if progress_callback:
+                progress_callback(idx + 1, len(sub_items))
+
+        if not all_rows:
+            log.info(f"合并导出 {category}: 无清洗后数据")
+            return None
+
+        # 合并并按"标题"去重
+        df = pd.DataFrame(all_rows, columns=EXPORT_COLUMNS)
+        before_dedup = len(df)
+        if "标题" in df.columns:
+            df = df.drop_duplicates(subset=["标题"], keep="first")
+        dedup_count = before_dedup - len(df)
+
+        # 写入 Excel（按日期/一级分类，如 exports/20260807/）
+        date_str = datetime.now().strftime("%Y%m%d")
+        date_dir = os.path.join(export_dir, date_str)
+        os.makedirs(date_dir, exist_ok=True)
+        filename = f"{category}_merged_{len(df)}.xlsx"
+        filepath = os.path.join(date_dir, filename)
+        df.to_excel(filepath, index=False, engine="openpyxl")
+
+        # 在各集合中标记为已导出
+        export_time = datetime.utcnow().isoformat()
+        marked_count = 0
+        for prefix, ids in exported_ids_by_prefix.items():
+            if not ids:
+                continue
+            # 按 prefix 反查 category/subcategory 以获取集合
+            cat, sub = parse_collection_prefix(prefix)
+            col = self.collection(cat, sub)
+            prefix_marked = 0
+            for i in range(0, len(ids), 10000):
+                batch = ids[i:i + 10000]
+                result = col.update_many(
+                    {"_id": {"$in": batch}},
+                    {"$set": {
+                        "export_status": EXPORT_STATUS_EXPORTED,
+                        "export_time": export_time,
+                        "last_export_time": export_time,
+                    }, "$inc": {"export_count": 1}}
+                )
+                prefix_marked += result.modified_count
+            marked_count += prefix_marked
+            # 同步该 prefix 的 _counters 导出计数
+            if prefix_marked > 0:
+                self._set_counter_type(prefix, "product", cat, normalize_subcategory(sub))
+                self._inc_counters(prefix, {"unexported": -prefix_marked, "exported": prefix_marked})
+
+        self._stats_cache.invalidate()
+        log.info(f"合并导出Excel: {filepath} ({len(df)} 条，去重 {dedup_count} 条，"
+                 f"{sub_count} 个二级分类，标记 {marked_count} 条)")
+        return {
+            "filepath": filepath,
+            "count": len(df),
+            "dedup_count": dedup_count,
+            "sub_count": sub_count,
+            "marked_count": marked_count,
+        }
