@@ -1,0 +1,418 @@
+{% extends "base.html" %}
+
+{% block content %}
+<style>
+  .top-bar { background: linear-gradient(135deg, #1a1a2e, #16213e); padding: 14px 20px; border-radius: 10px 10px 0 0; color: #fff; }
+  .top-bar select, .top-bar input { background: rgba(255,255,255,.9); border: none; border-radius: 4px; padding: 5px 8px; font-size: 13px; }
+  .top-bar .big-select { min-width: 220px; font-size: 14px; padding: 6px 10px; }
+  .top-bar input[type=date] { width: 130px; }
+  .top-bar label { color: rgba(255,255,255,.8); font-size: 12px; }
+  .flex-gap { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .cal-wrap { background: #fff; padding: 12px 20px 16px; border-radius: 0 0 10px 10px; margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; text-align: center; max-width: 560px; }
+  .cal-grid .cal-hdr { font-weight: bold; padding: 4px; background: #f8f8f8; }
+  .cal-grid .cal-day { padding: 4px 2px; min-height: 36px; border: 1px solid #eee; font-size: 12px; cursor: pointer; border-radius: 2px; transition: background .15s; }
+  .cal-grid .cal-day:hover { background: #e3f2fd; }
+  .cal-grid .cal-day.has-order { background: #e8f5e9; border-color: #c8e6c9; }
+  .cal-grid .cal-day .day-num { font-weight: bold; font-size: 13px; }
+  .cal-grid .cal-day .day-stat { color: #999; font-size: 10px; }
+  .cal-grid .cal-day.other-month { color: #ccc; cursor: default; }
+  .cal-grid .cal-day.other-month:hover { background: transparent; }
+  .cal-grid .cal-day.range-start { background: #1a1a2e !important; color: #fff; border-color: #16213e; }
+  .cal-grid .cal-day.range-start .day-stat { color: rgba(255,255,255,.7); }
+  .cal-grid .cal-day.range-end { background: #16213e !important; color: #fff; border-color: #0d1525; }
+  .cal-grid .cal-day.range-end .day-stat { color: rgba(255,255,255,.7); }
+  .cal-grid .cal-day.range-mid { background: #e8eaf6 !important; border-color: #c5cae9; }
+  .section { background: #fff; border-radius: 10px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+  .section h3 { margin-top: 0; margin-bottom: 12px; font-size: 16px; border-left: 3px solid #4fc3f7; padding-left: 10px; }
+  .pager { text-align: center; margin-top: 12px; }
+  .pager button { margin: 0 2px; }
+  .limit-select { padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; }
+  .order-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .order-table th { background: #f5f5f5; padding: 8px 6px; text-align: left; border-bottom: 2px solid #ddd; white-space: nowrap; }
+  .order-table td { padding: 8px 6px; border-bottom: 1px solid #eee; vertical-align: middle; }
+  .order-table tr.item-row:hover td { background: #f0f7ff; }
+  .order-table tr.item-row + tr.item-row td { border-top: 1px dashed #e0e0e0; }
+  .order-table td.merged { background: #fafafa; }
+  .thumb-img { width: 60px; height: 60px; object-fit: cover; border-radius: 4px; cursor: pointer; border: 1px solid #eee; }
+  .no-thumb { width: 60px; height: 60px; display: flex; align-items: center; justify-content: center; background: #f5f5f5; border-radius: 4px; color: #bbb; font-size: 11px; border: 1px solid #eee; }
+  .status-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; color: #fff; }
+  .st-completed { background: #4caf50; }
+  .st-processing { background: #2196f3; }
+  .st-pending { background: #ff9800; }
+  .st-cancelled { background: #607d8b; }
+  .st-refunded { background: #ff5722; }
+  .st-failed { background: #f44336; }
+  .st-on-hold { background: #9c27b0; }
+  .addr-cell { max-width: 240px; white-space: normal; word-break: break-word; color: #555; }
+  .img-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,.8); z-index: 9999; justify-content: center; align-items: center; cursor: zoom-out; }
+  .img-modal img { max-width: 90%; max-height: 90%; border-radius: 6px; }
+</style>
+
+<div class="top-bar">
+  <div class="flex-gap" style="flex-wrap:wrap">
+    <select class="big-select" id="topSvrSelect"><option value="">-- 选择IP --</option></select>
+    <select style="width:90px" id="topYear"></select><label>年</label>
+    <select style="width:72px" id="topMonth"></select><label>月</label>
+    <input type="date" id="dateFrom"><label>从</label>
+    <input type="date" id="dateTo"><label>至</label>
+    <button class="btn btn-sm" id="btnClearRange" style="background:rgba(255,255,255,.2);border:none;color:#fff">清除</button>
+  </div>
+</div>
+
+<div class="cal-wrap">
+  <div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap">
+    <div><div id="calendar"></div></div>
+    <div style="font-size:13px;color:#666;padding-top:4px" id="rangeInfo"></div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>订单列表 <span style="font-size:13px;color:#999;font-weight:normal" id="orderCount"></span> <span id="ipDomains" style="font-size:12px;color:#4fc3f7;font-weight:normal"></span></h3>
+  <div style="display:flex;gap:6px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+    <select id="sortSelect" style="padding:4px 8px;border:1px solid #ddd;border-radius:4px;font-size:13px">
+      <option value="order_time|-1">按时间倒序</option>
+      <option value="order_time|1">按时间正序</option>
+      <option value="domain|1">按域名升序</option>
+      <option value="domain|-1">按域名降序</option>
+      <option value="order_amount|-1">按金额从高到低</option>
+      <option value="order_amount|1">按金额从低到高</option>
+      <option value="order_category|1">按出单类别升序</option>
+      <option value="order_category|-1">按出单类别降序</option>
+    </select>
+    <select id="limitSelect" class="limit-select">
+      <option value="10">每页10条</option>
+      <option value="30" selected>每页30条</option>
+      <option value="50">每页50条</option>
+      <option value="100">每页100条</option>
+    </select>
+  </div>
+  <div style="overflow-x:auto;">
+    <table class="order-table">
+      <thead>
+        <tr>
+          <th>图片</th>
+          <th>产品标题</th>
+          <th>SKU</th>
+          <th>数量</th>
+          <th>小计</th>
+          <th>网站域名</th>
+          <th>服务器IP</th>
+          <th>分类</th>
+          <th>订单时间</th>
+          <th>状态</th>
+          <th>订单金额</th>
+          <th>账单地址</th>
+        </tr>
+      </thead>
+      <tbody id="orderTableBody"></tbody>
+    </table>
+  </div>
+  <div class="pager" id="orderPager"></div>
+</div>
+
+<div class="img-modal" id="imgModal"><img id="imgModalSrc" src=""></div>
+
+<script>
+var servers = [];
+var serverIpMap = {};
+var currentIp = '';
+var currentYear = new Date().getFullYear();
+var currentMonth = new Date().getMonth() + 1;
+var dateFrom = null, dateTo = null;
+var selectingRange = false;
+var orderReqId = 0;
+var currentSortBy = 'order_time';
+var currentSortOrder = -1;
+var currentLimit = 30;
+
+var statusMap = {
+  'completed': {label: '已完成', cls: 'st-completed'},
+  'processing': {label: '处理中', cls: 'st-processing'},
+  'pending': {label: '待付款', cls: 'st-pending'},
+  'pending payment': {label: '待付款', cls: 'st-pending'},
+  'on-hold': {label: '暂停', cls: 'st-on-hold'},
+  'cancelled': {label: '已取消', cls: 'st-cancelled'},
+  'refunded': {label: '已退款', cls: 'st-refunded'},
+  'failed': {label: '失败', cls: 'st-failed'}
+};
+
+function pad2(n) { return n < 10 ? '0' + n : '' + n; }
+function esc(s) { return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function joinAddr(addr) {
+  if (!addr) return '';
+  var parts = [];
+  if (addr.name) parts.push(addr.name);
+  if (addr.address_1) parts.push(addr.address_1);
+  if (addr.address_2) parts.push(addr.address_2);
+  if (addr.city_state_zip) parts.push(addr.city_state_zip);
+  else if (addr.city || addr.state || addr.postcode) parts.push([addr.city, addr.state, addr.postcode].filter(Boolean).join(' '));
+  return parts.filter(Boolean).join(', ');
+}
+
+function renderStatus(s) {
+  var st = statusMap[s] || {label: s || '-', cls: 'st-pending'};
+  return '<span class="status-badge ' + st.cls + '">' + esc(st.label) + '</span>';
+}
+
+function showImage(src) {
+  if (!src) return;
+  document.getElementById('imgModalSrc').src = src;
+  document.getElementById('imgModal').style.display = 'flex';
+}
+document.getElementById('imgModal').addEventListener('click', function() { this.style.display = 'none'; });
+
+function renderCell(content, rowspan, isMerged) {
+  return '<td' + (rowspan > 1 ? ' rowspan="' + rowspan + '"' : '') + (isMerged ? ' class="merged"' : '') + '>' + content + '</td>';
+}
+
+function renderOrderRows(o) {
+  var items = o.items || [];
+  var rowspan = items.length || 1;
+  var rows = [];
+  var serverIp = serverIpMap[o.domain] || '';
+  var orderTime = (o.order_time || '').slice(0, 19).replace('T', ' ');
+  var billAddr = joinAddr(o.billing_address);
+
+  function mergedCell(content) {
+    return renderCell(content, rowspan, true);
+  }
+
+  if (items.length === 0) {
+    var html = '<tr class="item-row">';
+    html += '<td><div class="no-thumb">无图</div></td>';
+    html += '<td colspan="4" style="color:#999;text-align:center">无商品详情</td>';
+    html += mergedCell(esc(o.domain || ''));
+    html += mergedCell(esc(serverIp));
+    html += mergedCell(esc(o.order_category || ''));
+    html += mergedCell(esc(orderTime));
+    html += mergedCell(renderStatus(o.order_status));
+    html += mergedCell('$ ' + parseFloat(o.order_amount || 0).toFixed(2));
+    html += mergedCell('<div class="addr-cell">' + esc(billAddr) + '</div>');
+    html += '</tr>';
+    return html;
+  }
+
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    var html = '<tr class="item-row">';
+    var imgHtml = it.image
+      ? '<img class="thumb-img" src="' + esc(it.image) + '" onclick="showImage(\'' + esc(it.image).replace(/'/g, "\\'") + '\')">'
+      : '<div class="no-thumb">无图</div>';
+    html += '<td>' + imgHtml + '</td>';
+    html += '<td>' + esc(it.product_name || '') + '</td>';
+    html += '<td>' + esc(it.sku || '') + '</td>';
+    html += '<td>' + (it.quantity != null ? it.quantity : '') + '</td>';
+    html += '<td>' + (it.subtotal != null ? '$ ' + parseFloat(it.subtotal).toFixed(2) : '') + '</td>';
+
+    if (i === 0) {
+      html += mergedCell(esc(o.domain || ''));
+      html += mergedCell(esc(serverIp));
+      html += mergedCell(esc(o.order_category || ''));
+      html += mergedCell(esc(orderTime));
+      html += mergedCell(renderStatus(o.order_status));
+      html += mergedCell('$ ' + parseFloat(o.order_amount || 0).toFixed(2));
+      html += mergedCell('<div class="addr-cell">' + esc(billAddr) + '</div>');
+    }
+    html += '</tr>';
+    rows.push(html);
+  }
+  return rows.join('');
+}
+
+function loadOrders(ip, page) {
+  var myId = ++orderReqId;
+  var url = '/api/orders?ip=' + encodeURIComponent(ip) + '&page=' + (page || 1) + '&limit=' + currentLimit;
+  if (dateFrom) url += '&date_from=' + dateFrom + '&date_to=' + (dateTo || dateFrom);
+  else url += '&year=' + currentYear + '&month=' + currentMonth;
+  url += '&sort_by=' + currentSortBy + '&sort_order=' + currentSortOrder;
+  fetch(url).then(function(r){return r.json()}).then(function(data) {
+    if (myId != orderReqId) return;
+    if (data.error) { document.getElementById('orderTableBody').innerHTML = '<tr><td colspan="12">' + esc(data.error) + '</td></tr>'; return; }
+    document.getElementById('orderCount').textContent = '共 ' + data.total + ' 条';
+    var tbody = document.getElementById('orderTableBody');
+    tbody.innerHTML = '';
+    var orders = data.data || [];
+    if (orders.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:#999;padding:24px">暂无订单数据</td></tr>';
+    } else {
+      var html = '';
+      orders.forEach(function(o) { html += renderOrderRows(o); });
+      tbody.innerHTML = html;
+    }
+    renderPager(data.total, data.limit, page);
+    renderCalendar();
+  }).catch(function(e) { console.error('loadOrders fail:', e); });
+}
+
+function renderPager(total, limit, cur) {
+  var el = document.getElementById('orderPager');
+  var tp = Math.ceil(total / limit);
+  if (tp <= 1) { el.innerHTML = ''; return; }
+  var h = '';
+  h += '<button class="btn btn-sm page-btn" data-page="' + (cur - 1) + '"' + (cur <= 1 ? ' disabled' : '') + '>上一页</button>';
+  var s = Math.max(1, cur - 3), e = Math.min(tp, cur + 3);
+  if (s > 1) h += '<button class="btn btn-sm page-btn" data-page="1">1</button>...';
+  for (var i = s; i <= e; i++) h += '<button class="btn btn-sm page-btn' + (i == cur ? ' btn-primary' : '') + '" data-page="' + i + '">' + i + '</button>';
+  if (e < tp) h += '...<button class="btn btn-sm page-btn" data-page="' + tp + '">' + tp + '</button>';
+  h += '<button class="btn btn-sm page-btn" data-page="' + (cur + 1) + '"' + (cur >= tp ? ' disabled' : '') + '>下一页</button>';
+  h += '<span style="margin-left:8px;color:#666;font-size:13px">' + cur + '/' + tp + ' (共' + total + '条)</span>';
+  el.innerHTML = h;
+}
+
+document.addEventListener('click', function(e) {
+  var btn = e.target.closest('.page-btn');
+  if (!btn || btn.disabled) return;
+  var p = parseInt(btn.getAttribute('data-page'));
+  if (!isNaN(p)) loadOrders(currentIp || '', p);
+});
+
+function loadServers() {
+  fetch('/api/servers').then(function(r){return r.json()}).then(function(data) {
+    servers = Array.isArray(data) ? data : (data.data || []);
+    serverIpMap = {};
+    servers.forEach(function(s) { if (s.domain) serverIpMap[s.domain] = s.ip || ''; });
+  });
+  fetch('/api/ips').then(function(r){return r.json()}).then(function(ips) {
+    var sel = document.getElementById('topSvrSelect');
+    sel.innerHTML = '<option value="">-- 所有服务器 --</option>';
+    ips.forEach(function(ip) { sel.innerHTML += '<option value="' + ip + '">' + ip + '</option>'; });
+    sel.value = '';
+    sel.onchange();
+  });
+}
+
+function renderCalendar() {
+  var cal = document.getElementById('calendar');
+  var year = currentYear, month = currentMonth;
+  var first = new Date(year, month - 1, 1);
+  var last = new Date(year, month, 0);
+  var startDow = first.getDay();
+  var daysInMonth = last.getDate();
+  var html = '<div class="cal-grid">';
+  ['日','一','二','三','四','五','六'].forEach(function(d) { html += '<div class="cal-hdr">' + d + '</div>'; });
+  for (var i = 0; i < startDow; i++) html += '<div class="cal-day other-month"></div>';
+  for (var d = 1; d <= daysInMonth; d++) {
+    var cls = 'cal-day';
+    var dateStr = year + '-' + pad2(month) + '-' + pad2(d);
+    if (dateFrom) {
+      var end = dateTo || dateFrom;
+      if (dateStr == dateFrom && dateStr == end) cls += ' range-start range-end';
+      else if (dateStr == dateFrom) cls += ' range-start';
+      else if (dateStr == end) cls += ' range-end';
+      else if (dateStr > dateFrom && dateStr < end) cls += ' range-mid';
+    }
+    html += '<div class="' + cls + '" data-date="' + dateStr + '"><div class="day-num">' + d + '</div><div class="day-stat"></div></div>';
+  }
+  html += '</div>';
+  cal.innerHTML = html;
+  if (currentIp !== null && currentIp !== undefined) loadCalStats(currentIp);
+}
+
+function loadCalStats(ip) {
+  var url = '/api/order-stats?ip=' + encodeURIComponent(ip);
+  if (dateFrom) url += '&date_from=' + dateFrom + '&date_to=' + (dateTo || dateFrom);
+  else url += '&year=' + currentYear + '&month=' + currentMonth;
+  fetch(url).then(function(r){return r.json()}).then(function(stats) {
+    stats.forEach(function(s) {
+      var ds = (s.d || '').slice(0, 10);
+      var el = document.querySelector('.cal-day[data-date="' + ds + '"]');
+      if (el) {
+        el.classList.add('has-order');
+        el.querySelector('.day-stat').textContent = s.cnt + '单';
+      }
+    });
+  }).catch(function(){});
+}
+
+document.getElementById('calendar').addEventListener('click', function(e) {
+  var day = e.target.closest('.cal-day');
+  if (!day || day.classList.contains('other-month')) return;
+  var dateStr = day.getAttribute('data-date');
+  if (!selectingRange || dateFrom === null) {
+    dateFrom = dateStr; dateTo = null; selectingRange = true;
+    document.getElementById('dateFrom').value = dateStr;
+    document.getElementById('dateTo').value = '';
+  } else {
+    if (dateStr < dateFrom) { dateTo = dateFrom; dateFrom = dateStr; }
+    else dateTo = dateStr;
+    selectingRange = false;
+    document.getElementById('dateTo').value = dateTo;
+  }
+  renderCalendar(); updateRangeInfo();
+  if (currentIp !== null) loadOrders(currentIp, 1);
+});
+
+document.getElementById('btnClearRange').addEventListener('click', function() {
+  dateFrom = null; dateTo = null; selectingRange = false;
+  document.getElementById('dateFrom').value = '';
+  document.getElementById('dateTo').value = '';
+  renderCalendar(); updateRangeInfo();
+  if (currentIp !== null) loadOrders(currentIp, 1);
+});
+
+function updateRangeInfo() {
+  var el = document.getElementById('rangeInfo');
+  if (dateFrom && dateTo && dateFrom != dateTo) el.textContent = '日期区间: ' + dateFrom + ' -> ' + dateTo;
+  else if (dateFrom) el.textContent = '查询日期: ' + dateFrom + ' (再点选择区间)';
+  else el.textContent = '点击日历日期查询当天，再点选择区间';
+}
+
+function initYearMonth() {
+  var el = document.getElementById('topYear');
+  el.innerHTML = '';
+  for (var i = new Date().getFullYear() - 1; i <= new Date().getFullYear() + 1; i++)
+    el.innerHTML += '<option value="' + i + '"' + (i == new Date().getFullYear() ? ' selected' : '') + '>' + i + '</option>';
+  el = document.getElementById('topMonth');
+  el.innerHTML = '';
+  for (var i = 1; i <= 12; i++)
+    el.innerHTML += '<option value="' + i + '"' + (i == new Date().getMonth() + 1 ? ' selected' : '') + '>' + i + '</option>';
+  currentYear = parseInt(document.getElementById('topYear').value);
+  currentMonth = parseInt(document.getElementById('topMonth').value);
+}
+
+document.getElementById('topSvrSelect').onchange = function() {
+  var ip = this.value;
+  currentIp = ip;
+  var dl = document.getElementById('ipDomains');
+  if (ip) {
+    var doms = servers.filter(function(s){return s.ip == ip}).map(function(s){return s.domain});
+    dl.textContent = '› ' + doms.join(', ');
+  } else {
+    dl.textContent = '› 所有服务器';
+  }
+  loadOrders(ip, 1); renderCalendar();
+};
+
+document.getElementById('topYear').onchange = function() {
+  currentYear = parseInt(this.value);
+  renderCalendar();
+  loadOrders(currentIp, 1);
+};
+document.getElementById('topMonth').onchange = function() {
+  currentMonth = parseInt(this.value);
+  renderCalendar();
+  loadOrders(currentIp, 1);
+};
+
+document.getElementById('sortSelect').onchange = function() {
+  var parts = this.value.split('|');
+  currentSortBy = parts[0];
+  currentSortOrder = parseInt(parts[1]);
+  loadOrders(currentIp || '', 1);
+};
+
+document.getElementById('limitSelect').onchange = function() {
+  currentLimit = parseInt(this.value);
+  loadOrders(currentIp || '', 1);
+};
+
+document.addEventListener('DOMContentLoaded', function() {
+  initYearMonth();
+  loadServers();
+  renderCalendar();
+  updateRangeInfo();
+});
+</script>
+{% endblock %}

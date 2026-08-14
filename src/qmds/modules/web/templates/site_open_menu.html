@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>正在打开 {{ domain }} ...</title>
+</head>
+<body>
+    <p>正在登录 {{ domain }} 并跳转到菜单页面...</p>
+    <form id="loginForm" action="{{ login_url }}" method="post">
+        {% for key, value in form_data.items() %}
+        <input type="hidden" name="{{ key }}" value="{{ value }}">
+        {% endfor %}
+    </form>
+    <script>
+        document.getElementById('loginForm').submit();
+    </script>
+</body>
+</html>

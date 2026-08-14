@@ -58,18 +58,19 @@
 </div>
 
 <div class="card">
-    <h2>类目统计</h2>
+    <h2>分类统计</h2>
     {% if category_stats %}
     <div style="overflow-x:auto;">
         <table>
             <thead>
                 <tr>
-                    <th>类目</th>
-                    <th>原始数据 ({category}_raw)</th>
+                    <th>一级分类</th>
+                    <th>二级分类</th>
+                    <th>原始数据</th>
                     <th>未清洗</th>
                     <th>已清洗</th>
                     <th>清洗失败</th>
-                    <th>清洗后数据 ({category}_clean)</th>
+                    <th>清洗后数据</th>
                     <th>已导出</th>
                     <th>操作</th>
                 </tr>
@@ -78,6 +79,7 @@
                 {% for cat_stat in category_stats %}
                 <tr>
                     <td>{{ cat_stat.category }}</td>
+                    <td>{{ cat_stat.subcategory }}</td>
                     <td>{{ cat_stat.raw_count }}</td>
                     <td style="color: #f59e0b;">{{ cat_stat.unclean_count|default(0) }}</td>
                     <td style="color: #10b981;">{{ cat_stat.cleaned_count|default(0) }}</td>
@@ -113,35 +115,35 @@
         </div>
         <div class="detail-item">
             <div class="k">URL来源集合</div>
-            <div class="v"><code>{category}_filtered</code> - 存储已筛选的店铺URL</div>
+            <div class="v"><code>{category}__{subcategory}</code> - 存储已筛选的店铺URL（filter_status/crawl_status 字段区分状态）；<code>{category}</code> 集合存储未筛选URL</div>
         </div>
         <div class="detail-item">
             <div class="k">产品数据数据库</div>
             <div class="v"><code>qmds_product_data</code> - 存储商品数据</div>
         </div>
         <div class="detail-item">
-            <div class="k">原始数据集合</div>
-            <div class="v"><code>{category}_raw</code> - 存储爬取的原始商品数据</div>
+            <div class="k">产品数据集合</div>
+            <div class="v"><code>{category}__{subcategory}</code> - 单一集合，用 clean_status/export_status 字段区分状态</div>
         </div>
         <div class="detail-item">
-            <div class="k">清洗后数据集合</div>
-            <div class="v"><code>{category}_clean</code> - 存储清洗后的商品数据</div>
+            <div class="k">分类命名规则</div>
+            <div class="v">一级分类与二级分类用双下划线 <code>__</code> 分隔，无二级分类时使用 <code>other</code></div>
         </div>
         <div class="detail-item">
             <div class="k">清洗状态字段</div>
-            <div class="v"><code>clean_status</code> - 记录数据清洗状态：unclean（未清洗）、cleaned（已清洗）、failed（清洗失败）</div>
+            <div class="v"><code>clean_status</code> - unclean（未清洗）、cleaned（已清洗）、failed（清洗失败）</div>
         </div>
         <div class="detail-item">
-            <div class="k">类目对应关系</div>
-            <div class="v">同一类目的原始数据和清洗后数据通过类目名称对应，如 <code>electronics_raw</code> 和 <code>electronics_clean</code></div>
+            <div class="k">导出状态字段</div>
+            <div class="v"><code>export_status</code> - unexported（未导出）、exported（已导出）</div>
         </div>
         <div class="detail-item">
             <div class="k">数据爬取流程</div>
-            <div class="v">从 <code>qmds_url_stores.{category}_filtered</code> 获取URL → 爬取 <code>/products.json</code> → 保存到 <code>qmds_product_data.{category}_raw</code></div>
+            <div class="v">从 <code>{category}__{subcategory}</code> 获取 filter_status=filtered 且 crawl_status=uncrawled 的URL -> 爬取 <code>/products.json</code> -> 保存到 <code>{category}__{subcategory}</code>（clean_status=unclean）</div>
         </div>
         <div class="detail-item">
             <div class="k">数据清洗流程</div>
-            <div class="v">从 <code>{category}_raw</code> 读取未清洗数据 → 过滤无效数据、违禁词处理 → 保存到 <code>{category}_clean</code> 并更新清洗状态</div>
+            <div class="v">从 <code>{category}__{subcategory}</code> 读取 clean_status=unclean 数据 -> 过滤 -> 更新 clean_status=cleaned/failed（同集合）</div>
         </div>
     </div>
 </div>

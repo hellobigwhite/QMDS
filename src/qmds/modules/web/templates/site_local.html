@@ -93,6 +93,12 @@
     <form method="GET" class="mb-4">
         <div class="flex">
             <input type="text" name="q" value="{{ q|default('') }}" placeholder="搜索域名..." style="flex:1;">
+            <select name="category" style="min-width:160px;">
+                <option value="">全部大类</option>
+                {% for cat in categories %}
+                <option value="{{ cat }}" {% if category == cat %}selected{% endif %}>{{ cat }}</option>
+                {% endfor %}
+            </select>
             <button type="submit" class="btn btn-primary">搜索</button>
             <a href="/site-management/local" class="btn btn-secondary">清空</a>
         </div>

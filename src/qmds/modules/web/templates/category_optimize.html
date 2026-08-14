@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <h2>🔧 模型优化分类</h2>
+    <p class="text-muted">调用AI模型优化分类结构：同义分类统一表达、单级分类补全直接父级。提交后可在任务页面查看进度和日志。</p>
+</div>
+
+<div class="card">
+    <h3>📋 优化参数</h3>
+    <form method="POST" action="/tools/category-optimize">
+        <div class="grid-2">
+            <div>
+                <label for="file_path">表格文件路径</label>
+                <input type="text" id="file_path" name="file_path" placeholder="例如: F:\data\products.xlsx" required>
+                <small class="text-muted">支持 .xlsx / .xls / .csv 文件</small>
+            </div>
+            <div>
+                <label for="category_field">分类字段名</label>
+                <input type="text" id="category_field" name="category_field" value="Categories" required>
+                <small class="text-muted">表格中分类列的名称</small>
+            </div>
+        </div>
+        <div class="grid-2">
+            <div>
+                <label>优化规则</label>
+                <div style="padding: 8px 0; color: #666;">
+                    <div>✓ 同义分类统一为单一标准表达</div>
+                    <div>✓ 单级分类补全直接上一级作为父级</div>
+                    <div>✓ 一级大类（21个）保持不变</div>
+                    <div>✓ 多级分类只做同义合并</div>
+                </div>
+            </div>
+            <div>
+                <label>输出说明</label>
+                <div style="padding: 8px 0; color: #666;">
+                    <div>✓ 优化结果保存为 _optimized 后缀文件</div>
+                    <div>✓ 参考Google Product Taxonomy标准</div>
+                </div>
+            </div>
+        </div>
+        <div class="mt-4">
+            <button type="submit" class="btn btn-primary">🚀 开始优化</button>
+            <a href="/tools" class="btn btn-info">返回工具箱</a>
+            <a href="/tasks" class="btn btn-secondary">查看任务</a>
+        </div>
+    </form>
+</div>
+
+{% if error %}
+<div class="card">
+    <h3>❌ 错误信息</h3>
+    <div class="result-box" style="border-color: #f8bbd0; background: #fce4ec;">
+        <p style="color: #c62828;">{{ error }}</p>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

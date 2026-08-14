@@ -28,7 +28,7 @@ IRREGULAR_NOUNS = {
     "swimwear": "swimwear", "sportswear": "sportswear", "workwear": "workwear",
 }
 
-CATEGORY_SEPARATOR_RE = re.compile(r"\s*->\s*|\s*>\s*|\s*,\s*|\s*/\s*|\s*-\s*")
+CATEGORY_SEPARATOR_RE = re.compile(r"\s*->\s*|\s*>\s*|\s*,\s*|\s*/\s*|\s+-\s*|\s*-\s+|\s*[:：]\s*")
 
 
 def _to_singular(word: str) -> str:
@@ -101,6 +101,20 @@ def read_table_file(file_path: Path) -> Optional[pd.DataFrame]:
         return None
 
 
+_NUM_SEP_RE = re.compile(r"[\s\-_.,/\\|:;]+")
+
+
+def _is_pure_numeric_category(val) -> bool:
+    """判断分类值是否为纯数字（去除空格及常见分隔符后全为数字）"""
+    if val is None:
+        return False
+    s = str(val).strip()
+    if not s:
+        return False
+    cleaned = _NUM_SEP_RE.sub("", s)
+    return cleaned.isdigit()
+
+
 def clean_dataframe(df: pd.DataFrame, price_threshold: float = 2500.0) -> pd.DataFrame:
     """对DataFrame进行二次清洗
 
@@ -108,6 +122,8 @@ def clean_dataframe(df: pd.DataFrame, price_threshold: float = 2500.0) -> pd.Dat
     2. 删除Regular price字段大于阈值的数据
     3. 把Categories字段中分隔符统一为|||
     4. 对Categories字段中单词进行单复数合并，统一改为单数，大小写统一
+    5. 去掉source_category字段值中的下划线（替换为空格）
+    6. 分类字段为纯数字时，用同行的source_category值覆盖（source_category为空则保留原值）
     """
     original_count = len(df)
     logger.info(f"开始清洗，原始数据量: {original_count}")
@@ -116,6 +132,7 @@ def clean_dataframe(df: pd.DataFrame, price_threshold: float = 2500.0) -> pd.Dat
     desc_col = None
     price_col = None
     category_col = None
+    source_cat_col = None
 
     for col in df.columns:
         col_lower = col.strip().lower()
@@ -125,6 +142,8 @@ def clean_dataframe(df: pd.DataFrame, price_threshold: float = 2500.0) -> pd.Dat
             price_col = col
         elif col_lower in ("categories", "category", "分类"):
             category_col = col
+        elif col_lower == "source_category":
+            source_cat_col = col
 
     # 1. 删除Description字段为空的数据
     if desc_col:
@@ -152,6 +171,29 @@ def clean_dataframe(df: pd.DataFrame, price_threshold: float = 2500.0) -> pd.Dat
         logger.info("已完成Categories字段标准化")
     else:
         logger.warning("未找到Categories字段")
+
+    # 5. 去掉source_category字段值中的下划线（替换为空格）
+    if source_cat_col:
+        before_na = df[source_cat_col].isna().sum()
+        df[source_cat_col] = df[source_cat_col].fillna("").astype(str).str.replace("_", " ", regex=False)
+        df.loc[df[source_cat_col] == "", source_cat_col] = None
+        logger.info(f"已完成source_category下划线去除 (空值 {int(before_na)} 条)")
+    else:
+        logger.warning("未找到source_category字段")
+
+    # 6. 分类字段为纯数字时，用同行的source_category覆盖（source_category为空则保留原值）
+    if category_col and source_cat_col:
+        cat_series = df[category_col].fillna("").astype(str)
+        numeric_mask = cat_series.apply(_is_pure_numeric_category)
+        src_series = df[source_cat_col].fillna("").astype(str).str.strip()
+        src_nonempty_mask = src_series != ""
+        replace_mask = numeric_mask & src_nonempty_mask
+        replaced = int(replace_mask.sum())
+        if replaced > 0:
+            df.loc[replace_mask, category_col] = src_series[replace_mask]
+            logger.info(f"纯数字分类替换为source_category: {replaced} 行")
+        else:
+            logger.info("无纯数字分类需要替换")
 
     final_count = len(df)
     logger.info(f"清洗完成，最终数据量: {final_count}，共删除: {original_count - final_count} 条")

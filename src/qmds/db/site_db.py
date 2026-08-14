@@ -168,10 +168,12 @@ class SiteDBClient:
     # ── 查询操作 ──────────────────────────────────────────────
 
     def _paginate(self, query: dict, keyword: str, sort_field: str, sort_dir: int,
-                  page: int = 1, page_size: int = 20) -> dict:
+                  page: int = 1, page_size: int = 20, category: str = "") -> dict:
         """通用分页查询，返回 {"items": [...], "total": int, "page": int, "page_size": int}"""
         if keyword:
             query["domain"] = {"$regex": keyword, "$options": "i"}
+        if category:
+            query["category"] = {"$regex": f"^{category}$", "$options": "i"}
         total = self.sites.count_documents(query)
         skip = (page - 1) * page_size
         items = list(self.sites.find(query).sort(sort_field, sort_dir).skip(skip).limit(page_size))
@@ -185,9 +187,17 @@ class SiteDBClient:
         """列出活跃站点（排除已建站，分页）"""
         return self._paginate({"build_status": {"$ne": "已建站"}}, keyword, "created_at", -1, page, page_size)
 
-    def list_local_sites(self, keyword: str = "", page: int = 1, page_size: int = 20) -> dict:
+    def list_local_sites(self, keyword: str = "", page: int = 1, page_size: int = 20, category: str = "") -> dict:
         """列出本地站点（未上报的站点，分页）"""
-        return self._paginate({"report_status": {"$ne": "已报"}}, keyword, "created_at", -1, page, page_size)
+        return self._paginate({"report_status": {"$ne": "已报"}}, keyword, "created_at", -1, page, page_size, category)
+
+    def list_local_categories(self) -> list[str]:
+        """列出本地站点（未上报）中实际存在的大类，去除空值，按名称排序"""
+        try:
+            names = self.sites.distinct("category", {"report_status": {"$ne": "已报"}})
+        except Exception:
+            return []
+        return sorted({n for n in names if n and str(n).strip()})
 
     def list_reported_sites(self, keyword: str = "", page: int = 1, page_size: int = 20) -> dict:
         """列出已报域名（分页），待建站排最上面，然后按建站时间倒序"""

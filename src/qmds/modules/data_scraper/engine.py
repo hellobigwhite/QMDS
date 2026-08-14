@@ -174,7 +174,7 @@ class DataScraperModule:
         return all_products
 
     def save_to_mongodb(self, stores: list[dict], category: str) -> int:
-        """将店铺结果保存到 MongoDB {category}_unfiltered（按 domain upsert）"""
+        """将店铺结果保存到 MongoDB {category} 集合（unfiltered，按 domain upsert）"""
         try:
             db = MongoDBClient()
             count = db.save_unfiltered(category, stores)
@@ -446,11 +446,16 @@ class DataScraperModule:
 
             try:
                 # 1. 并发搜索该关键词的 URL
-                variants = [
-                    f"{kw} inurl:collections/all",
-                    f"{kw} inurl:collections/all - page 123",
-                    f"{kw} inurl:collections/all - page 88",
-                ]
+                # Exa 是语义搜索引擎，不识别 Google 运算符（inurl:/- page 等），
+                # 直接用原始关键词搜索，避免拼接变体导致重复调用浪费额度。
+                if provider_name == "exa":
+                    variants = [kw]
+                else:
+                    variants = [
+                        f"{kw} inurl:collections/all",
+                        f"{kw} inurl:collections/all - page 123",
+                        f"{kw} inurl:collections/all - page 88",
+                    ]
 
                 all_raw_urls = []
                 variant_results = {}  # 存储每个变体的结果
@@ -736,6 +741,7 @@ class DataScraperModule:
                 "category": category,
                 "search_query": store.get("search_query", ""),
                 "source": store.get("source", "google_search"),
+                "filter_status": "unfiltered",
                 "updated_at": ts,
             }
 
@@ -783,6 +789,7 @@ class DataScraperModule:
                         "category": store.get("category", ""),
                         "search_query": store.get("search_query", ""),
                         "source": store.get("source", "google_search"),
+                        "filter_status": "unfiltered",
                         "updated_at": ts,
                     }, "$setOnInsert": {
                         "domain": store["domain"],

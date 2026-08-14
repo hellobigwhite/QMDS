@@ -2,19 +2,25 @@
 {% block content %}
 <div class="card">
     <h2>📤 数据导出</h2>
-    <p class="text-muted mb-4">导出 <code>{category}_clean</code> 中的清洗后数据为Excel文件。</p>
+    <p class="text-muted mb-4">导出 <code>{category}__{subcategory}</code> 集合中 clean_status=cleaned 且 export_status=unexported 的数据为Excel文件，导出后标记 export_status=exported。</p>
 </div>
 
 <div class="card">
     <h2>导出配置</h2>
     <form method="POST" action="/product-data/export">
-        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+        <input type="hidden" id="merge_export_input" name="merge_export" value="0">
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px;">
             <div>
-                <label for="export_category">选择类目</label>
+                <label for="export_category">一级分类</label>
                 <select id="export_category" name="category" style="width:100%;" required>
-                    <option value="">加载中...</option>
+                    <option value="">请选择一级分类</option>
                 </select>
-                <small id="category-loading" class="text-muted">正在加载类目列表...</small>
+            </div>
+            <div id="subcategory-field">
+                <label for="export_subcategory">二级分类</label>
+                <select id="export_subcategory" name="subcategory" style="width:100%;" required>
+                    <option value="">请先选择一级分类</option>
+                </select>
             </div>
             <div>
                 <label for="export_limit">导出数量</label>
@@ -27,15 +33,50 @@
                 </select>
             </div>
         </div>
-        <button type="submit" class="btn btn-success">开始导出</button>
+        <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 12px;">
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;">
+                <input type="checkbox" id="merge_export_checkbox" style="width:16px; height:16px; cursor:pointer;">
+                <span>合并导出（将该一级分类下所有二级分类合并到一个Excel）</span>
+            </label>
+        </div>
+        <button type="submit" id="export_submit" class="btn btn-success">开始导出</button>
     </form>
 </div>
 
 <div class="card">
-    <h2>可导出类目</h2>
+    <h2>表格合并</h2>
+    <p class="text-muted mb-4">选择要合并的Excel文件，按标题去重后生成合并表格。</p>
+    <form id="mergeForm" method="POST" action="/product-data/merge">
+        <div style="display: grid; grid-template-columns: 1fr; gap: 12px; margin-bottom: 12px;">
+            <div>
+                <label for="merge_folder">选择文件夹</label>
+                <select id="merge_folder" name="folder" style="width:100%;" required>
+                    <option value="">请选择文件夹</option>
+                </select>
+            </div>
+        </div>
+        <div id="merge-files-container" style="display:none; margin-bottom: 12px;">
+            <label>选择要合并的文件</label>
+            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                <button type="button" class="btn btn-sm" onclick="selectAllFiles()">全选</button>
+                <button type="button" class="btn btn-sm" onclick="deselectAllFiles()">取消全选</button>
+            </div>
+            <div id="merge-files-list" style="max-height: 300px; overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px;">
+            </div>
+        </div>
+        <button type="submit" id="merge-submit" class="btn btn-success" disabled>开始合并</button>
+    </form>
+    <div id="merge-status" style="display:none; margin-top: 12px;">
+        <div class="loading-spinner" style="display:inline-block; vertical-align:middle; margin-right:8px;"></div>
+        <span id="merge-status-text">正在合并...</span>
+    </div>
+</div>
+
+<div class="card">
+    <h2>可导出分类</h2>
     <div id="table-loading" style="text-align:center; padding:20px;">
         <div class="loading-spinner"></div>
-        <p class="text-muted">正在加载类目统计...</p>
+        <p class="text-muted">正在加载分类统计...</p>
     </div>
     <div id="table-empty" style="display:none;">
         <p class="text-muted">暂无可导出的数据。请先使用数据爬取和清洗功能。</p>
@@ -47,8 +88,9 @@
         <table>
             <thead>
                 <tr>
-                    <th>类目</th>
-                    <th>清洗后数据 ({category}_clean)</th>
+                    <th>一级分类</th>
+                    <th>二级分类</th>
+                    <th>清洗后数据</th>
                     <th>已导出</th>
                     <th>操作</th>
                 </tr>
@@ -64,7 +106,7 @@
     <div class="detail-grid">
         <div class="detail-item">
             <div class="k">数据来源</div>
-            <div class="v"><code>qmds_product_data.{category}_clean</code> 集合中的清洗后商品数据</div>
+            <div class="v"><code>qmds_product_data.{category}__{subcategory}</code> 集合中 clean_status=cleaned 且 export_status=unexported 的商品数据</div>
         </div>
         <div class="detail-item">
             <div class="k">导出格式</div>
@@ -72,11 +114,11 @@
         </div>
         <div class="detail-item">
             <div class="k">存储位置</div>
-            <div class="v"><code>Data/exports/</code> 目录下</div>
+            <div class="v"><code>Data/exports/{日期}/</code> 目录下</div>
         </div>
         <div class="detail-item">
             <div class="k">文件命名</div>
-            <div class="v"><code>{category}_clean_{timestamp}.xlsx</code></div>
+            <div class="v"><code>{category}__{subcategory}_{产品数}.xlsx</code></div>
         </div>
     </div>
 </div>
@@ -95,11 +137,50 @@
     0% { transform: rotate(0deg); }
     100% { transform: rotate(360deg); }
 }
+.btn-sm {
+    padding: 4px 10px;
+    font-size: 13px;
+    border-radius: 6px;
+    background: #e5e7eb;
+    color: #374151;
+    border: none;
+    cursor: pointer;
+}
+.btn-sm:hover {
+    background: #d1d5db;
+}
+.merge-file-checkbox {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}
 </style>
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     loadCategoryStats();
+
+    // 合并导出复选框切换
+    var mergeCheckbox = document.getElementById('merge_export_checkbox');
+    var mergeInput = document.getElementById('merge_export_input');
+    var subcatField = document.getElementById('subcategory-field');
+    var subSelect = document.getElementById('export_subcategory');
+    var exportSubmit = document.getElementById('export_submit');
+
+    mergeCheckbox.addEventListener('change', function() {
+        if (this.checked) {
+            mergeInput.value = '1';
+            subcatField.style.display = 'none';
+            subSelect.value = '__all__';
+            subSelect.required = false;
+            exportSubmit.textContent = '开始合并导出';
+        } else {
+            mergeInput.value = '0';
+            subcatField.style.display = '';
+            subSelect.required = true;
+            exportSubmit.textContent = '开始导出';
+        }
+    });
 });
 
 function loadCategoryStats() {
@@ -119,81 +200,117 @@ function loadCategoryStats() {
 }
 
 function renderCategoryStats(categories) {
-    // 更新下拉列表
-    var select = document.getElementById('export_category');
-    var loadingHint = document.getElementById('category-loading');
-    loadingHint.style.display = 'none';
-    
-    // 清除加载提示
-    select.innerHTML = '<option value="">请选择类目</option>';
-    
-    // 添加类目选项
+    var catSelect = document.getElementById('export_category');
+    var subSelect = document.getElementById('export_subcategory');
+
+    catSelect.innerHTML = '<option value="">请选择一级分类</option>';
+
+    // 收集一级分类（去重，只保留有 clean 数据的）
+    var catMap = {};
     categories.forEach(function(catStat) {
         if (catStat.clean_count > 0) {
-            var option = document.createElement('option');
-            option.value = catStat.category;
-            option.textContent = catStat.category + ' (' + catStat.clean_count + ' 条，已导出 ' + (catStat.exported_count || 0) + ')';
-            select.appendChild(option);
+            if (!catMap[catStat.category]) {
+                catMap[catStat.category] = [];
+            }
+            catMap[catStat.category].push(catStat);
         }
     });
-    
+
+    Object.keys(catMap).sort().forEach(function(cat) {
+        var option = document.createElement('option');
+        option.value = cat;
+        option.textContent = cat;
+        catSelect.appendChild(option);
+    });
+
+    // 一级分类变化时更新二级分类下拉框
+    catSelect.onchange = function() {
+        var selectedCat = this.value;
+        subSelect.innerHTML = '';
+        if (!selectedCat) {
+            var opt = document.createElement('option');
+            opt.value = '';
+            opt.textContent = '请先选择一级分类';
+            subSelect.appendChild(opt);
+            return;
+        }
+        var subs = catMap[selectedCat] || [];
+        // 添加"全部"选项
+        var allOpt = document.createElement('option');
+        allOpt.value = '__all__';
+        allOpt.textContent = '全部 (' + subs.reduce(function(sum, s) { return sum + s.clean_count; }, 0) + ' 条)';
+        subSelect.appendChild(allOpt);
+        subs.forEach(function(catStat) {
+            var opt = document.createElement('option');
+            opt.value = catStat.subcategory;
+            opt.textContent = catStat.subcategory + ' (' + catStat.clean_count + ' 条，已导出 ' + (catStat.exported_count || 0) + ')';
+            subSelect.appendChild(opt);
+        });
+    };
+
     // 更新表格
     document.getElementById('table-loading').style.display = 'none';
-    
+
     if (categories.length === 0) {
         document.getElementById('table-empty').style.display = 'block';
         return;
     }
-    
+
     var tbody = document.getElementById('stats-tbody');
     tbody.innerHTML = '';
-    
+
     categories.forEach(function(catStat) {
         var tr = document.createElement('tr');
-        
-        // 类目名称
-        var tdCategory = document.createElement('td');
-        tdCategory.textContent = catStat.category;
-        tr.appendChild(tdCategory);
-        
-        // 清洗后数据数量
+
+        var tdCat = document.createElement('td');
+        tdCat.textContent = catStat.category;
+        tr.appendChild(tdCat);
+
+        var tdSub = document.createElement('td');
+        tdSub.textContent = catStat.subcategory;
+        tr.appendChild(tdSub);
+
         var tdClean = document.createElement('td');
         tdClean.textContent = catStat.clean_count;
         tr.appendChild(tdClean);
-        
-        // 已导出数量
+
         var tdExported = document.createElement('td');
         tdExported.textContent = catStat.exported_count || 0;
         tdExported.style.color = '#10b981';
         tdExported.style.fontWeight = '600';
         tr.appendChild(tdExported);
-        
-        // 操作
+
         var tdAction = document.createElement('td');
         if (catStat.clean_count > 0) {
             var form = document.createElement('form');
             form.method = 'POST';
             form.action = '/product-data/export';
             form.style.display = 'inline';
-            
-            var inputCategory = document.createElement('input');
-            inputCategory.type = 'hidden';
-            inputCategory.name = 'category';
-            inputCategory.value = catStat.category;
-            form.appendChild(inputCategory);
-            
+
+            var inputCat = document.createElement('input');
+            inputCat.type = 'hidden';
+            inputCat.name = 'category';
+            inputCat.value = catStat.category;
+            form.appendChild(inputCat);
+
+            var inputSub = document.createElement('input');
+            inputSub.type = 'hidden';
+            inputSub.name = 'subcategory';
+            inputSub.value = catStat.subcategory;
+            form.appendChild(inputSub);
+
             var inputFormat = document.createElement('input');
             inputFormat.type = 'hidden';
             inputFormat.name = 'format';
             inputFormat.value = 'excel';
             form.appendChild(inputFormat);
-            
+
             var btn = document.createElement('button');
             btn.type = 'submit';
             btn.className = 'btn btn-sm btn-success';
             btn.textContent = '导出';
             form.appendChild(btn);
-            
+
             tdAction.appendChild(form);
         } else {
             var span = document.createElement('span');
@@ -202,20 +319,120 @@ function renderCategoryStats(categories) {
             tdAction.appendChild(span);
         }
         tr.appendChild(tdAction);
-        
+
         tbody.appendChild(tr);
     });
-    
+
     document.getElementById('table-content').style.display = 'block';
 }
 
 function showError() {
-    document.getElementById('category-loading').style.display = 'none';
     document.getElementById('table-loading').style.display = 'none';
     document.getElementById('table-error').style.display = 'block';
-    
+
     var select = document.getElementById('export_category');
     select.innerHTML = '<option value="">加载失败，请刷新</option>';
+}
+
+// 表格合并功能
+document.addEventListener('DOMContentLoaded', function() {
+    loadExportFolders();
+});
+
+function loadExportFolders() {
+    fetch('/api/product-data/export-folders')
+        .then(function(response) { return response.json(); })
+        .then(function(data) {
+            if (data.ok && data.data) {
+                var select = document.getElementById('merge_folder');
+                data.data.forEach(function(folder) {
+                    var option = document.createElement('option');
+                    option.value = folder.path;
+                    option.textContent = folder.name + ' (' + folder.file_count + ' 个文件)';
+                    select.appendChild(option);
+                });
+
+                select.onchange = function() {
+                    if (this.value) {
+                        loadFolderFiles(this.value);
+                    } else {
+                        document.getElementById('merge-files-container').style.display = 'none';
+                        document.getElementById('merge-submit').disabled = true;
+                    }
+                };
+            }
+        })
+        .catch(function(error) {
+            console.error('加载导出文件夹失败:', error);
+        });
+}
+
+function loadFolderFiles(folder) {
+    fetch('/api/product-data/export-files?folder=' + encodeURIComponent(folder))
+        .then(function(response) { return response.json(); })
+        .then(function(data) {
+            if (data.ok && data.data) {
+                var container = document.getElementById('merge-files-container');
+                var list = document.getElementById('merge-files-list');
+                list.innerHTML = '';
+
+                if (data.data.length === 0) {
+                    list.innerHTML = '<p class="text-muted">该文件夹没有Excel文件</p>';
+                    container.style.display = 'block';
+                    document.getElementById('merge-submit').disabled = true;
+                    return;
+                }
+
+                data.data.forEach(function(file) {
+                    var div = document.createElement('div');
+                    div.style.padding = '4px 0';
+
+                    var label = document.createElement('label');
+                    label.style.cursor = 'pointer';
+                    label.style.display = 'flex';
+                    label.style.alignItems = 'center';
+                    label.style.gap = '8px';
+
+                    var checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.name = 'files';
+                    checkbox.value = file.name;
+                    checkbox.className = 'merge-file-checkbox';
+                    checkbox.onchange = updateMergeButton;
+
+                    var span = document.createElement('span');
+                    span.textContent = file.name + ' (' + file.size_mb + ' MB)';
+
+                    label.appendChild(checkbox);
+                    label.appendChild(span);
+                    div.appendChild(label);
+                    list.appendChild(div);
+                });
+
+                container.style.display = 'block';
+                updateMergeButton();
+            }
+        })
+        .catch(function(error) {
+            console.error('加载文件列表失败:', error);
+        });
+}
+
+function selectAllFiles() {
+    var checkboxes = document.querySelectorAll('.merge-file-checkbox');
+    checkboxes.forEach(function(cb) { cb.checked = true; });
+    updateMergeButton();
+}
+
+function deselectAllFiles() {
+    var checkboxes = document.querySelectorAll('.merge-file-checkbox');
+    checkboxes.forEach(function(cb) { cb.checked = false; });
+    updateMergeButton();
+}
+
+function updateMergeButton() {
+    var checkboxes = document.querySelectorAll('.merge-file-checkbox:checked');
+    document.getElementById('merge-submit').disabled = checkboxes.length < 2;
 }
 </script>
 {% endblock %}

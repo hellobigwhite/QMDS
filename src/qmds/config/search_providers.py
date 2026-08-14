@@ -1,5 +1,7 @@
-"""统一搜索提供者管理 — 支持 BestProxy / SearchAPI / ScraperAPI / Crawlbase 多 key 轮换"""
+"""统一搜索提供者管理 — 支持 BestProxy / SearchAPI / ScraperAPI / Crawlbase / Exa 多 key 轮换"""
 
+import json
+import re
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -54,6 +56,20 @@ PROVIDER_CONFIGS = [
         name="bestproxy",
         keys_file="bestproxy_tokens.txt",
         base_url="https://scraper.bestproxy.com/v1/query",
+        method="POST",
+        timeout=90,
+    ),
+    ProviderConfig(
+        name="exa",
+        keys_file="exa_keys.txt",
+        base_url="https://api.exa.ai/search",
+        method="POST",
+        timeout=30,
+    ),
+    ProviderConfig(
+        name="brightdata",
+        keys_file="brightdata_keys.txt",
+        base_url="https://api.brightdata.com/request",
         method="POST",
         timeout=90,
     ),
@@ -312,10 +328,222 @@ class BestProxyProvider(SearchProvider):
             raise ScrapeProviderError(f"请求失败: {e}")
 
 
+# ── Exa ───────────────────────────────────────────────────
+
+class ExaProvider(SearchProvider):
+    """Exa AI 语义搜索引擎
+
+    与 Google 系 API 不同，Exa 通过自然语言查询发现网站，
+    适合搜索特定品类的 Shopify 店铺。
+
+    Exa /search 不支持 offset 分页，但支持 excludeDomains 参数。
+    本 provider 利用该参数实现"翻页"：每次调用将之前已返回的域名
+    加入排除列表，使 Exa 返回不重复的新结果，与参考文件
+    shopify_ai搜索 2.py 中 single_api_search 的策略一致。
+
+    传入的 query 若含 Google 运算符（inurl:/site:）会被自动清理。
+    """
+
+    # Google 搜索运算符清理：Exa 是语义搜索，不识别 inurl: 等语法
+    _GOOGLE_OPS = [
+        re.compile(r"inurl:\S+"),
+        re.compile(r"site:\S+"),
+        re.compile(r"-\s*page\s+\d+", re.IGNORECASE),
+        re.compile(r'"[^"]*"'),
+    ]
+
+    def __init__(self, config: ProviderConfig, key_pool: KeyPool):
+        super().__init__(config, key_pool)
+        # 跨页累积已返回的域名，用于 excludeDomains 实现去重翻页
+        self._seen_domains: set[str] = set()
+        self._lock = threading.Lock()
+
+    def search(self, query: str, page: int = 1) -> list[str]:
+        key = self.key_pool.get_key()
+        if not key:
+            return []
+
+        cleaned = self._clean_query(query)
+
+        # 取出当前已排除域名快照（线程安全）
+        with self._lock:
+            exclude_domains = list(self._seen_domains)
+
+        headers = {
+            "x-api-key": key,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        # Exa REST API 使用 camelCase（SDK 的 snake_case 会被自动转换）
+        payload: dict = {
+            "query": cleaned,
+            "numResults": 30,
+            "type": "auto",
+            "userLocation": "US",
+            "contents": {"highlights": True},
+        }
+        if exclude_domains:
+            payload["excludeDomains"] = exclude_domains
+
+        try:
+            resp = requests.post(
+                self.config.base_url, headers=headers, json=payload,
+                timeout=self.config.timeout,
+                proxies={"http": None, "https": None},
+            )
+            if resp.status_code in (401, 402, 403):
+                self.key_pool.mark_exhausted(key)
+                raise ScrapeProviderError(f"{resp.status_code} key 无效或额度用完")
+            if resp.status_code == 429:
+                time.sleep(3)
+                raise ScrapeProviderError("429 限速")
+            resp.raise_for_status()
+            data = resp.json()
+            urls = []
+            new_domains = []
+            seen = set()
+            for item in data.get("results", []):
+                link = str(item.get("url") or "").strip()
+                if link.startswith("http") and link not in seen:
+                    seen.add(link)
+                    urls.append(link.rstrip("/"))
+                    # 提取域名用于后续排除
+                    domain = self._extract_domain(link)
+                    if domain:
+                        new_domains.append(domain)
+
+            # 累积本页新域名到排除集合（线程安全）
+            if new_domains:
+                with self._lock:
+                    self._seen_domains.update(new_domains)
+
+            return urls
+        except requests.exceptions.RequestException as e:
+            raise ScrapeProviderError(f"请求失败: {e}")
+
+    @classmethod
+    def _clean_query(cls, query: str) -> str:
+        """清理 Google 搜索运算符，适配 Exa 语义搜索。
+
+        例如 "toy inurl:collections/all - page 123" -> "toy"
+        """
+        q = query
+        for pattern in cls._GOOGLE_OPS:
+            q = pattern.sub("", q)
+        q = " ".join(q.split())
+        return q.strip() or query.strip()
+
+    @staticmethod
+    def _extract_domain(url: str) -> str:
+        """从 URL 提取规范化域名（去掉 www. 前缀，小写）"""
+        try:
+            from urllib.parse import urlparse
+            host = urlparse(url).netloc.lower()
+            if host.startswith("www."):
+                host = host[4:]
+            return host
+        except Exception:
+            return ""
+
+
 # ── 异常 ──────────────────────────────────────────────────
 
 class ScrapeProviderError(Exception):
     pass
+
+
+# ── BrightData ────────────────────────────────────────────
+
+class BrightDataProvider(SearchProvider):
+    """BrightData SERP API
+
+    通过 BrightData 的 SERP API zone 抓取 Google 搜索结果。
+    key 文件每行格式为 `zone:token`（zone 在 BrightData 控制台创建，
+    token 为 API token），通过 "Bearer {token}" 鉴权，zone 写入请求体。
+
+    响应结构：外层 JSON 含 status_code/headers/body，body 为 JSON 字符串，
+    解析后 organic 数组的每项含 link 字段即搜索结果 URL。
+    分页通过 Google 的 &start=N 参数实现（每页 10 条）。
+    """
+
+    def _parse_key(self, key: str) -> tuple[str, str]:
+        """将 `zone:token` 拆分为 (zone, token)
+
+        兼容只填 token 的旧格式（此时使用默认 zone "serp_api"）。
+        """
+        if ":" in key:
+            zone, token = key.split(":", 1)
+            return zone.strip(), token.strip()
+        return "serp_api", key.strip()
+
+    def search(self, query: str, page: int = 1) -> list[str]:
+        key = self.key_pool.get_key()
+        if not key:
+            return []
+        zone, token = self._parse_key(key)
+
+        from urllib.parse import quote
+        start = (page - 1) * 10
+        google_url = f"https://www.google.com/search?q={quote(query)}"
+        if start > 0:
+            google_url += f"&start={start}"
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "zone": zone,
+            "url": google_url,
+            "format": "json",
+            "data_format": "parsed",
+        }
+
+        try:
+            resp = requests.post(
+                self.config.base_url, headers=headers, json=payload,
+                timeout=self.config.timeout,
+                proxies={"http": None, "https": None},
+            )
+            # BrightData 错误以 status_code 字段返回（HTTP 仍可能为 200）
+            try:
+                outer = resp.json()
+            except ValueError:
+                outer = {}
+
+            inner_status = outer.get("status_code") if isinstance(outer, dict) else None
+            brd_error = (outer.get("headers", {}) or {}).get("x-brd-error-code", "") if isinstance(outer, dict) else ""
+
+            if inner_status in (401, 402, 403) or "auth" in str(brd_error).lower():
+                self.key_pool.mark_exhausted(key)
+                raise ScrapeProviderError(f"{inner_status} key 无效或额度用完 ({brd_error})")
+            if inner_status == 429 or resp.status_code == 429:
+                time.sleep(3)
+                raise ScrapeProviderError("429 限速")
+            if inner_status in (500, 502, 504) or resp.status_code >= 500:
+                raise ScrapeProviderError(f"{inner_status or resp.status_code} 服务端错误 ({brd_error})")
+
+            resp.raise_for_status()
+
+            body = outer.get("body")
+            if isinstance(body, str):
+                body = json.loads(body)
+            if not isinstance(body, dict):
+                return []
+
+            urls = []
+            seen: set[str] = set()
+            for item in body.get("organic", []):
+                if not isinstance(item, dict):
+                    continue
+                link = str(item.get("url") or item.get("link") or "").strip()
+                if link.startswith("http") and link not in seen:
+                    seen.add(link)
+                    urls.append(link.rstrip("/"))
+            return urls
+        except requests.exceptions.RequestException as e:
+            raise ScrapeProviderError(f"请求失败: {e}")
+
 
 
 # ── 提供者工厂 ────────────────────────────────────────────
@@ -325,6 +553,8 @@ PROVIDER_CLASSES = {
     "searchapi": SearchAPIProvider,
     "crawlbase": CrawlbaseProvider,
     "bestproxy": BestProxyProvider,
+    "exa": ExaProvider,
+    "brightdata": BrightDataProvider,
 }
 
 

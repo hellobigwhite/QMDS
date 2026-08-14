@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <h2>📂 二级分类管理</h2>
+    <p class="text-muted mb-4">
+        查看各一级分类下的二级分类及其 filtered 数据量。集合命名规则: <code>{一级分类}__{二级分类}</code>
+    </p>
+</div>
+
+{% if error %}
+<div class="card" style="border-left: 4px solid #ef4444;">
+    <div class="error">{{ error }}</div>
+</div>
+{% endif %}
+
+{% if categories %}
+{% for cat, subs in categories %}
+<div class="card">
+    <h3>{{ cat }}</h3>
+    <div style="overflow-x:auto;">
+        <table>
+            <thead>
+                <tr>
+                    <th>二级分类</th>
+                    <th>集合前缀</th>
+                    <th>filtered 数据量</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for sub in subs %}
+                <tr>
+                    <td><strong>{{ sub.subcategory }}</strong></td>
+                    <td><code>{{ sub.prefix }}</code></td>
+                    <td>{{ sub.count }}</td>
+                    <td>
+                        <a href="/shopify/filter-categories?category={{ cat }}&subcategory={{ sub.subcategory }}" class="btn btn-sm btn-secondary">查看数据</a>
+                        <a href="/product-data/crawl?category={{ cat }}" class="btn btn-sm btn-primary">爬取</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endfor %}
+{% else %}
+<div class="card">
+    <p class="text-muted">暂无二级分类数据。请先使用"筛选精准类目"功能添加 collection URL。</p>
+</div>
+{% endif %}
+
+<div class="card">
+    <h2>说明</h2>
+    <div class="detail-grid">
+        <div class="detail-item">
+            <div class="k">集合命名规则</div>
+            <div class="v"><code>{一级分类}__{二级分类}</code>，双下划线分隔一级和二级分类</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">默认二级分类</div>
+            <div class="v">无二级分类的数据归入 <code>other</code> 集合</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">unfiltered 集合</div>
+            <div class="v">始终按一级分类存储（<code>{一级分类}</code> 集合，filter_status=unfiltered），不拆分二级</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">二级分类来源</div>
+            <div class="v">手动添加 URL 时指定、Excel 导入时指定、或自动筛选时归入 other</div>
+        </div>
+    </div>
+</div>
+{% endblock %}

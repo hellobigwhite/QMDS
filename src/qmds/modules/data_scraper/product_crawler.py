@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 import requests
 
 from qmds.config import settings
+from qmds.config.categories import normalize_subcategory
 from qmds.db.mongodb import MongoDBClient
 from qmds.db.product_db import ProductDBClient
 from qmds.modules.data_scraper.shopify_nav_parser import parse_navigation
@@ -24,7 +25,7 @@ log = get_logger("product_crawler")
 # 请求配置
 REQUEST_TIMEOUT = 25
 MAX_PAGE_LIMIT = 100
-MAX_EMPTY_PAGES = 3
+MAX_EMPTY_PAGES = 5
 PAGE_SLEEP_RANGE = (1.5, 3.5)
 SITE_COOLDOWN_RANGE = (6, 12)
 
@@ -106,6 +107,46 @@ def extract_prices(variants):
     return first_variant.get("compare_at_price", ""), first_variant.get("price", "")
 
 
+class ProxyServiceClient:
+    """代理服务客户端 - 通过代理服务接口请求目标URL"""
+
+    BASE_URL = "http://66.154.112.62:8000/fetch"
+    API_KEY = "change-me-please"
+    TIMEOUT = 90
+
+    def __init__(self):
+        self._success = 0
+        self._failure = 0
+
+    def fetch(self, target_url: str) -> Tuple[Optional[dict], int]:
+        """通过代理服务请求目标URL"""
+        params = {"key": self.API_KEY, "url": target_url}
+        try:
+            resp = requests.get(self.BASE_URL, params=params, timeout=self.TIMEOUT)
+            if resp.status_code == 200:
+                ct = resp.headers.get("Content-Type", "")
+                if "json" in ct.lower():
+                    self._success += 1
+                    return resp.json(), 200
+            self._failure += 1
+            log.warning(f"代理服务请求失败 {target_url} | HTTP {resp.status_code}")
+            return None, resp.status_code
+        except requests.exceptions.Timeout:
+            self._failure += 1
+            log.warning(f"代理服务超时 {target_url} | timeout={self.TIMEOUT}s")
+            return None, 0
+        except Exception as e:
+            self._failure += 1
+            log.warning(f"代理服务异常 {target_url}: {type(e).__name__}: {e}")
+            return None, 0
+
+    def log_stats(self):
+        """输出统计信息"""
+        total = self._success + self._failure
+        rate = (self._success / total * 100) if total > 0 else 0
+        log.info(f"代理服务统计: 成功={self._success}, 失败={self._failure}, 成功率={rate:.1f}%")
+
+
 class ProductCrawler:
     """产品数据爬取器"""
     
@@ -128,9 +169,12 @@ class ProductCrawler:
         
         # 代理管理（支持标记坏代理 + 冷却轮换）
         self.proxy_manager = proxy_manager
+        # 代理服务客户端（优先使用）
+        self.proxy_service = ProxyServiceClient()
     
     def close(self):
         """关闭会话释放资源"""
+        self.proxy_service.log_stats()
         if self.session:
             self.session.close()
     
@@ -146,7 +190,16 @@ class ProductCrawler:
             self.proxy_manager.mark_bad(proxy_dict, cooldown=cooldown)
     
     def fetch_json(self, url: str, timeout: int = REQUEST_TIMEOUT) -> Tuple[Optional[dict], int]:
-        """获取JSON数据（429自动换代理重试，全部失败后降级直连）"""
+        """获取JSON数据（优先代理服务 → 本地代理池 → 直连降级）"""
+        # 第一步：优先使用代理服务
+        data, status = self.proxy_service.fetch(url)
+        self.proxy_service.log_stats()
+        if status == 200 and data:
+            return data, status
+        # 代理服务失败后等待3秒，避免触发频率限制
+        time.sleep(3)
+
+        # 第二步：降级到本地代理池（3次尝试）
         last_status = 0
         for attempt in range(3):
             proxy = self.get_next_proxy()
@@ -201,7 +254,7 @@ class ProductCrawler:
                     return None, 0
             time.sleep(1)
 
-        # 3次代理全部失败，降级直连（不走代理）
+        # 第三步：直连降级（仅429时）
         if last_status == 429:
             try:
                 response = self.session.get(url, timeout=timeout)
@@ -227,20 +280,22 @@ class ProductCrawler:
         return ""
     
     def crawl_site(self, url: str, category: str, progress_callback=None,
-                   stop_event: threading.Event = None) -> Dict:
+                   stop_event: threading.Event = None, subcategory: str = "") -> Dict:
         """爬取单个站点的商品数据
         
         Args:
             url: 站点URL
-            category: 类目名称
+            category: 一级分类名称
             progress_callback: 进度回调函数
             stop_event: 停止信号事件（可选）
+            subcategory: 二级分类名称（空字符串归入 "other"）
             
         Returns:
             {"success": bool, "products": list, "count": int}
         """
         url = normalize_url(url)
         domain = get_domain(url)
+        subcategory_norm = normalize_subcategory(subcategory)
         
         try:
             if progress_callback:
@@ -283,8 +338,9 @@ class ProductCrawler:
             seen_unique_keys = set()
             page = 1
             empty_pages = 0
-            
-            while empty_pages < MAX_EMPTY_PAGES and page <= MAX_PAGE_LIMIT:
+            empty_saved_pages = 0
+
+            while empty_pages < MAX_EMPTY_PAGES and empty_saved_pages < MAX_EMPTY_PAGES and page <= MAX_PAGE_LIMIT:
                 if stop_event and stop_event.is_set():
                     log.info(f"[{domain}] 收到停止信号，已爬取 {len(all_products)} 件")
                     return {"success": True, "products": all_products, "count": len(all_products),
@@ -299,10 +355,11 @@ class ProductCrawler:
                 products = data.get("products", []) if isinstance(data, dict) else []
                 if not products:
                     empty_pages += 1
+                    empty_saved_pages += 1
                     page += 1
                     time.sleep(random.uniform(*PAGE_SLEEP_RANGE))
                     continue
-                
+
                 empty_pages = 0
                 page_products = []
                 
@@ -354,15 +411,27 @@ class ProductCrawler:
                         "source_url": url,
                         "source_domain": domain,
                         "source_category": category,
+                        "source_subcategory": subcategory_norm,
                         "crawl_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "unique_key": unique_key,
                     })
                 
                 all_products.extend(page_products)
-                
+
+                if not page_products:
+                    empty_saved_pages += 1
+                else:
+                    empty_saved_pages = 0
+
                 if progress_callback and page % 5 == 0:
                     progress_callback(f"[{domain}] 第{page}页: 累计{len(all_products)}件")
-                
+
+                if empty_saved_pages >= MAX_EMPTY_PAGES:
+                    if progress_callback:
+                        progress_callback(f"[{domain}] 连续{MAX_EMPTY_PAGES}页无有效商品，跳过该站点")
+                    log.info(f"[{domain}] 连续{MAX_EMPTY_PAGES}页无有效商品，跳过")
+                    break
+
                 page += 1
                 if stop_event and stop_event.is_set():
                     break
@@ -383,7 +452,7 @@ class ProductCrawler:
             log.error(f"[{domain}] 爬取异常: {e}")
             return {"success": False, "products": [], "count": 0, "error": str(e)}
     
-    def crawl_site_with_nav(self, url: str, category: str, progress_callback=None) -> Dict:
+    def crawl_site_with_nav(self, url: str, category: str, progress_callback=None, subcategory: str = "") -> Dict:
         """基于导航的深度爬取单个站点
 
         解析店铺导航栏获取分类结构，按集合逐类爬取商品数据。
@@ -391,14 +460,16 @@ class ProductCrawler:
 
         Args:
             url: 站点URL
-            category: 类目名称（来源类目，用于数据库存储）
+            category: 一级分类名称（来源类目，用于数据库存储）
             progress_callback: 进度回调函数
+            subcategory: 二级分类名称（空字符串归入 "other"，覆盖导航解析的 level2）
 
         Returns:
             {"success": bool, "products": list, "count": int, "collections": int}
         """
         url = normalize_url(url)
         domain = get_domain(url)
+        override_sub = normalize_subcategory(subcategory) if subcategory else ""
 
         try:
             if progress_callback:
@@ -449,8 +520,9 @@ class ProductCrawler:
                 collection_saved = 0
                 page = 1
                 empty_pages = 0
+                empty_saved_pages = 0
 
-                while empty_pages < MAX_EMPTY_PAGES and page <= MAX_PAGE_LIMIT:
+                while empty_pages < MAX_EMPTY_PAGES and empty_saved_pages < MAX_EMPTY_PAGES and page <= MAX_PAGE_LIMIT:
                     products_url = f"{url}/collections/{handle}/products.json?limit=200&page={page}"
                     data, code = self.fetch_json(products_url)
 
@@ -460,6 +532,7 @@ class ProductCrawler:
                     products = data.get("products", []) if isinstance(data, dict) else []
                     if not products:
                         empty_pages += 1
+                        empty_saved_pages += 1
                         page += 1
                         time.sleep(random.uniform(*PAGE_SLEEP_RANGE))
                         continue
@@ -515,13 +588,24 @@ class ProductCrawler:
                             "source_url": url,
                             "source_domain": domain,
                             "source_category": level1,
-                            "source_subcategory": level2,
+                            "source_subcategory": override_sub if override_sub else normalize_subcategory(level2),
                             "crawl_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                             "unique_key": unique_key,
                         })
 
                     all_products.extend(page_products)
                     collection_saved += len(page_products)
+
+                    if not page_products:
+                        empty_saved_pages += 1
+                    else:
+                        empty_saved_pages = 0
+
+                    if empty_saved_pages >= MAX_EMPTY_PAGES:
+                        if progress_callback:
+                            progress_callback(f"[{domain}] /{handle} 连续{MAX_EMPTY_PAGES}页无有效商品，跳过该集合")
+                        log.info(f"[{domain}] /{handle} 连续{MAX_EMPTY_PAGES}页无有效商品，跳过")
+                        break
 
                     page += 1
                     time.sleep(random.uniform(*PAGE_SLEEP_RANGE))
@@ -551,14 +635,24 @@ class ProductCrawler:
 
     def _crawl_single_site(self, url_doc: dict, category: str, site_index: int,
                            total_sites: int, progress_callback=None,
-                           stop_event: threading.Event = None) -> Dict:
-        """爬取单个站点的商品数据并保存（线程安全，每线程独立 crawler + db 实例）"""
+                           stop_event: threading.Event = None, subcategory: str = "") -> Dict:
+        """爬取单个站点的商品数据并保存（线程安全，每线程独立 crawler + db 实例）
+
+        Args:
+            url_doc: 包含 url 和 domain 的字典
+            category: 一级分类名称
+            site_index: 站点序号（用于日志）
+            total_sites: 总站点数
+            progress_callback: 进度回调函数
+            stop_event: 停止信号事件
+            subcategory: 二级分类名称（空字符串归入 "other"）
+        """
         url = url_doc.get("url", "")
         domain = url_doc.get("domain", "")
 
         if stop_event and stop_event.is_set():
             log.info(f"[{site_index}/{total_sites}] 跳过（已停止）: {domain}")
-            return {"success": False, "saved": 0, "url": url, "domain": domain, "error": "任务已停止"}
+            return {"success": False, "saved": 0, "url": url, "domain": domain, "error": "任务已停止", "stopped": True}
 
         crawler = create_crawler()
         product_db = ProductDBClient()
@@ -566,11 +660,11 @@ class ProductCrawler:
             if progress_callback:
                 progress_callback(f"[{site_index}/{total_sites}] 开始: {domain}")
 
-            result = crawler.crawl_site(url, category, progress_callback, stop_event=stop_event)
+            result = crawler.crawl_site(url, category, progress_callback, stop_event=stop_event, subcategory=subcategory)
 
             saved_count = 0
             if result["success"] and result["products"]:
-                saved_count = product_db.save_raw_products(category, result["products"])
+                saved_count = product_db.save_raw_products(category, subcategory, result["products"])
                 if progress_callback:
                     progress_callback(f"[{site_index}/{total_sites}] 保存 {saved_count} 件: {domain}")
 
@@ -583,6 +677,7 @@ class ProductCrawler:
                 "url": url,
                 "domain": domain,
                 "error": result.get("error"),
+                "stopped": False,
             }
         except Exception as e:
             if stop_event and stop_event.is_set():
@@ -591,27 +686,31 @@ class ProductCrawler:
                 log.error(f"[{site_index}/{total_sites}] 站点异常 {domain}: {e}")
             if progress_callback:
                 progress_callback(f"[{site_index}/{total_sites}] 失败: {domain} ({e})")
-            return {"success": False, "saved": 0, "url": url, "domain": domain, "error": str(e)}
+            return {"success": False, "saved": 0, "url": url, "domain": domain, "error": str(e), "stopped": bool(stop_event and stop_event.is_set())}
         finally:
             crawler.close()
             product_db.close()
 
-    def _move_filtered_to_crawled(self, source_db, category: str, crawled_domains: dict):
-        """将已爬取域名的所有集合URL从 {category}_filtered 移动到 {category}_crawled
+    def _mark_crawled(self, source_db, category: str, crawled_domains: dict, subcategory: str = ""):
+        """将已处理域名的 collection URL 在同一集合中标记 crawl_status（不再跨集合移动）
 
         Args:
             source_db: MongoDBClient 实例
-            category: 类目名称
+            category: 一级分类名称
             crawled_domains: {domain: {"products": int, "success": bool}, ...}
+                             success=False 表示爬取失败的域名（同样会被标记，避免反复重试）
+            subcategory: 二级分类名称（空字符串归入 "other"）
         """
         if not crawled_domains:
             return
         try:
-            filtered_col = source_db.filtered_col(category)
+            from qmds.db.mongodb import CRAWL_STATUS_CRAWLED, CRAWL_STATUS_FAILED
+            filtered_col = source_db.filtered_col(category, subcategory)
             domains = list(crawled_domains.keys())
+            # 查询这些域名的所有 collection URL 文档
             filtered_docs = list(filtered_col.find(
                 {"domain": {"$in": domains}},
-                {"url": 1, "_id": 0}
+                {"url": 1, "domain": 1, "_id": 0}
             ))
             if not filtered_docs:
                 return
@@ -625,37 +724,42 @@ class ProductCrawler:
                     "success": info.get("success", False),
                 })
             if url_crawl_info_list:
-                moved = source_db.move_to_crawled_batch(category, url_crawl_info_list)
-                log.info(f"[{category}] 已移动 {moved} 条集合URL到 {category}_crawled")
+                moved = source_db.move_to_crawled_batch(category, url_crawl_info_list, subcategory=subcategory)
+                log.info(f"[{category}/{subcategory or 'other'}] 已标记 {moved} 条集合URL为已爬取")
         except Exception as e:
-            log.error(f"[{category}] 移动URL到 _crawled 失败: {e}")
+            log.error(f"[{category}/{subcategory or 'other'}] 标记爬取状态失败: {e}")
 
-    def crawl_category(self, category: str, max_sites: int = 10, workers: int = 1,
-                       progress_callback=None, stop_event: threading.Event = None) -> Dict:
-        """爬取指定类目的商品数据（支持多线程并发）
+    def crawl_category(self, category: str, max_sites: int = 0, workers: int = 1,
+                       progress_callback=None, stop_event: threading.Event = None,
+                       subcategory: str = "") -> Dict:
+        """爬取指定分类的商品数据（支持多线程并发）
 
-        从数据库的 {category}_filtered 集合获取店铺URL，通过 products.json API 爬取商品。
+        从数据库的 {prefix} 集合获取 filter_status=filtered 且 crawl_status=uncrawled 的店铺URL，通过 products.json API 爬取商品。
         workers=1 时串行执行（与旧行为一致），workers>1 时使用线程池并发爬取。
         每个线程拥有独立的 ProductCrawler 实例（独立 Session + 代理）和 ProductDBClient 实例。
 
         Args:
-            category: 类目名称
-            max_sites: 最大爬取站点数
+            category: 一级分类名称
+            max_sites: 最大爬取站点数（0 表示不限制，爬取所有可用 URL）
             workers: 并发线程数（默认 1 串行）
             progress_callback: 进度回调函数
             stop_event: 停止信号事件（可选，传入后可即时停止所有线程）
+            subcategory: 二级分类名称（空字符串归入 "other"）
 
         Returns:
             {"total_sites": int, "success_sites": int, "total_products": int}
         """
-        # 从MongoDB获取_filtered集合中的店铺URL（去重）
+        subcategory_norm = normalize_subcategory(subcategory)
+        # 从MongoDB获取 {prefix} 集合中未爬取的 filtered URL（去重）
         source_db = MongoDBClient()
-        filtered_col = source_db.filtered_col(category)
+        filtered_col = source_db.filtered_col(category, subcategory_norm)
 
         # 获取去重后的店铺URL（优先用 store_url，回退到 url 的域名根路径）
+        # 只查询 filter_status=filtered 且 crawl_status=uncrawled 的文档
         seen_domains = set()
         store_urls = []
-        for doc in filtered_col.find({}, {"url": 1, "domain": 1, "store_url": 1, "_id": 0}):
+        query = {"filter_status": "filtered", "crawl_status": "uncrawled"}
+        for doc in filtered_col.find(query, {"url": 1, "domain": 1, "store_url": 1, "_id": 0}):
             domain = doc.get("domain", "")
             if not domain or domain in seen_domains:
                 continue
@@ -670,20 +774,21 @@ class ProductCrawler:
 
         if not store_urls:
             source_db.close()
-            log.warning(f"类目 {category} 无可用URL")
+            log.warning(f"分类 {category}/{subcategory_norm} 无可用URL")
             return {"total_sites": 0, "success_sites": 0, "total_products": 0, "error": "无可用URL"}
 
-        store_urls = store_urls[:max_sites]
+        if max_sites > 0:
+            store_urls = store_urls[:max_sites]
         total_sites = len(store_urls)
 
         # 预创建索引（共享，MongoDB 索引操作本身是幂等的）
         product_db = ProductDBClient()
-        product_db.ensure_product_indexes(category)
+        product_db.ensure_product_indexes(category, subcategory_norm)
         product_db.close()
 
-        log.info(f"开始爬取类目 {category}: {total_sites} 个站点, {workers} 线程")
+        log.info(f"开始爬取分类 {category}/{subcategory_norm}: {total_sites} 个站点, {workers} 线程")
         if progress_callback:
-            progress_callback(f"开始爬取: {total_sites} 个站点, {workers} 线程")
+            progress_callback(f"开始爬取: {category}/{subcategory_norm} - {total_sites} 个站点, {workers} 线程")
 
         # ── 串行模式 ──
         if workers <= 1:
@@ -692,18 +797,21 @@ class ProductCrawler:
             crawled_domains = {}
             for i, url_doc in enumerate(store_urls, 1):
                 if stop_event and stop_event.is_set():
-                    log.info(f"类目 {category}: 收到停止信号，已处理 {i-1}/{total_sites} 站点")
+                    log.info(f"分类 {category}/{subcategory_norm}: 收到停止信号，已处理 {i-1}/{total_sites} 站点")
                     break
                 result = self._crawl_single_site(url_doc, category, i, total_sites,
-                                                 progress_callback, stop_event=stop_event)
+                                                 progress_callback, stop_event=stop_event,
+                                                 subcategory=subcategory_norm)
                 if result["success"]:
                     success_sites += 1
                     total_products += result["saved"]
-                    crawled_domains[url_doc["domain"]] = {"products": result["saved"], "success": True}
+                # 被停止信号跳过的站点保留为 uncrawled，以便下次继续；其余（成功/失败）均标记为已爬取
+                if not result.get("stopped"):
+                    crawled_domains[url_doc["domain"]] = {"products": result["saved"], "success": result["success"]}
                 if i < total_sites and not (stop_event and stop_event.is_set()):
                     time.sleep(random.uniform(*SITE_COOLDOWN_RANGE))
 
-            self._move_filtered_to_crawled(source_db, category, crawled_domains)
+            self._mark_crawled(source_db, category, crawled_domains, subcategory=subcategory_norm)
             source_db.close()
 
             return {
@@ -721,12 +829,16 @@ class ProductCrawler:
         def _worker(idx: int, url_doc: dict) -> dict:
             nonlocal success_sites, total_products, crawled_domains
             result = self._crawl_single_site(url_doc, category, idx, total_sites,
-                                             progress_callback, stop_event=stop_event)
+                                             progress_callback, stop_event=stop_event,
+                                             subcategory=subcategory_norm)
             if result["success"]:
                 with lock:
                     success_sites += 1
                     total_products += result["saved"]
-                    crawled_domains[url_doc["domain"]] = {"products": result["saved"], "success": True}
+            # 被停止信号跳过的站点保留为 uncrawled；其余（成功/失败）均标记为已爬取
+            if not result.get("stopped"):
+                with lock:
+                    crawled_domains[url_doc["domain"]] = {"products": result["saved"], "success": result["success"]}
             return result
 
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="crawl_site") as executor:
@@ -741,17 +853,103 @@ class ProductCrawler:
                     url_doc = futures[future]
                     log.error(f"线程异常 {url_doc.get('domain', '')}: {e}")
 
-        self._move_filtered_to_crawled(source_db, category, crawled_domains)
+        self._mark_crawled(source_db, category, crawled_domains, subcategory=subcategory_norm)
         source_db.close()
 
-        log.info(f"类目 {category} 爬取完成: {success_sites}/{total_sites} 站点, {total_products} 件商品")
+        log.info(f"分类 {category}/{subcategory_norm} 爬取完成: {success_sites}/{total_sites} 站点, {total_products} 件商品")
         if progress_callback:
-            progress_callback(f"爬取完成: {success_sites}/{total_sites} 站点, {total_products} 件商品")
+            progress_callback(f"爬取完成: {category}/{subcategory_norm} - {success_sites}/{total_sites} 站点, {total_products} 件商品")
 
         return {
             "total_sites": total_sites,
             "success_sites": success_sites,
             "total_products": total_products,
+        }
+
+    def crawl_category_all_subcategories(self, category: str, max_sites: int = 0,
+                                         workers: int = 1, progress_callback=None,
+                                         stop_event: threading.Event = None) -> Dict:
+        """爬取一级分类下所有二级分类的商品数据
+
+        从 MongoDB 动态获取该一级分类下所有有 filtered 数据的二级分类，
+        依次调用 crawl_category() 爬取每个二级分类，汇总结果。
+
+        Args:
+            category: 一级分类名称
+            max_sites: 每个二级分类最大爬取站点数（0 表示不限制）
+            workers: 并发线程数（默认 1 串行）
+            progress_callback: 进度回调函数
+            stop_event: 停止信号事件（可选）
+
+        Returns:
+            {"total_subcategories": int, "total_sites": int,
+             "success_sites": int, "total_products": int}
+        """
+        source_db = MongoDBClient()
+        try:
+            subcategories = source_db.list_filtered_subcategories(category)
+        finally:
+            source_db.close()
+
+        if not subcategories:
+            log.warning(f"一级分类 {category} 无可用二级分类")
+            if progress_callback:
+                progress_callback(f"一级分类 {category} 无可用二级分类")
+            return {
+                "total_subcategories": 0,
+                "total_sites": 0,
+                "success_sites": 0,
+                "total_products": 0,
+                "error": "无可用二级分类",
+            }
+
+        log.info(f"开始爬取一级分类 {category}: 共 {len(subcategories)} 个二级分类")
+        if progress_callback:
+            progress_callback(f"开始爬取一级分类 {category}: 共 {len(subcategories)} 个二级分类")
+
+        grand_total_sites = 0
+        grand_success_sites = 0
+        grand_total_products = 0
+
+        for idx, sub in enumerate(subcategories, 1):
+            if stop_event and stop_event.is_set():
+                log.info(f"一级分类 {category}: 收到停止信号，已完成 {idx - 1}/{len(subcategories)} 个二级分类")
+                if progress_callback:
+                    progress_callback(f"已停止: 完成 {idx - 1}/{len(subcategories)} 个二级分类")
+                break
+
+            sub_display = sub if sub else "other"
+            if progress_callback:
+                progress_callback(f"[{idx}/{len(subcategories)}] 开始爬取二级分类: {category}/{sub_display}")
+
+            result = self.crawl_category(
+                category, max_sites=max_sites, workers=workers,
+                progress_callback=progress_callback, stop_event=stop_event,
+                subcategory=sub,
+            )
+
+            grand_total_sites += result.get("total_sites", 0)
+            grand_success_sites += result.get("success_sites", 0)
+            grand_total_products += result.get("total_products", 0)
+
+            if progress_callback:
+                progress_callback(
+                    f"[{idx}/{len(subcategories)}] 二级分类 {category}/{sub_display} 完成: "
+                    f"成功 {result.get('success_sites', 0)}/{result.get('total_sites', 0)} 站点, "
+                    f"{result.get('total_products', 0)} 件商品"
+                )
+
+        summary = (f"一级分类 {category} 爬取完成: {len(subcategories)} 个二级分类, "
+                   f"{grand_success_sites}/{grand_total_sites} 站点, {grand_total_products} 件商品")
+        log.info(summary)
+        if progress_callback:
+            progress_callback(summary)
+
+        return {
+            "total_subcategories": len(subcategories),
+            "total_sites": grand_total_sites,
+            "success_sites": grand_success_sites,
+            "total_products": grand_total_products,
         }
 
 

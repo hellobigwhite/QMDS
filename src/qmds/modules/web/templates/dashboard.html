@@ -1,41 +1,81 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="grid-3 mb-4">
-    <div class="stat-card">
-        <div class="icon">🔍</div>
-        <div class="value">4</div>
-        <div class="label">可执行操作</div>
+<div class="card">
+    <h2>📊 系统概览</h2>
+    <div id="stats-loading" class="grid-4 mb-4">
+        <div class="stat-card"><div class="skeleton skeleton-number"></div><div class="skeleton skeleton-text" style="width:60%;margin:4px auto 0;"></div></div>
+        <div class="stat-card"><div class="skeleton skeleton-number"></div><div class="skeleton skeleton-text" style="width:60%;margin:4px auto 0;"></div></div>
+        <div class="stat-card"><div class="skeleton skeleton-number"></div><div class="skeleton skeleton-text" style="width:60%;margin:4px auto 0;"></div></div>
+        <div class="stat-card"><div class="skeleton skeleton-number"></div><div class="skeleton skeleton-text" style="width:60%;margin:4px auto 0;"></div></div>
     </div>
-    <div class="stat-card">
-        <div class="icon">🛒</div>
-        <div class="value">Shopify</div>
-        <div class="label">主要目标平台</div>
-    </div>
-    <div class="stat-card">
-        <div class="icon">⚡</div>
-        <div class="value">Pipeline</div>
-        <div class="label">端到端流水线</div>
+    <div id="stats-grid" class="grid-4 mb-4" style="display:none;">
+        <div class="stat-card stat-card-blue">
+            <div class="icon">🛒</div>
+            <div class="value" id="stat-stores">-</div>
+            <div class="label">Shopify 店铺</div>
+            <div class="trend" id="stat-stores-detail"></div>
+        </div>
+        <div class="stat-card stat-card-green">
+            <div class="icon">📦</div>
+            <div class="value" id="stat-products">-</div>
+            <div class="label">清洗后商品</div>
+            <div class="trend" id="stat-products-detail"></div>
+        </div>
+        <div class="stat-card stat-card-purple">
+            <div class="icon">🌐</div>
+            <div class="value" id="stat-sites">-</div>
+            <div class="label">站点总数</div>
+            <div class="trend" id="stat-sites-detail"></div>
+        </div>
+        <div class="stat-card stat-card-orange">
+            <div class="icon">⚡</div>
+            <div class="value" id="stat-tasks">-</div>
+            <div class="label">运行中任务</div>
+            <div class="trend" id="stat-tasks-detail"></div>
+        </div>
     </div>
 </div>
 
 <div class="grid-2">
     <div class="card">
-        <h2>快捷操作</h2>
+        <h2>🚀 快捷操作</h2>
         <div style="display:flex;flex-direction:column;gap:10px;">
-            <a href="/discover" class="btn btn-primary">发现 Shopify 店铺</a>
-            <a href="/detect" class="btn btn-info">检测电商平台</a>
-            <a href="/extract" class="btn btn-success">提取商品数据</a>
-            <a href="/pipeline" class="btn btn-primary">运行完整流水线</a>
+            <a href="/shopify/fetch-urls" class="btn btn-primary">🔗 获取 Shopify 店铺 URL</a>
+            <a href="/shopify/filter-categories" class="btn btn-info">🔍 筛选精准类目</a>
+            <a href="/product-data/crawl" class="btn btn-success">🕷️ 爬取商品数据</a>
+            <a href="/product-data/clean" class="btn btn-warning">🧹 数据清洗</a>
+            <a href="/product-data/export" class="btn btn-success">📤 数据导出</a>
+            <a href="/tasks" class="btn btn-secondary">📋 查看任务中心</a>
         </div>
     </div>
+
     <div class="card">
-        <h2>关于 QMDS</h2>
-        <p class="text-muted" style="margin-bottom:12px;">QMDS - 模块化数据管理系统</p>
-        <div class="result-box">
-            <div class="stat-row"><span class="stat-label">版本</span><span class="stat-value">0.1.0</span></div>
-            <div class="stat-row"><span class="stat-label">运行环境</span><span class="stat-value">Python 3.12+</span></div>
-            <div class="stat-row"><span class="stat-label">数据库</span><span class="stat-value">MongoDB</span></div>
-            <div class="stat-row"><span class="stat-label">已安装模块</span><span class="stat-value">data_scraper, web</span></div>
+        <h2>📊 数据分布</h2>
+        <div class="grid-2" style="gap:16px;">
+            <div>
+                <h3 style="font-size:14px;color:#666;margin-bottom:8px;">站点状态</h3>
+                <div class="chart-container-sm"><canvas id="sitesChart"></canvas></div>
+            </div>
+            <div>
+                <h3 style="font-size:14px;color:#666;margin-bottom:8px;">商品数据</h3>
+                <div class="chart-container-sm"><canvas id="productsChart"></canvas></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="grid-2">
+    <div class="card">
+        <h2>📋 近期任务</h2>
+        <div id="recent-tasks">
+            <p class="text-muted">加载中...</p>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>📊 集合计数</h2>
+        <div id="collection-counts">
+            <p class="text-muted">加载中...</p>
         </div>
     </div>
 </div>
@@ -43,26 +83,191 @@
 <div class="card">
     <h2>工作流程</h2>
     <div style="display:flex;gap:12px;flex-wrap:wrap;">
-        <div style="flex:1;min-width:150px;padding:16px;background:#e3f2fd;border-radius:8px;text-align:center;">
-            <div style="font-size:24px;margin-bottom:4px;">1</div>
+        <div style="flex:1;min-width:120px;padding:16px;background:#e3f2fd;border-radius:8px;text-align:center;">
+            <div style="font-size:20px;margin-bottom:4px;">🔍</div>
             <strong>发现店铺</strong>
-            <div class="text-muted">通过 Google 搜索发现 Shopify 店铺</div>
+            <div class="text-muted" id="flow-discover">Google 搜索</div>
         </div>
-        <div style="flex:1;min-width:150px;padding:16px;background:#e8f5e9;border-radius:8px;text-align:center;">
-            <div style="font-size:24px;margin-bottom:4px;">2</div>
+        <div style="flex:1;min-width:120px;padding:16px;background:#e8f5e9;border-radius:8px;text-align:center;">
+            <div style="font-size:20px;margin-bottom:4px;">🔎</div>
             <strong>检测平台</strong>
-            <div class="text-muted">识别目标使用的电商平台</div>
+            <div class="text-muted" id="flow-detect">Shopify 识别</div>
         </div>
-        <div style="flex:1;min-width:150px;padding:16px;background:#fff3e0;border-radius:8px;text-align:center;">
-            <div style="font-size:24px;margin-bottom:4px;">3</div>
-            <strong>提取商品</strong>
-            <div class="text-muted">抓取 Shopify 商品数据</div>
+        <div style="flex:1;min-width:120px;padding:16px;background:#fff3e0;border-radius:8px;text-align:center;">
+            <div style="font-size:20px;margin-bottom:4px;">📦</div>
+            <strong>爬取商品</strong>
+            <div class="text-muted" id="flow-crawl">products.json</div>
         </div>
-        <div style="flex:1;min-width:150px;padding:16px;background:#fce4ec;border-radius:8px;text-align:center;">
-            <div style="font-size:24px;margin-bottom:4px;">4</div>
-            <strong>过滤清洗</strong>
-            <div class="text-muted">数据清理与验证</div>
+        <div style="flex:1;min-width:120px;padding:16px;background:#fce4ec;border-radius:8px;text-align:center;">
+            <div style="font-size:20px;margin-bottom:4px;">🧹</div>
+            <strong>数据清洗</strong>
+            <div class="text-muted" id="flow-clean">过滤无效数据</div>
+        </div>
+        <div style="flex:1;min-width:120px;padding:16px;background:#f3e5f5;border-radius:8px;text-align:center;">
+            <div style="font-size:20px;margin-bottom:4px;">📤</div>
+            <strong>导出数据</strong>
+            <div class="text-muted" id="flow-export">Excel 输出</div>
+        </div>
+        <div style="flex:1;min-width:120px;padding:16px;background:#e0f2f1;border-radius:8px;text-align:center;">
+            <div style="font-size:20px;margin-bottom:4px;">🌐</div>
+            <strong>建站上线</strong>
+            <div class="text-muted" id="flow-build">ERP 建站</div>
         </div>
     </div>
 </div>
+
+<script>
+const chartColors = ['#2196f3','#4caf50','#ff9800','#f44336','#9c27b0','#00bcd4','#795548','#607d8b'];
+let sitesChartInstance = null;
+let productsChartInstance = null;
+
+function loadDashboardStats() {
+    fetch('/api/dashboard/stats')
+        .then(r => r.json())
+        .then(data => {
+            if (!data.ok) return;
+            const s = data.data;
+            document.getElementById('stats-loading').style.display = 'none';
+            document.getElementById('stats-grid').style.display = '';
+            document.getElementById('stat-stores').textContent = s.shopify_stores || 0;
+            document.getElementById('stat-stores-detail').textContent = `${s.shopify_categories || 0} 个类目`;
+            document.getElementById('stat-products').textContent = s.products_clean || 0;
+            document.getElementById('stat-products-detail').textContent = `原始 ${s.products_raw || 0}`;
+            document.getElementById('stat-sites').textContent = s.sites_total || 0;
+            document.getElementById('stat-sites-detail').textContent = `本地 ${s.sites_local || 0} | 已报 ${s.sites_reported || 0}`;
+            document.getElementById('stat-tasks').textContent = s.tasks_running || 0;
+            document.getElementById('stat-tasks-detail').textContent = `完成 ${s.tasks_completed || 0} | 失败 ${s.tasks_failed || 0}`;
+
+            // Sites pie chart
+            const sitesCtx = document.getElementById('sitesChart').getContext('2d');
+            if (sitesChartInstance) sitesChartInstance.destroy();
+            sitesChartInstance = new Chart(sitesCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['本地', '已报', '已建站'],
+                    datasets: [{ data: [s.sites_local||0, s.sites_reported||0, s.sites_built||0], backgroundColor: ['#2196f3','#4caf50','#ff9800'] }]
+                },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 12 } } } }
+            });
+
+            // Products bar chart
+            const prodCtx = document.getElementById('productsChart').getContext('2d');
+            if (productsChartInstance) productsChartInstance.destroy();
+            productsChartInstance = new Chart(prodCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['清洗后', '已导出', '原始(其他)'],
+                    datasets: [{ data: [s.products_clean||0, s.products_exported||0, Math.max(0,(s.products_raw||0)-(s.products_clean||0))], backgroundColor: ['#4caf50','#9c27b0','#e0e0e0'] }]
+                },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 12 } } } }
+            });
+        })
+        .catch(() => {
+            document.getElementById('stats-loading').innerHTML = '<p class="text-muted">统计数据加载失败</p>';
+        });
+}
+
+function loadRecentTasks() {
+    fetch('/api/tasks')
+        .then(r => r.json())
+        .then(tasks => {
+            const container = document.getElementById('recent-tasks');
+            if (!tasks || tasks.length === 0) {
+                container.innerHTML = '<p class="text-muted">暂无任务记录</p>';
+                return;
+            }
+            let html = '<table><thead><tr><th>任务</th><th>状态</th><th>进度</th><th>时间</th></tr></thead><tbody>';
+            tasks.slice(0, 8).forEach(t => {
+                const statusColors = {running:'#2196f3',completed:'#4caf50',failed:'#f44336',stopped:'#ff9800',stopping:'#ff9800'};
+                const statusLabels = {running:'运行中',completed:'已完成',failed:'失败',stopped:'已停止',stopping:'停止中'};
+                const color = statusColors[t.status] || '#999';
+                const label = statusLabels[t.status] || t.status;
+                const progress = t.total > 0 ? `${t.current}/${t.total}` : (t.progress > 0 ? `${t.progress}%` : '-');
+                html += `<tr>
+                    <td><strong>${t.action}</strong><br><span class="text-muted">${t.target||''}</span></td>
+                    <td><span style="color:${color};font-weight:600;">${label}</span></td>
+                    <td>${progress}</td>
+                    <td class="text-muted">${(t.created_at||'').slice(11,19)}</td>
+                </tr>`;
+            });
+            html += '</tbody></table>';
+            container.innerHTML = html;
+        })
+        .catch(() => { document.getElementById('recent-tasks').innerHTML = '<p class="text-muted">加载失败</p>'; });
+}
+
+function loadApiStatus() {
+    const container = document.getElementById('api-status');
+    container.innerHTML = '<p class="text-muted">API 状态需要在 Shopify 页面查看</p>';
+}
+
+function loadCollectionCounts() {
+    fetch('/api/collection-counts')
+        .then(r => r.json())
+        .then(data => {
+            if (!data.ok) return;
+            const d = data.data;
+            const container = document.getElementById('collection-counts');
+            let html = '<div style="font-size:13px;">';
+
+            const sections = [
+                {key: 'unfiltered', label: '未筛选', color: '#2196f3'},
+                {key: 'filtered', label: '已筛选', color: '#4caf50'},
+                {key: 'filtered_failed', label: '筛选失败', color: '#f44336'},
+                {key: 'comprehensive', label: '综合站', color: '#ff9800'},
+                {key: 'info', label: '网站信息缓存', color: '#9c27b0'},
+            ];
+
+            sections.forEach(s => {
+                const items = d[s.key] || [];
+                const total = items.reduce((sum, c) => sum + (c.total || 0), 0);
+                if (total > 0) {
+                    html += `<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #f0f0f0;">
+                        <span style="color:${s.color};font-weight:600;">${s.label}</span>
+                        <span>${total.toLocaleString()}</span>
+                    </div>`;
+                }
+            });
+
+            // product counts from a separate call if available
+            html += '</div>';
+            container.innerHTML = html;
+        })
+        .catch(() => { document.getElementById('collection-counts').innerHTML = '<p class="text-muted">加载失败</p>'; });
+}
+
+loadDashboardStats();
+loadRecentTasks();
+loadApiStatus();
+loadCollectionCounts();
+
+let dashboardTimer = null;
+let dashboardVisible = true;
+
+document.addEventListener('visibilitychange', () => {
+    dashboardVisible = !document.hidden;
+    if (dashboardVisible) {
+        loadDashboardStats();
+        loadRecentTasks();
+        loadCollectionCounts();
+        scheduleDashboardRefresh();
+    } else if (dashboardTimer) {
+        clearTimeout(dashboardTimer);
+        dashboardTimer = null;
+    }
+});
+
+function scheduleDashboardRefresh() {
+    if (dashboardTimer) clearTimeout(dashboardTimer);
+    dashboardTimer = setTimeout(() => {
+        if (dashboardVisible) {
+            loadDashboardStats();
+            loadRecentTasks();
+            loadCollectionCounts();
+            scheduleDashboardRefresh();
+        }
+    }, 30000);
+}
+scheduleDashboardRefresh();
+</script>
 {% endblock %}

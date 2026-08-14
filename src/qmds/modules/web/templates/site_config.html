@@ -68,20 +68,35 @@
 
     <div class="card">
         <h2>极速AI 配置</h2>
-        <p class="text-muted mb-4">用于批量生成图片功能（Banner和Icon）。</p>
-        <div class="grid-2">
-            <div>
-                <label>极速AI API密钥</label>
-                <input type="password" name="jisuai_api_key" value="{{ '.' * (settings.jisuai_api_key|default('')|length) if settings.jisuai_api_key|default('') else '' }}"
-                       placeholder="从 jisuai.top 获取的 API Key">
-                <small style="color:#666;font-size:12px;">用于生成Banner和Icon，<a href="https://jisuai.top" target="_blank">获取API Key</a></small>
-            </div>
-            <div>
-                <label>Icon专用API密钥（可选）</label>
-                <input type="password" name="jisuai_icon_api_key" value="{{ '.' * (settings.jisuai_icon_api_key|default('')|length) if settings.jisuai_icon_api_key|default('') else '' }}"
-                       placeholder="留空则使用主密钥">
-                <small style="color:#666;font-size:12px;">可为Icon生成单独配置API密钥</small>
-            </div>
+        <p class="text-muted mb-4">用于批量生成图片功能（Banner和Icon）。每行一个API Key，# 开头为注释（额度用完的key会自动注释，下次运行自动跳过）。</p>
+        <div>
+            <label>极速AI API密钥（jisuai_api_keys.txt）</label>
+            <textarea name="jisuai_api_keys" rows="10" style="width:100%;font-family:monospace;"
+                      placeholder="每行一个API Key&#10;# 开头为注释（额度用完）&#10;报错时自动切换下一个">{{ settings.jisuai_api_keys|default('') }}</textarea>
+            <small style="color:#666;font-size:12px;">用于生成Banner和Icon，<a href="https://jisuai.top" target="_blank">获取API Key</a>。额度用完的key会自动注释，下次运行从有额度的key开始使用。</small>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>火山方舟（豆包）配置</h2>
+        <p class="text-muted mb-4">用于批量生成图片功能（豆包 Seedream 文生图模型）。在「批量生成图片」页面选择豆包模型时使用。</p>
+        <div>
+            <label>火山方舟 ARK API Key</label>
+            <input type="text" name="ark_api_key" value="{{ settings.ark_api_key|default('') }}"
+                   placeholder="ark-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                   autocomplete="off">
+            <small style="color:#666;font-size:12px;">从 <a href="https://console.volcengine.com/ark" target="_blank">火山方舟控制台</a> 获取 API Key。用于调用豆包 Seedream 文生图模型。</small>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>AI 菜单配置</h2>
+        <p class="text-muted mb-4">用于AI构建菜单功能。每行一个API Key，# 开头为注释。多Key自动轮换，支持多线程调用。</p>
+        <div>
+            <label>菜单AI API密钥（menu_ai_api_keys.txt）</label>
+            <textarea name="menu_ai_api_keys" rows="10" style="width:100%;font-family:monospace;"
+                      placeholder="每行一个API Key&#10;# 开头为注释&#10;多Key自动轮换">{{ settings.menu_ai_api_keys|default('') }}</textarea>
+            <small style="color:#666;font-size:12px;">用于AI构建菜单功能，与站点分类的AI Key相互独立。</small>
         </div>
     </div>
 

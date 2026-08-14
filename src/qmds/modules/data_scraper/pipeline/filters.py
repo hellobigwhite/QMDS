@@ -42,7 +42,6 @@ PROHIBITED_KEYWORDS = [
     
     # 其他违禁
     "tobacco", "cigarette", "cigarettes", "cigar", "vape", "e-cigarette",
-    "alcohol", "beer", "wine", "whiskey", "vodka",
     "lock pick", "lockpick", "spy camera", "hidden camera", "wiretap",
     "human growth hormone", "hgh", "dnp", "2,4-dinitrophenol",
 ]

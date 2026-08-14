@@ -1,10 +1,9 @@
-"""将 {category}_clean 中已导出的数据移至 {category}_export 集合
+"""[已废弃] 将 {category}_clean 中已导出的数据移至 {category}_export 集合
 
-迁移条件: clean 集合中 export_count > 0 的文档
+此脚本用于旧版本（三后缀集合模式）的迁移。
+当前版本已采用单一集合模式（clean_status/export_status 字段区分状态），此脚本保留仅供历史参考。
 
-用法:
-    python scripts/migrate_exported_data.py              # dry-run 预览
-    python scripts/migrate_exported_data.py --execute     # 实际执行
+迁移条件（旧）: clean 集合中 export_count > 0 的文档
 """
 
 import argparse

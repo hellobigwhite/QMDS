@@ -2,18 +2,25 @@
 {% block content %}
 <div class="card">
     <h2>🧹 数据清洗</h2>
-    <p class="text-muted mb-4">清洗 <code>{category}_raw</code> 中的原始数据，清洗后保存到 <code>{category}_clean</code>。清洗规则：过滤无效数据、违禁词处理、数据标准化。</p>
+    <p class="text-muted mb-4">清洗 <code>{category}__{subcategory}</code> 集合中 clean_status=unclean 的原始数据，通过后更新为 clean_status=cleaned/failed（同集合内）。清洗规则：过滤无效数据、违禁词处理、数据标准化。</p>
 </div>
 
 <div class="card">
     <h2>清洗配置</h2>
     <form method="POST" action="/product-data/clean">
-        <div style="margin-bottom: 12px;">
-            <label for="clean_category">选择类目</label>
-            <select id="clean_category" name="category" style="width:100%;">
-                <option value="__all__">全部类目</option>
-            </select>
-            <small id="category-loading" class="text-muted">正在加载类目列表...</small>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+            <div>
+                <label for="clean_category">一级分类</label>
+                <select id="clean_category" name="category" style="width:100%;">
+                    <option value="__all__">全部一级分类</option>
+                </select>
+            </div>
+            <div>
+                <label for="clean_subcategory">二级分类</label>
+                <select id="clean_subcategory" name="subcategory" style="width:100%;">
+                    <option value="__all__">全部二级分类</option>
+                </select>
+            </div>
         </div>
         <div style="margin-bottom: 12px;">
             <label>
@@ -25,7 +32,17 @@
 </div>
 
 <div class="card">
-    <h2>类目数据统计</h2>
+    <h2>分类数据统计</h2>
+    <div id="task-banner" style="display:none; padding:10px 14px; margin-bottom:12px; border-radius:8px; background:#e3f2fd; border-left:4px solid #2196f3;">
+        <div style="display:flex; align-items:center; gap:10px;">
+            <div class="loading-spinner" style="width:18px; height:18px; border-width:2px; margin:0;"></div>
+            <div>
+                <strong id="task-banner-title">正在清洗...</strong>
+                <div class="text-muted" id="task-banner-detail" style="font-size:13px;"></div>
+            </div>
+            <div style="margin-left:auto; font-size:12px; color:#666;" id="task-banner-poll"></div>
+        </div>
+    </div>
     <div id="stats-loading" style="padding: 20px; text-align: center;">
         <div class="loading-spinner"></div>
         <p class="text-muted" style="margin-top: 8px;">正在加载统计数据...</p>
@@ -35,9 +52,10 @@
             <table>
                 <thead>
                     <tr>
-                        <th>类目</th>
-                        <th>原始数据 ({category}_raw)</th>
-                        <th>清洗后数据 ({category}_clean)</th>
+                        <th>一级分类</th>
+                        <th>二级分类</th>
+                        <th>原始数据</th>
+                        <th>清洗后数据</th>
                         <th>操作</th>
                     </tr>
                 </thead>
@@ -59,7 +77,7 @@
     <div class="detail-grid">
         <div class="detail-item">
             <div class="k">数据来源</div>
-            <div class="v"><code>qmds_product_data.{category}_raw</code> 集合中的原始商品数据</div>
+            <div class="v"><code>qmds_product_data.{category}__{subcategory}</code> 集合中 clean_status=unclean 的原始商品数据</div>
         </div>
         <div class="detail-item">
             <div class="k">清洗规则</div>
@@ -67,7 +85,7 @@
         </div>
         <div class="detail-item">
             <div class="k">存储位置</div>
-            <div class="v"><code>qmds_product_data.{category}_clean</code> 集合</div>
+            <div class="v">同一集合 <code>{category}__{subcategory}</code>，更新 clean_status 字段为 cleaned/failed</div>
         </div>
         <div class="detail-item">
             <div class="k">清洗效果</div>
@@ -76,6 +94,10 @@
         <div class="detail-item">
             <div class="k">清洗状态</div>
             <div class="v"><code>clean_status</code> 字段记录清洗状态：unclean（未清洗）、cleaned（已清洗）、failed（清洗失败）</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">二级分类</div>
+            <div class="v">无二级分类的数据归入 "other" 集合</div>
         </div>
     </div>
 </div>
@@ -99,122 +121,253 @@
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     loadStats();
+    // 启动轮询：检测任务状态并刷新统计
+    startPolling();
 });
 
-function loadStats() {
-    // 显示加载状态
-    document.getElementById('stats-loading').style.display = 'block';
-    document.getElementById('stats-content').style.display = 'none';
-    document.getElementById('stats-empty').style.display = 'none';
-    document.getElementById('stats-error').style.display = 'none';
+var POLL_FAST = 3000;   // 有运行中清洗任务时的轮询间隔
+var POLL_SLOW = 15000;  // 空闲时的轮询间隔
+var pollTimer = null;
+var currentPollInterval = POLL_SLOW;
+var lastStatsData = null;
 
-    fetch('/api/product-data/simple-stats')
+document.addEventListener('visibilitychange', function() {
+    if (!document.hidden) {
+        pollOnce();
+    } else if (pollTimer) {
+        clearTimeout(pollTimer);
+        pollTimer = null;
+    }
+});
+
+function startPolling() {
+    if (pollTimer) clearTimeout(pollTimer);
+    pollTimer = setTimeout(pollOnce, currentPollInterval);
+}
+
+function pollOnce() {
+    if (document.hidden) return;
+    checkTasksAndRefresh().finally(function() {
+        // 按当前节奏继续下一次轮询
+        if (pollTimer) clearTimeout(pollTimer);
+        if (!document.hidden) {
+            pollTimer = setTimeout(pollOnce, currentPollInterval);
+        }
+    });
+}
+
+// 检查是否有运行中的清洗/删除任务，并刷新统计
+function checkTasksAndRefresh() {
+    return fetch('/api/tasks')
+        .then(function(r) { return r.json(); })
+        .then(function(tasks) {
+            var cleanTasks = (tasks || []).filter(function(t) {
+                return t.action === 'clean_products' || t.action === 'delete_cleaned_raw';
+            });
+            var running = cleanTasks.filter(function(t) { return t.status === 'running'; });
+            var stopping = cleanTasks.filter(function(t) { return t.status === 'stopping'; });
+
+            var banner = document.getElementById('task-banner');
+            if (running.length > 0 || stopping.length > 0) {
+                var t = running[0] || stopping[0];
+                showTaskBanner(t, stopping.length > 0);
+                currentPollInterval = POLL_FAST;  // 任务运行时加快轮询
+                // 收集所有运行中清洗任务的目标，用于行高亮
+                var targets = {};
+                running.forEach(function(rt) {
+                    if (rt.target) targets[rt.target] = true;
+                });
+                window._activeCleanTargets = targets;
+            } else {
+                hideTaskBanner();
+                window._activeCleanTargets = {};
+                // 若刚结束（从快节奏切回慢节奏），立即刷新一次以拿到最终数据
+                if (currentPollInterval === POLL_FAST) {
+                    currentPollInterval = POLL_SLOW;
+                    return loadStats(true);
+                }
+                currentPollInterval = POLL_SLOW;
+            }
+            // 任务运行中也刷新统计
+            return loadStats(true);
+        })
+        .catch(function() {
+            currentPollInterval = POLL_SLOW;
+        });
+}
+
+function showTaskBanner(task, isStopping) {
+    var banner = document.getElementById('task-banner');
+    var title = document.getElementById('task-banner-title');
+    var detail = document.getElementById('task-banner-detail');
+    var pollInfo = document.getElementById('task-banner-poll');
+    var actionLabel = task.action === 'delete_cleaned_raw' ? '删除已清洗' : '清洗';
+    title.textContent = isStopping ? '正在停止...' : ('正在' + actionLabel + '...');
+    detail.textContent = (task.target || '') + (task.message ? ' · ' + task.message : '');
+    pollInfo.textContent = '每 ' + (POLL_FAST / 1000) + 's 刷新';
+    banner.style.display = 'block';
+}
+
+function hideTaskBanner() {
+    document.getElementById('task-banner').style.display = 'none';
+}
+
+function loadStats(silent) {
+    if (!silent) {
+        document.getElementById('stats-loading').style.display = 'block';
+        document.getElementById('stats-content').style.display = 'none';
+        document.getElementById('stats-empty').style.display = 'none';
+        document.getElementById('stats-error').style.display = 'none';
+    }
+
+    return fetch('/api/product-data/simple-stats')
         .then(response => response.json())
         .then(data => {
             if (data.ok && data.data) {
+                lastStatsData = data.data;
                 renderStats(data.data);
-            } else {
+            } else if (!silent) {
                 showError();
             }
         })
         .catch(error => {
             console.error('加载统计数据失败:', error);
-            showError();
+            if (!silent) showError();
         });
 }
 
 function renderStats(stats) {
     document.getElementById('stats-loading').style.display = 'none';
 
-    const categories = stats.categories || [];
+    var categories = stats.categories || [];
 
     if (categories.length === 0) {
         document.getElementById('stats-empty').style.display = 'block';
         return;
     }
 
-    // 更新类目选择下拉框
-    const select = document.getElementById('clean_category');
-    const loadingHint = document.getElementById('category-loading');
-    loadingHint.style.display = 'none';
-
-    // 清除现有选项（保留"全部类目"）
-    while (select.options.length > 1) {
-        select.remove(1);
+    // 更新一级分类选择下拉框
+    var catSelect = document.getElementById('clean_category');
+    var subSelect = document.getElementById('clean_subcategory');
+    // 保留 "全部一级分类" 选项
+    while (catSelect.options.length > 1) {
+        catSelect.remove(1);
     }
 
-    // 添加类目选项
+    // 收集一级分类（去重）
+    var catSet = {};
     categories.forEach(function(catStat) {
-        const option = document.createElement('option');
-        option.value = catStat.category;
-        option.textContent = catStat.category + ' (原始: ' + catStat.raw_count + ', 清洗后: ' + catStat.clean_count + ')';
-        select.appendChild(option);
+        catSet[catStat.category] = true;
     });
 
+    Object.keys(catSet).sort().forEach(function(cat) {
+        var option = document.createElement('option');
+        option.value = cat;
+        option.textContent = cat;
+        catSelect.appendChild(option);
+    });
+
+    // 一级分类变化时更新二级分类下拉框
+    catSelect.onchange = function() {
+        var selectedCat = this.value;
+        while (subSelect.options.length > 1) {
+            subSelect.remove(1);
+        }
+        if (selectedCat === '__all__') return;
+        categories.forEach(function(catStat) {
+            if (catStat.category === selectedCat) {
+                var opt = document.createElement('option');
+                opt.value = catStat.subcategory;
+                opt.textContent = catStat.subcategory + ' (原始: ' + catStat.raw_count + ', 清洗后: ' + catStat.clean_count + ')';
+                subSelect.appendChild(opt);
+            }
+        });
+    };
+
     // 渲染统计表格
-    const tbody = document.getElementById('stats-tbody');
+    var tbody = document.getElementById('stats-tbody');
     tbody.innerHTML = '';
 
+    // 获取当前运行中的清洗任务目标，用于行高亮
+    var activeTargets = (window._activeCleanTargets || {});
+
     categories.forEach(function(catStat) {
-        const tr = document.createElement('tr');
+        var tr = document.createElement('tr');
 
-        // 类目名称
-        const tdCategory = document.createElement('td');
-        tdCategory.textContent = catStat.category;
-        tr.appendChild(tdCategory);
+        // 若该分类正在被清洗，高亮该行
+        var rowKey = catStat.category + '/' + catStat.subcategory;
+        var allCatKey = catStat.category + '/all';
+        if (activeTargets[rowKey] || activeTargets[allCatKey] || activeTargets['__all__/all']) {
+            tr.style.background = '#fffde7';
+        }
 
-        // 原始数据
-        const tdRaw = document.createElement('td');
+        var tdCat = document.createElement('td');
+        tdCat.textContent = catStat.category;
+        tr.appendChild(tdCat);
+
+        var tdSub = document.createElement('td');
+        tdSub.textContent = catStat.subcategory;
+        tr.appendChild(tdSub);
+
+        var tdRaw = document.createElement('td');
         tdRaw.textContent = catStat.raw_count || 0;
         tr.appendChild(tdRaw);
 
-        // 清洗后数据
-        const tdClean = document.createElement('td');
+        var tdClean = document.createElement('td');
         tdClean.textContent = catStat.clean_count || 0;
         tr.appendChild(tdClean);
 
-        // 操作
-        const tdAction = document.createElement('td');
-        const actionDiv = document.createElement('div');
+        var tdAction = document.createElement('td');
+        var actionDiv = document.createElement('div');
         actionDiv.style.display = 'flex';
         actionDiv.style.gap = '4px';
 
         // 清洗按钮
-        const cleanForm = document.createElement('form');
+        var cleanForm = document.createElement('form');
         cleanForm.method = 'POST';
         cleanForm.action = '/product-data/clean';
         cleanForm.style.display = 'inline';
-        const cleanInput = document.createElement('input');
-        cleanInput.type = 'hidden';
-        cleanInput.name = 'category';
-        cleanInput.value = catStat.category;
-        cleanForm.appendChild(cleanInput);
-        const cleanBtn = document.createElement('button');
+        var cleanInputCat = document.createElement('input');
+        cleanInputCat.type = 'hidden';
+        cleanInputCat.name = 'category';
+        cleanInputCat.value = catStat.category;
+        cleanForm.appendChild(cleanInputCat);
+        var cleanInputSub = document.createElement('input');
+        cleanInputSub.type = 'hidden';
+        cleanInputSub.name = 'subcategory';
+        cleanInputSub.value = catStat.subcategory;
+        cleanForm.appendChild(cleanInputSub);
+        var cleanBtn = document.createElement('button');
         cleanBtn.type = 'submit';
         cleanBtn.className = 'btn btn-sm btn-warning';
         cleanBtn.textContent = '清洗';
         cleanBtn.onclick = function() {
-            return confirm('确定要清洗 ' + catStat.category + ' 的数据吗？');
+            return confirm('确定要清洗 ' + catStat.category + '/' + catStat.subcategory + ' 的数据吗？');
         };
         cleanForm.appendChild(cleanBtn);
         actionDiv.appendChild(cleanForm);
 
         // 删除已清洗数据按钮
-        const deleteForm = document.createElement('form');
+        var deleteForm = document.createElement('form');
         deleteForm.method = 'POST';
         deleteForm.action = '/product-data/delete-cleaned-raw';
         deleteForm.style.display = 'inline';
-        const deleteInput = document.createElement('input');
-        deleteInput.type = 'hidden';
-        deleteInput.name = 'category';
-        deleteInput.value = catStat.category;
-        deleteForm.appendChild(deleteInput);
-        const deleteBtn = document.createElement('button');
+        var deleteInputCat = document.createElement('input');
+        deleteInputCat.type = 'hidden';
+        deleteInputCat.name = 'category';
+        deleteInputCat.value = catStat.category;
+        deleteForm.appendChild(deleteInputCat);
+        var deleteInputSub = document.createElement('input');
+        deleteInputSub.type = 'hidden';
+        deleteInputSub.name = 'subcategory';
+        deleteInputSub.value = catStat.subcategory;
+        deleteForm.appendChild(deleteInputSub);
+        var deleteBtn = document.createElement('button');
         deleteBtn.type = 'submit';
         deleteBtn.className = 'btn btn-sm btn-danger';
         deleteBtn.textContent = '删除已清洗';
         deleteBtn.onclick = function() {
-            return confirm('确定要从 ' + catStat.category + '_raw 中删除已清洗和清洗失败的数据吗？此操作不可恢复！');
+            return confirm('确定要从 ' + catStat.category + '__' + catStat.subcategory + ' 中删除已清洗和清洗失败的数据吗？此操作不可恢复！');
         };
         deleteForm.appendChild(deleteBtn);
         actionDiv.appendChild(deleteForm);
@@ -231,7 +384,6 @@ function renderStats(stats) {
 function showError() {
     document.getElementById('stats-loading').style.display = 'none';
     document.getElementById('stats-error').style.display = 'block';
-    document.getElementById('category-loading').textContent = '加载失败，请刷新页面重试';
 }
 </script>
 {% endblock %}

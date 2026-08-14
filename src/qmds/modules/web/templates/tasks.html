@@ -1,344 +1,241 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="card">
-    <h2>任务历史</h2>
-    <p class="text-muted mb-4">最近的流水线和爬取任务记录。</p>
-    {% if tasks %}
-    <div class="task-list">
-        {% for task in tasks %}
-        <div class="task-card" id="task-{{ task.id }}">
-            <div class="task-header">
-                <div class="task-info">
-                    <span class="task-id">{{ task.id[:8] }}...</span>
-                    <span class="task-action">{{ task.action }}</span>
-                    <span class="task-target text-muted">{{ task.target }}</span>
-                </div>
-                <div class="task-status">
-                    {% if task.status == 'running' %}
-                    <span class="status-badge status-running">运行中</span>
-                    {% elif task.status == 'stopping' %}
-                    <span class="status-badge status-stopping">停止中</span>
-                    {% elif task.status == 'stopped' %}
-                    <span class="status-badge status-stopped">已停止</span>
-                    {% elif task.status == 'completed' %}
-                    <span class="status-badge status-completed">已完成</span>
-                    {% else %}
-                    <span class="status-badge status-failed">{{ task.status }}</span>
-                    {% endif %}
-                </div>
-            </div>
-            
-            <div class="task-details">
-                <div class="task-progress">
-                    {% if task.total > 0 %}
-                    <span>进度: {{ task.current }}/{{ task.total }}</span>
-                    {% elif task.progress > 0 %}
-                    <span>进度: {{ task.progress }}%</span>
-                    {% else %}
-                    <span>进度: -</span>
-                    {% endif %}
-                </div>
-                <div class="task-message">
-                    {% if task.status == 'running' %}
-                    <span style="color:#2196f3;">{{ task.message|default('-') }}</span>
-                    {% elif task.status == 'completed' %}
-                    <span style="color:#4caf50;">{{ task.message|default('-') }}</span>
-                    {% elif task.status == 'failed' %}
-                    <span style="color:#c62828;">{{ task.message|default('-') }}</span>
-                    {% else %}
-                    <span style="color:#999;">{{ task.message|default('-') }}</span>
-                    {% endif %}
-                </div>
-                <div class="task-time text-muted">{{ task.created_at[:19] }}</div>
-                <div class="task-actions">
-                    {% if task.status == 'running' %}
-                    <button class="btn btn-sm btn-danger stop-task-btn" data-task-id="{{ task.id }}" onclick="stopTask('{{ task.id }}')">停止</button>
-                    {% endif %}
-                    <button class="btn btn-sm btn-info toggle-logs-btn" data-task-id="{{ task.id }}" onclick="toggleLogs('{{ task.id }}')">查看日志</button>
-                </div>
-            </div>
-            
-            <div class="task-logs" id="logs-{{ task.id }}" style="display: none;">
-                <div class="logs-header">
-                    <span>任务日志</span>
-                    <button class="btn btn-sm btn-secondary refresh-logs-btn" onclick="refreshLogs('{{ task.id }}')">刷新</button>
-                </div>
-                <div class="logs-content" id="logs-content-{{ task.id }}">
-                    <div class="logs-loading">加载中...</div>
-                </div>
-            </div>
+    <div class="flex-between mb-4">
+        <h2>任务中心</h2>
+        <div class="flex gap-2">
+            <span class="text-muted" id="task-counts"></span>
+            <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;">
+                <input type="checkbox" id="auto-refresh" checked onchange="toggleAutoRefresh()"> 自动刷新
+            </label>
         </div>
-        {% endfor %}
     </div>
-    {% else %}
-    <p class="text-muted">暂无任务记录，运行流水线后将会在此显示。</p>
-    {% endif %}
+
+    <div class="flex gap-2 mb-4" style="flex-wrap:wrap;">
+        <button class="btn btn-sm btn-secondary" onclick="filterTasks('all')">全部</button>
+        <button class="btn btn-sm btn-info" onclick="filterTasks('running')">运行中</button>
+        <button class="btn btn-sm btn-success" onclick="filterTasks('completed')">已完成</button>
+        <button class="btn btn-sm btn-danger" onclick="filterTasks('failed')">失败</button>
+        <button class="btn btn-sm btn-warning" onclick="filterTasks('stopped')">已停止</button>
+    </div>
+
+    <div id="task-list">
+        <p class="text-muted">加载中...</p>
+    </div>
+</div>
+
+<div class="card" id="log-panel" style="display:none; margin-top:16px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+        <h3 style="margin:0; border-left:3px solid #4fc3f7; padding-left:10px; font-size:16px;">
+            日志 — <span id="log-panel-title" style="color:#888; font-weight:normal; font-size:13px;"></span>
+        </h3>
+        <button class="btn btn-sm btn-secondary" onclick="closeLogPanel()">关闭</button>
+    </div>
+    <div class="logs-content" id="log-panel-content" style="min-height:120px;">暂无日志</div>
 </div>
 
 <style>
-.task-list {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-}
-
-.task-card {
-    border: 1px solid #e0e0e0;
-    border-radius: 8px;
-    padding: 16px;
-    background: #fff;
-}
-
-.task-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 12px;
-}
-
-.task-info {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-}
-
-.task-id {
-    font-family: monospace;
-    font-size: 12px;
-    color: #666;
-    background: #f5f5f5;
-    padding: 2px 8px;
-    border-radius: 4px;
-}
-
-.task-action {
-    font-weight: 600;
-    color: #1a1a2e;
-}
-
-.task-target {
-    font-size: 14px;
-}
-
-.status-badge {
-    padding: 4px 12px;
-    border-radius: 12px;
-    font-size: 12px;
-    font-weight: 600;
-}
-
-.status-running {
-    background: #e3f2fd;
-    color: #2196f3;
-}
-
-.status-stopping {
-    background: #fff3e0;
-    color: #ff9800;
-}
-
-.status-stopped {
-    background: #fff3e0;
-    color: #ff9800;
-}
-
-.status-completed {
-    background: #e8f5e9;
-    color: #4caf50;
-}
-
-.status-failed {
-    background: #ffebee;
-    color: #c62828;
-}
-
-.task-details {
-    display: grid;
-    grid-template-columns: 1fr 2fr 1fr auto;
-    gap: 16px;
-    align-items: center;
-    padding: 12px 0;
-    border-top: 1px solid #f0f0f0;
-}
-
-.task-progress {
-    font-size: 14px;
-}
-
-.task-message {
-    font-size: 14px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.task-time {
-    font-size: 12px;
-}
-
-.task-actions {
-    display: flex;
-    gap: 8px;
-}
-
-.task-logs {
-    margin-top: 12px;
-    border-top: 1px solid #f0f0f0;
-    padding-top: 12px;
-}
-
-.logs-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 8px;
-    font-weight: 600;
-    color: #333;
-}
-
-.logs-content {
-    background: #1e1e1e;
-    border-radius: 6px;
-    padding: 12px;
-    max-height: 300px;
-    overflow-y: auto;
-    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-    font-size: 12px;
-    line-height: 1.5;
-}
-
-.logs-loading {
-    color: #888;
-    text-align: center;
-    padding: 20px;
-}
-
-.log-entry {
-    margin-bottom: 4px;
-    padding: 2px 0;
-}
-
-.log-time {
-    color: #6a9955;
-    margin-right: 8px;
-}
-
-.log-level {
-    margin-right: 8px;
-    font-weight: 600;
-}
-
-.log-level-info {
-    color: #569cd6;
-}
-
-.log-level-warning {
-    color: #dcdcaa;
-}
-
-.log-level-error {
-    color: #f44747;
-}
-
-.log-message {
-    color: #d4d4d4;
-}
+.task-card { border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; margin-bottom: 12px; background: #fff; transition: border-color .2s; }
+.task-card:hover { border-color: #4fc3f7; }
+.task-card.running { border-left: 4px solid #2196f3; }
+.task-card.completed { border-left: 4px solid #4caf50; }
+.task-card.failed { border-left: 4px solid #f44336; }
+.task-card.stopped, .task-card.stopping { border-left: 4px solid #ff9800; }
+.task-card.log-active { border-color: #4fc3f7; box-shadow: 0 0 0 1px #4fc3f7; }
+.task-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.task-info { display: flex; align-items: center; gap: 12px; }
+.task-id { font-family: monospace; font-size: 12px; color: #666; background: #f5f5f5; padding: 2px 8px; border-radius: 4px; }
+.task-action { font-weight: 600; color: #1a1a2e; }
+.task-meta { display: grid; grid-template-columns: 1fr 2fr 1fr auto; gap: 12px; align-items: center; padding-top: 8px; border-top: 1px solid #f0f0f0; margin-top: 8px; }
+.task-message { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.status-badge { padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+.status-running { background: #e3f2fd; color: #2196f3; }
+.status-stopping { background: #fff3e0; color: #ff9800; }
+.status-stopped { background: #fff3e0; color: #ff9800; }
+.status-completed { background: #e8f5e9; color: #4caf50; }
+.status-failed { background: #ffebee; color: #c62828; }
+.logs-content { background: #1e1e1e; border-radius: 6px; padding: 12px; max-height: 400px; overflow-y: auto; font-family: 'Consolas','Monaco','Courier New',monospace; font-size: 12px; line-height: 1.5; }
+.log-entry { margin-bottom: 2px; }
+.log-time { color: #6a9955; margin-right: 8px; }
+.log-level { margin-right: 8px; font-weight: 600; }
+.log-level-info { color: #569cd6; }
+.log-level-warning { color: #dcdcaa; }
+.log-level-error { color: #f44747; }
+.log-message { color: #d4d4d4; }
 </style>
 
 <script>
-function stopTask(taskId) {
-    if (!confirm('确定要停止此任务吗？')) {
-        return;
+let autoRefreshTimer = null;
+let currentFilter = 'all';
+let allTasks = [];
+let selectedTaskId = null;
+let selectedTaskLabel = '';
+let isPageVisible = true;
+
+document.addEventListener('visibilitychange', () => {
+    isPageVisible = !document.hidden;
+    if (isPageVisible) {
+        loadTasks();
+        scheduleNextRefresh();
+    } else if (autoRefreshTimer) {
+        clearTimeout(autoRefreshTimer);
+        autoRefreshTimer = null;
     }
-    
-    fetch(`/api/tasks/${taskId}/stop`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.ok) {
-            const btn = document.querySelector(`[data-task-id="${taskId}"].stop-task-btn`);
-            if (btn) {
-                btn.disabled = true;
-                btn.textContent = '停止中...';
-            }
-            setTimeout(() => {
-                location.reload();
-            }, 1000);
-        } else {
-            alert('停止任务失败: ' + (data.error || '未知错误'));
-        }
-    })
-    .catch(error => {
-        alert('请求失败: ' + error);
-    });
+});
+
+function toggleAutoRefresh() {
+    const checked = document.getElementById('auto-refresh').checked;
+    if (checked) startAutoRefresh(); else stopAutoRefresh();
 }
 
-function toggleLogs(taskId) {
-    const logsDiv = document.getElementById(`logs-${taskId}`);
-    const btn = document.querySelector(`[data-task-id="${taskId}"].toggle-logs-btn`);
-    
-    if (logsDiv.style.display === 'none') {
-        logsDiv.style.display = 'block';
-        btn.textContent = '隐藏日志';
-        loadLogs(taskId);
-    } else {
-        logsDiv.style.display = 'none';
-        btn.textContent = '查看日志';
-    }
+function startAutoRefresh() {
+    if (autoRefreshTimer) return;
+    scheduleNextRefresh();
 }
 
-function loadLogs(taskId) {
-    const contentDiv = document.getElementById(`logs-content-${taskId}`);
-    contentDiv.innerHTML = '<div class="logs-loading">加载中...</div>';
-    
-    fetch(`/api/tasks/${taskId}/logs`)
-        .then(response => response.json())
-        .then(data => {
-            if (data.ok) {
-                renderLogs(taskId, data.logs);
-            } else {
-                contentDiv.innerHTML = '<div class="logs-loading" style="color: #f44747;">加载失败</div>';
-            }
+function stopAutoRefresh() {
+    if (autoRefreshTimer) { clearTimeout(autoRefreshTimer); autoRefreshTimer = null; }
+}
+
+function scheduleNextRefresh() {
+    if (autoRefreshTimer) clearTimeout(autoRefreshTimer);
+    const hasRunning = allTasks.some(t => t.status === 'running' || t.status === 'stopping');
+    const interval = hasRunning ? 3000 : 15000;
+    autoRefreshTimer = setTimeout(() => {
+        if (isPageVisible) loadTasks();
+        else scheduleNextRefresh();
+    }, interval);
+}
+
+function filterTasks(filter) {
+    currentFilter = filter;
+    renderTasks();
+}
+
+function loadTasks() {
+    fetch('/api/tasks')
+        .then(r => r.json())
+        .then(tasks => {
+            allTasks = tasks || [];
+            updateCounts();
+            renderTasks();
+            if (selectedTaskId) loadSelectedLogs();
+            scheduleNextRefresh();
         })
-        .catch(error => {
-            contentDiv.innerHTML = `<div class="logs-loading" style="color: #f44747;">请求失败: ${error}</div>`;
+        .catch(() => { scheduleNextRefresh(); });
+}
+
+function updateCounts() {
+    const counts = {running:0, completed:0, failed:0, stopped:0};
+    allTasks.forEach(t => {
+        if (t.status === 'running') counts.running++;
+        else if (t.status === 'completed') counts.completed++;
+        else if (t.status === 'failed') counts.failed++;
+        else if (t.status === 'stopped' || t.status === 'stopping') counts.stopped++;
+    });
+    document.getElementById('task-counts').textContent =
+        `运行中 ${counts.running} | 完成 ${counts.completed} | 失败 ${counts.failed}`;
+}
+
+function renderTasks() {
+    const container = document.getElementById('task-list');
+    let filtered = allTasks;
+    if (currentFilter !== 'all') {
+        filtered = allTasks.filter(t => {
+            if (currentFilter === 'stopped') return t.status === 'stopped' || t.status === 'stopping';
+            return t.status === currentFilter;
         });
-}
-
-function refreshLogs(taskId) {
-    loadLogs(taskId);
-}
-
-function renderLogs(taskId, logs) {
-    const contentDiv = document.getElementById(`logs-content-${taskId}`);
-    
-    if (!logs || logs.length === 0) {
-        contentDiv.innerHTML = '<div class="logs-loading">暂无日志</div>';
+    }
+    if (filtered.length === 0) {
+        container.innerHTML = '<p class="text-muted">暂无任务记录</p>';
         return;
     }
-    
+    const statusLabels = {running:'运行中',completed:'已完成',failed:'失败',stopped:'已停止',stopping:'停止中'};
     let html = '';
-    logs.forEach(log => {
-        const levelClass = `log-level-${log.level}`;
-        html += `<div class="log-entry">`;
-        html += `<span class="log-time">${log.time}</span>`;
-        html += `<span class="log-level ${levelClass}">[${log.level.toUpperCase()}]</span>`;
-        html += `<span class="log-message">${escapeHtml(log.message)}</span>`;
-        html += `</div>`;
+    filtered.forEach(t => {
+        const label = statusLabels[t.status] || t.status;
+        const progressText = t.total > 0 ? `${t.current}/${t.total} (${t.progress}%)` : (t.progress > 0 ? `${t.progress}%` : '-');
+        const progressWidth = t.total > 0 ? Math.round(t.current/t.total*100) : t.progress;
+        const barClass = t.status === 'completed' ? 'progress-bar-fill-success' : (t.status === 'failed' ? 'progress-bar-fill-danger' : '');
+        const isActive = selectedTaskId === t.id;
+        html += `<div class="task-card ${t.status} ${isActive ? 'log-active' : ''}" data-status="${t.status}" data-id="${t.id}">
+            <div class="task-header">
+                <div class="task-info">
+                    <span class="task-id">${(t.id||'').slice(0,16)}...</span>
+                    <span class="task-action">${t.action}</span>
+                    <span class="text-muted">${t.target||''}</span>
+                </div>
+                <div class="flex gap-2">
+                    <span class="status-badge status-${t.status}">${label}</span>
+                    ${t.status === 'running' ? `<button class="btn btn-sm btn-danger" onclick="stopTask('${t.id}')">停止</button>` : ''}
+                    <button class="btn btn-sm ${isActive ? 'btn-warning' : 'btn-info'}" onclick="selectTaskForLog('${t.id}', '${escapeHtml(t.action)} ${escapeHtml(t.target||'')}', this)">${isActive ? '关闭日志' : '日志'}</button>
+                </div>
+            </div>
+            <div class="task-meta">
+                <div>${progressText}</div>
+                <div><div class="progress-bar"><div class="progress-bar-fill ${barClass}" style="width:${progressWidth}%"></div></div></div>
+                <div class="text-muted">${t.message||'-'}</div>
+                <div class="text-muted">${(t.created_at||'').slice(11,19)}</div>
+            </div>
+        </div>`;
     });
-    
-    contentDiv.innerHTML = html;
-    contentDiv.scrollTop = contentDiv.scrollHeight;
+    container.innerHTML = html;
 }
 
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+function selectTaskForLog(taskId, label) {
+    const panel = document.getElementById('log-panel');
+    if (selectedTaskId === taskId) {
+        closeLogPanel();
+        return;
+    }
+    selectedTaskId = taskId;
+    selectedTaskLabel = label;
+    panel.style.display = 'block';
+    document.getElementById('log-panel-title').textContent = label;
+    document.getElementById('log-panel-content').innerHTML = '<span style="color:#888;">加载中...</span>';
+    loadSelectedLogs();
+    renderTasks();
 }
+
+function closeLogPanel() {
+    selectedTaskId = null;
+    selectedTaskLabel = '';
+    document.getElementById('log-panel').style.display = 'none';
+    renderTasks();
+}
+
+function loadSelectedLogs() {
+    if (!selectedTaskId) return;
+    const content = document.getElementById('log-panel-content');
+    fetch(`/api/tasks/${selectedTaskId}/logs`)
+        .then(r => r.json())
+        .then(data => {
+            if (!data.ok || !data.logs || data.logs.length === 0) {
+                content.innerHTML = '<span style="color:#888;">暂无日志</span>';
+                return;
+            }
+            let html = '';
+            data.logs.forEach(l => {
+                html += `<div class="log-entry"><span class="log-time">${l.time}</span><span class="log-level log-level-${l.level}">[${l.level.toUpperCase()}]</span><span class="log-message">${escapeHtml(l.message)}</span></div>`;
+            });
+            const shouldScroll = content.scrollTop + content.clientHeight >= content.scrollHeight - 20;
+            content.innerHTML = html;
+            if (shouldScroll) content.scrollTop = content.scrollHeight;
+        })
+        .catch(() => {});
+}
+
+function stopTask(taskId) {
+    if (!confirm('确定要停止此任务吗？')) return;
+    fetch(`/api/tasks/${taskId}/stop`, { method: 'POST' })
+        .then(r => r.json())
+        .then(data => { if (data.ok) loadTasks(); else alert('停止失败: ' + (data.error || '')); })
+        .catch(e => alert('请求失败: ' + e));
+}
+
+function escapeHtml(text) { const d = document.createElement('div'); d.textContent = text; return d.innerHTML; }
+
+loadTasks();
+startAutoRefresh();
 </script>
 {% endblock %}

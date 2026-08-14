@@ -154,7 +154,7 @@ class OrderDBClient:
 
     # ── 订单操作 ──────────────────────────────────────
 
-    def insert_order(self, ip: str, domain: str, order_time: str, order_status: str, order_amount: float, order_category: str = "") -> bool:
+    def insert_order(self, ip: str, domain: str, order_time: str, order_status: str, order_amount: float, order_category: str = "", order_view_id: str = "") -> bool:
         """插入订单数据"""
         if not ip:
             return False
@@ -169,6 +169,7 @@ class OrderDBClient:
                     "order_status": order_status,
                     "order_amount": order_amount,
                     "order_category": order_category,
+                    "order_view_id": order_view_id,
                     "updated_at": ts,
                 }, "$setOnInsert": {
                     "created_at": ts,
@@ -439,7 +440,8 @@ class OrderDBClient:
     def update_order_details(self, ip: str, domain: str, order_time: str,
                              customer_email: str = "", order_amount: float = 0,
                              items: list = None, billing_address: dict = None,
-                             shipping_address: dict = None) -> dict:
+                             shipping_address: dict = None,
+                             customer_name: str = "") -> dict:
         """更新订单详情，同时进行去重检查
         
         Args:
@@ -451,6 +453,7 @@ class OrderDBClient:
             items: 商品列表
             billing_address: 账单地址
             shipping_address: 收货地址
+            customer_name: 客户姓名
         
         Returns:
             {"updated": bool, "deduplicated": int, "duplicate_of": str}
@@ -470,28 +473,33 @@ class OrderDBClient:
                 "order_time": {"$regex": f"^{order_date}"},
                 "customer_email": customer_email,
                 "order_amount": order_amount,
-                "order_time": {"$ne": order_time}  # 排除当前订单
             }
+            current_doc = col.find_one({"domain": domain, "order_time": order_time}, {"_id": 1})
+            current_id = current_doc["_id"] if current_doc else None
+            if current_id:
+                duplicate_filter["_id"] = {"$ne": current_id}
             duplicates = list(col.find(duplicate_filter, {"_id": 1, "order_time": 1}))
-            
+
             if duplicates:
                 # 按订单时间排序，保留最新的
                 duplicates.sort(key=lambda x: x.get("order_time", ""), reverse=True)
-                
+
                 # 删除重复记录（保留当前订单，因为它是最新的）
                 dup_ids = [dup["_id"] for dup in duplicates]
                 result = col.delete_many({"_id": {"$in": dup_ids}})
                 deduplicated = result.deleted_count
-                
+
                 if duplicates:
                     duplicate_of = duplicates[0].get("order_time", "")
-                
+
                 log.info(f"去重: 删除 {deduplicated} 条重复订单 (域名={domain}, 日期={order_date}, 邮箱={customer_email}, 金额={order_amount})")
         
         # 更新详情
         update_fields = {}
         if customer_email:
             update_fields["customer_email"] = customer_email
+        if customer_name:
+            update_fields["customer_name"] = customer_name
         if items is not None:
             update_fields["items"] = items
         if billing_address:
@@ -558,7 +566,8 @@ class OrderDBClient:
             "domain": 1,
             "order_time": 1,
             "order_status": 1,
-            "order_amount": 1
+            "order_amount": 1,
+            "order_view_id": 1
         }).sort("order_time", -1)
         
         return list(cursor)

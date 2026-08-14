@@ -1,0 +1,6 @@
+# Exa AI API Keys（每行一个 key，# 开头为注释）
+# 额度用完自动跳过，切换下一个 key
+# 获取地址: https://exa.ai/
+d8df404f-e2b5-4d5f-9bbb-ef7f25ff5f3f
+696699cd-efd9-4257-b8c2-1ee0d3a4df5d
+3a32999f-0c85-45dc-8d67-2805527414d7

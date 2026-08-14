@@ -1,0 +1,6 @@
+# BrightData SERP API Keys（每行一个，# 开头为注释）
+# 获取地址: https://brightdata.com/
+# 格式: zone:token
+# zone 为 SERP API zone 名称（在 BrightData 控制台创建），token 为 API token
+# 例如: serp_api1:6cb3efb0-9940-4cb8-ace9-6a5717220128
+serp_api1:6cb3efb0-9940-4cb8-ace9-6a5717220128

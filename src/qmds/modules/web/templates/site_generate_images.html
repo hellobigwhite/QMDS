@@ -13,9 +13,17 @@
     <p class="text-muted mb-4">为选中的站点批量生成图片资源（Banner、Icon、Logo），支持一键生成或单独生成。</p>
 </div>
 
-{% if not has_api_key %}
+{% if not has_api_key and not has_ark_key %}
 <div class="card" style="border-left: 4px solid var(--warning);">
-    <p>⚠️ 未配置极速AI API密钥，请先在 <a href="/config">配置页面</a> 设置 <code>jisuai_api_key</code>。</p>
+    <p>⚠️ 未配置任何图片生成 API 密钥。请在 <a href="/config">配置页面</a> 中添加 极速AI API Key 或 火山方舟 ARK API Key。</p>
+</div>
+{% elif not has_api_key %}
+<div class="card" style="border-left: 4px solid var(--info);">
+    <p>ℹ️ 未配置极速AI API密钥，将无法使用 gpt-image-2 模型。火山方舟豆包模型可正常使用。</p>
+</div>
+{% elif not has_ark_key %}
+<div class="card" style="border-left: 4px solid var(--info);">
+    <p>ℹ️ 未配置火山方舟 ARK API Key，将无法使用豆包 Seedream 模型。gpt-image-2 模型可正常使用。</p>
 </div>
 {% endif %}
 
@@ -46,6 +54,24 @@
                     <option value="manual">手动输入关键词</option>
                 </select>
                 <p class="text-muted">用于指导AI生成图片的内容</p>
+            </div>
+        </div>
+
+        <div class="mt-4">
+            <label>图片生成模型</label>
+            <select name="image_model" id="imageModel" style="width:100%; max-width:480px;" onchange="onModelChange()">
+                {% for m in image_models %}
+                <option value="{{ m.value }}"
+                        data-provider="{{ m.provider }}"
+                        data-desc="{{ m.desc }}"
+                        {{ 'selected' if m.value == default_image_model else '' }}>
+                    {{ m.label }}
+                </option>
+                {% endfor %}
+            </select>
+            <p class="text-muted" id="modelDesc"></p>
+            <div id="modelKeyWarning" style="display:none; margin-top:0.5rem; padding:0.5rem 0.75rem; border-left:3px solid var(--warning); background:rgba(255,193,7,0.08);">
+                <span id="modelKeyWarningText"></span>
             </div>
         </div>
 
@@ -96,21 +122,33 @@
                         <td class="data-source-cell" title="{{ site.main_category|default('') }}"><span class="data-source-text">{{ site.main_category|default('-') }}</span></td>
                         <td style="text-align:center;">
                             {% if site.has_banner %}
-                            <span style="color:#4caf50;font-weight:bold;">✓</span>
+                            <img src="{{ url_for('site_management.site_image_preview', domain=site.domain, image_type='banner') }}"
+                                 alt="Banner"
+                                 class="img-preview img-preview-banner"
+                                 loading="lazy"
+                                 onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'✗',style:'color:#f44336;font-weight:bold;'}))">
                             {% else %}
                             <span style="color:#ccc;">-</span>
                             {% endif %}
                         </td>
                         <td style="text-align:center;">
                             {% if site.has_icon %}
-                            <span style="color:#4caf50;font-weight:bold;">✓</span>
+                            <img src="{{ url_for('site_management.site_image_preview', domain=site.domain, image_type='icon') }}"
+                                 alt="Icon"
+                                 class="img-preview img-preview-icon"
+                                 loading="lazy"
+                                 onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'✗',style:'color:#f44336;font-weight:bold;'}))">
                             {% else %}
                             <span style="color:#ccc;">-</span>
                             {% endif %}
                         </td>
                         <td style="text-align:center;">
                             {% if site.has_logo %}
-                            <span style="color:#4caf50;font-weight:bold;">✓</span>
+                            <img src="{{ url_for('site_management.site_image_preview', domain=site.domain, image_type='logo') }}"
+                                 alt="Logo"
+                                 class="img-preview img-preview-logo"
+                                 loading="lazy"
+                                 onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'✗',style:'color:#f44336;font-weight:bold;'}))">
                             {% else %}
                             <span style="color:#ccc;">-</span>
                             {% endif %}
@@ -130,8 +168,9 @@
             </button>
             <p class="text-muted mt-4">
                 提示：<br>
-                • Banner使用极速AI生成1920x800电商横幅，自动压缩至300KB以内<br>
-                • Icon使用极速AI生成512x512网站图标，白色背景自动转透明<br>
+                • 可在上方下拉选择图片生成模型（极速AI gpt-image-2 或 火山方舟豆包 Seedream）<br>
+                • Banner 生成 1920x800 电商横幅，自动压缩至300KB以内<br>
+                • Icon 生成方形网站图标，白色背景自动转透明<br>
                 • Logo使用 <a href="https://fontimg.com" target="_blank">fontimg.com</a> 生成文字Logo<br>
                 • 合并步骤会将Icon和Logo拼接为完整Logo
             </p>
@@ -144,6 +183,7 @@
 
 <script>
 var hasApiKey = {{ 'true' if has_api_key else 'false' }};
+var hasArkKey = {{ 'true' if has_ark_key else 'false' }};
 
 function toggleAll(source) {
     document.querySelectorAll('input[name="selected_ids"]').forEach(item => {
@@ -157,9 +197,37 @@ function toggleKeywordInput() {
     section.style.display = source === 'manual' ? 'block' : 'none';
 }
 
+function onModelChange() {
+    var sel = document.getElementById('imageModel');
+    var opt = sel.options[sel.selectedIndex];
+    var provider = opt.getAttribute('data-provider');
+    var desc = opt.getAttribute('data-desc') || '';
+    document.getElementById('modelDesc').textContent = desc;
+
+    var warnBox = document.getElementById('modelKeyWarning');
+    var warnText = document.getElementById('modelKeyWarningText');
+    if (provider === 'jisuai' && !hasApiKey) {
+        warnBox.style.display = 'block';
+        warnText.textContent = '⚠️ 当前模型需要极速AI API密钥，但尚未配置。请在配置页面添加。';
+    } else if (provider === 'ark' && !hasArkKey) {
+        warnBox.style.display = 'block';
+        warnText.textContent = '⚠️ 当前模型需要火山方舟 ARK API Key，但尚未配置。请在配置页面添加。';
+    } else {
+        warnBox.style.display = 'none';
+    }
+}
+
 function handleSubmit() {
-    if (!hasApiKey) {
-        alert('请先在配置页面设置极速AI API密钥！');
+    var sel = document.getElementById('imageModel');
+    var opt = sel.options[sel.selectedIndex];
+    var provider = opt.getAttribute('data-provider');
+
+    if (provider === 'jisuai' && !hasApiKey) {
+        alert('当前选择的模型需要极速AI API密钥，请先在配置页面添加！');
+        return false;
+    }
+    if (provider === 'ark' && !hasArkKey) {
+        alert('当前选择的模型需要火山方舟 ARK API Key，请先在配置页面添加！');
         return false;
     }
 
@@ -169,7 +237,25 @@ function handleSubmit() {
         return false;
     }
 
-    return confirm('确定为选中的 ' + checked.length + ' 个站点生成图片吗？');
+    return confirm('确定为选中的 ' + checked.length + ' 个站点生成图片吗？\n模型: ' + opt.textContent);
 }
+
+document.addEventListener('DOMContentLoaded', function () {
+    onModelChange();
+});
+
+document.addEventListener('click', function (e) {
+    var target = e.target;
+    if (target && target.classList && target.classList.contains('img-preview')) {
+        var box = document.createElement('div');
+        box.className = 'img-preview-lightbox';
+        var img = document.createElement('img');
+        img.src = target.src;
+        box.appendChild(img);
+        box.addEventListener('click', function () { document.body.removeChild(box); });
+        document.body.appendChild(box);
+        e.preventDefault();
+    }
+});
 </script>
 {% endblock %}

@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "WP Menu Opener",
+  "version": "1.0.0",
+  "description": "Log in to a WordPress backend and open the nav menus page.",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Open WP Menu"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": ["tabs"],
+  "host_permissions": ["http://*/*", "https://*/*"]
+}

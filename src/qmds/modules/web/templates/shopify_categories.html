@@ -9,11 +9,11 @@
     <form method="post" action="/shopify/filter-categories">
         <input type="hidden" name="action" value="filter">
         <div class="form-group">
-            <label for="category">选择类目</label>
+            <label for="category">选择一级分类</label>
             <select id="category" name="category" required onchange="window.location.href='/shopify/filter-categories?category='+this.value">
-                <option value="">-- 请选择类目 --</option>
+                <option value="">-- 请选择一级分类 --</option>
                 {% for cat in categories %}
-                <option value="{{ cat }}" {% if selected_category == cat %}selected{% endif %}>{{ cat }}</option>
+                <option value="{{ cat }}" {% if selected_category == cat %}selected{% endif %}>{{ cat }} ({{ unfiltered_counts.get(cat, 0) }})</option>
                 {% endfor %}
             </select>
         </div>
@@ -22,9 +22,65 @@
 
 {% if selected_category %}
 <div class="card" style="max-width:1200px;margin:20px auto 0;">
+    <h2>📂 二级分类选择</h2>
+    <p class="text-muted" style="margin-bottom:16px;">
+        选择二级分类查看对应的 filtered 数据。无二级分类的数据归入 "other"。
+    </p>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;">
+        {% for sub in available_subcategories %}
+        <a href="/shopify/filter-categories?category={{ selected_category }}&subcategory={{ sub }}"
+           class="btn btn-sm {% if selected_subcategory == sub %}btn-primary{% else %}btn-secondary{% endif %}">
+            {{ sub }}
+        </a>
+        {% else %}
+        <span class="text-muted">暂无二级分类数据，请先添加 URL</span>
+        {% endfor %}
+    </div>
+</div>
+
+<div class="card" style="max-width:1200px;margin:20px auto 0;">
+    <h2>🤖 AI 智能分类</h2>
+    <p class="text-muted" style="margin-bottom:16px;">
+        对 <code>{{ selected_category }}</code> 下的 unfiltered 站点进行智能分类，自动迁移到对应的 <code>{{ selected_category }}__{subcategory}</code> 集合<br>
+        <strong>两阶段流程</strong>：先抓取网站信息写入 unfiltered 文档 page_info 字段，再读取 page_info 调用 LLM 分类（网络抓取与模型分类解耦）<br>
+        专一类目站点：一级分类必须属于 21 个专一类目之一，二级分类只选一个最符合的类目<br>
+        综合站写入 <code>comprehensive_stores</code> 集合 | 非英文站 / 黑五类 / 类目不匹配 / 无法识别 写入 <code>filtered_failed</code> 集合
+    </p>
+
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px;">
+        <div style="flex:1;min-width:300px;border:1px solid #dee2e6;border-radius:8px;padding:16px;">
+            <h3 style="font-size:15px;margin:0 0 8px;">📡 阶段1：抓取网站信息</h3>
+            <p class="text-muted" style="font-size:13px;margin-bottom:12px;">
+                抓取 unfiltered 集合中所有 URL 的首页信息，<br>
+                写入原 unfiltered 文档 page_info 字段（status=pending）
+            </p>
+            <form method="post" action="/shopify/filter-categories" onsubmit="return confirmAiFetchInfo()">
+                <input type="hidden" name="action" value="ai_fetch_info">
+                <input type="hidden" name="category" value="{{ selected_category }}">
+                <button type="submit" class="btn btn-primary">📡 启动抓取网站信息</button>
+            </form>
+        </div>
+
+        <div style="flex:1;min-width:300px;border:1px solid #dee2e6;border-radius:8px;padding:16px;">
+            <h3 style="font-size:15px;margin:0 0 8px;">🤖 阶段2：模型分类</h3>
+            <p class="text-muted" style="font-size:13px;margin-bottom:12px;">
+                从 unfiltered 集合读取已抓取的 page_info，<br>
+                调用 LLM 分类，写入 <code>{category}__{subcategory}</code> 等集合（无网络请求）
+            </p>
+            <form method="post" action="/shopify/filter-categories" onsubmit="return confirmAiFilter()">
+                <input type="hidden" name="action" value="ai_filter">
+                <input type="hidden" name="category" value="{{ selected_category }}">
+                <button type="submit" class="btn btn-primary">🚀 启动模型分类</button>
+            </form>
+        </div>
+    </div>
+    <a href="/tasks" class="btn btn-secondary">查看任务进度</a>
+</div>
+
+<div class="card" style="max-width:1200px;margin:20px auto 0;">
     <h2>➕ 批量添加 URL</h2>
     <p class="text-muted" style="margin-bottom:16px;">
-        手动添加 collection URL 到 <code>{{ selected_category }}_filtered</code> 集合
+        手动添加 collection URL 到 <code>{{ selected_category }}__{{ selected_subcategory or 'other' }}</code> 集合
     </p>
 
     <form method="post" action="/shopify/filter-categories/import" enctype="multipart/form-data">
@@ -37,7 +93,7 @@
 
         <div class="form-group">
             <label for="subcategory">二级分类（可选，文本导入时统一应用）</label>
-            <input type="text" id="subcategory" name="subcategory" placeholder="如: 女装、男装、美妆..." style="width:100%;">
+            <input type="text" id="subcategory" name="subcategory" placeholder="如: 女装、男装、美妆... 留空归入 other" style="width:100%;" value="{{ selected_subcategory if selected_subcategory != 'other' else '' }}">
         </div>
         
         <div class="form-group">
@@ -52,16 +108,18 @@
     </form>
 </div>
 
+{% if selected_subcategory %}
 <div class="card" style="max-width:1200px;margin:20px auto 0;">
-    <h2>📊 {{ selected_category }} - 筛选后的精准类目数据</h2>
+    <h2>📊 {{ selected_category }} / {{ selected_subcategory }} - 筛选后的精准类目数据</h2>
     <p class="text-muted" style="margin-bottom:16px;">
-        数据来源: <code>qmds_url_stores.{{ selected_category }}_filtered</code> | 
+        数据来源: <code>qmds_url_stores.{{ selected_category }}__{{ selected_subcategory }}</code> |
         总数: <strong>{{ filtered_total }}</strong> 条
     </p>
     
     {% if filtered_stores %}
-    <form method="post" action="/shopify/filter-categories?category={{ selected_category }}" id="batchForm">
+    <form method="post" action="/shopify/filter-categories?category={{ selected_category }}&subcategory={{ selected_subcategory }}" id="batchForm">
         <input type="hidden" name="action" value="delete_selected">
+        <input type="hidden" name="subcategory" value="{{ selected_subcategory }}">
         <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center;">
             <button type="submit" class="btn btn-danger" onclick="return confirm('确定删除选中的记录吗？')">批量删除选中</button>
             <span class="text-muted" style="font-size:13px;">勾选后点击批量删除</span>
@@ -100,8 +158,9 @@
                         <td>{{ store.subcategory or '-' }}</td>
                         <td>{{ store.source or '-' }}</td>
                         <td style="white-space:nowrap;">
-                            <a href="/shopify/filter-categories/{{ selected_category }}/{{ store._id }}/edit" class="btn btn-sm btn-secondary">编辑</a>
+                            <a href="/shopify/filter-categories/{{ selected_category }}/{{ store._id }}/edit?subcategory={{ selected_subcategory }}" class="btn btn-sm btn-secondary">编辑</a>
                             <form method="post" action="/shopify/filter-categories/{{ selected_category }}/{{ store._id }}/delete" style="display:inline;" onsubmit="return confirm('确定删除这条记录吗？')">
+                                <input type="hidden" name="subcategory" value="{{ selected_subcategory }}">
                                 <button type="submit" class="btn btn-sm btn-danger">删除</button>
                             </form>
                         </td>
@@ -119,17 +178,38 @@
     {% endif %}
     {% else %}
     <div style="padding:20px;text-align:center;color:#999;">
-        <p>暂无 {{ selected_category }} 类目的筛选后数据</p>
+        <p>暂无 {{ selected_category }} / {{ selected_subcategory }} 的筛选后数据</p>
         <p style="font-size:13px;margin-top:8px;">请使用上方表单批量添加 collection URL</p>
     </div>
     {% endif %}
 </div>
+{% else %}
+<div class="card" style="max-width:1200px;margin:20px auto 0;">
+    <div style="padding:20px;text-align:center;color:#999;">
+        <p>请选择上方二级分类标签查看数据</p>
+    </div>
+</div>
+{% endif %}
 {% endif %}
 
 <script>
 function toggleSelectAll(source) {
     const checkboxes = document.querySelectorAll('.select-item');
     checkboxes.forEach(cb => cb.checked = source.checked);
+}
+
+function confirmAiFilter() {
+    return confirm('确认启动模型分类（阶段2）？\n' +
+        '将对 {{ selected_category }} 类目下已抓取的 unfiltered 站点进行 LLM 分类。\n' +
+        '请确保已先运行阶段1抓取网站信息。\n' +
+        '处理过程可能较长，可在任务页面查看进度或停止。');
+}
+
+function confirmAiFetchInfo() {
+    return confirm('确认启动抓取网站信息（阶段1）？\n' +
+        '将抓取 {{ selected_category }} 类目下所有 unfiltered 站点的首页信息。\n' +
+        '抓取完成后请再运行阶段2进行模型分类。\n' +
+        '处理过程可能较长，可在任务页面查看进度或停止。');
 }
 </script>
 {% endblock %}

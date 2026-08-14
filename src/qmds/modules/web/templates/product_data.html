@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 {% block content %}
 <div class="card">
     <h2>产品数据管理</h2>
@@ -55,20 +55,20 @@
 
 <div class="card" id="crawl-section">
     <h2>数据爬取</h2>
-    <p class="text-muted mb-4">从数据库的 <code>qmds_url_stores.{category}_filtered</code> 集合获取URL，爬取商品数据并保存到 <code>qmds_product_data.{category}_raw</code>。</p>
+    <p class="text-muted mb-4">从数据库的 <code>qmds_url_stores.{category}__{subcategory}</code> 集合获取URL，爬取商品数据并保存到 <code>qmds_product_data.{category}__{subcategory}</code>。</p>
     
     {% if filtered_categories %}
     <div class="card" style="border-left: 4px solid #3b82f6; margin-bottom: 16px;">
         <div style="display: flex; align-items: center; gap: 8px;">
             <span style="color: #3b82f6; font-weight: bold;">✓</span>
-            <span>已检测到 <code>qmds_url_stores</code> 数据库中的 <code>_filtered</code> 集合，共 {{ filtered_categories|length }} 个类目可用</span>
+            <span>已检测到 <code>qmds_url_stores</code> 数据库中的 <code>{category}__{subcategory}</code> 集合，共 {{ filtered_categories|length }} 个类目可用</span>
         </div>
     </div>
     {% else %}
     <div class="card" style="border-left: 4px solid #f59e0b; margin-bottom: 16px;">
         <div style="display: flex; align-items: center; gap: 8px;">
             <span style="color: #f59e0b; font-weight: bold;">⚠</span>
-            <span>未检测到 <code>qmds_url_stores</code> 数据库中的 <code>_filtered</code> 集合。请先使用"店铺URL发现"功能获取店铺URL。</span>
+            <span>未检测到 <code>qmds_url_stores</code> 数据库中的 <code>{category}__{subcategory}</code> 集合。请先使用"店铺URL发现"功能获取店铺URL。</span>
         </div>
     </div>
     {% endif %}
@@ -83,7 +83,7 @@
                     <option value="{{ cat }}">{{ cat }}</option>
                     {% endfor %}
                 </select>
-                <small class="text-muted">从 <code>qmds_url_stores</code> 数据库的 <code>{category}_filtered</code> 集合获取URL</small>
+                <small class="text-muted">从 <code>qmds_url_stores</code> 数据库的 <code>{category}__{subcategory}</code> 集合获取URL</small>
             </div>
             <div>
                 <label for="max_sites">最大站点数</label>
@@ -97,7 +97,7 @@
 
 <div class="card" id="clean-section">
     <h2>数据清洗</h2>
-    <p class="text-muted mb-4">清洗 <code>{category}_raw</code> 中的原始数据，清洗后保存到 <code>{category}_clean</code>。清洗规则：过滤无效数据、违禁词处理、数据标准化。</p>
+    <p class="text-muted mb-4">清洗 <code>{category}__{subcategory}</code> 中的原始数据，清洗后保存到 <code>{category}__{subcategory}</code>。清洗规则：过滤无效数据、违禁词处理、数据标准化。</p>
     <form method="POST" action="/product-data/clean">
         <div style="margin-bottom: 12px;">
             <label for="clean_category">选择类目</label>
@@ -114,7 +114,7 @@
 
 <div class="card" id="export-section">
     <h2>数据导出</h2>
-    <p class="text-muted mb-4">导出 <code>{category}_clean</code> 中的清洗后数据为Excel文件。</p>
+    <p class="text-muted mb-4">导出 <code>{category}__{subcategory}</code> 中的清洗后数据为Excel文件。</p>
     <form method="POST" action="/product-data/export">
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
             <div>
@@ -147,11 +147,11 @@
             <thead>
                 <tr>
                     <th>类目</th>
-                    <th>原始数据 ({category}_raw)</th>
+                    <th>原始数据 ({category}__{subcategory})</th>
                     <th>未清洗</th>
                     <th>已清洗</th>
                     <th>清洗失败</th>
-                    <th>清洗后数据 ({category}_clean)</th>
+                    <th>清洗后数据 ({category}__{subcategory})</th>
                     <th>操作</th>
                 </tr>
             </thead>
@@ -200,7 +200,7 @@
         </div>
         <div class="detail-item">
             <div class="k">URL来源集合</div>
-            <div class="v"><code>{category}_filtered</code> - 存储已筛选的店铺URL</div>
+            <div class="v"><code>{category}__{subcategory}</code> - 存储已筛选的店铺URL</div>
         </div>
         <div class="detail-item">
             <div class="k">产品数据数据库</div>
@@ -208,11 +208,11 @@
         </div>
         <div class="detail-item">
             <div class="k">原始数据集合</div>
-            <div class="v"><code>{category}_raw</code> - 存储爬取的原始商品数据</div>
+            <div class="v"><code>{category}__{subcategory}</code> - 存储爬取的原始商品数据</div>
         </div>
         <div class="detail-item">
             <div class="k">清洗后数据集合</div>
-            <div class="v"><code>{category}_clean</code> - 存储清洗后的商品数据</div>
+            <div class="v"><code>{category}__{subcategory}</code> - 存储清洗后的商品数据</div>
         </div>
         <div class="detail-item">
             <div class="k">清洗状态字段</div>
@@ -220,15 +220,15 @@
         </div>
         <div class="detail-item">
             <div class="k">类目对应关系</div>
-            <div class="v">同一类目的原始数据和清洗后数据通过类目名称对应，如 <code>electronics_raw</code> 和 <code>electronics_clean</code></div>
+            <div class="v">同一类目的原始数据和清洗后数据通过类目名称对应，如 <code>electronics__other</code> 和 <code>electronics__other</code></div>
         </div>
         <div class="detail-item">
             <div class="k">数据爬取流程</div>
-            <div class="v">从 <code>qmds_url_stores.{category}_filtered</code> 获取URL → 爬取 <code>/products.json</code> → 保存到 <code>qmds_product_data.{category}_raw</code></div>
+            <div class="v">从 <code>qmds_url_stores.{category}__{subcategory}</code> 获取URL → 爬取 <code>/products.json</code> → 保存到 <code>qmds_product_data.{category}__{subcategory}</code></div>
         </div>
         <div class="detail-item">
             <div class="k">数据清洗流程</div>
-            <div class="v">从 <code>{category}_raw</code> 读取未清洗数据 → 过滤无效数据、违禁词处理 → 保存到 <code>{category}_clean</code> 并更新清洗状态</div>
+            <div class="v">从 <code>{category}__{subcategory}</code> 读取未清洗数据 → 过滤无效数据、违禁词处理 → 保存到 <code>{category}__{subcategory}</code> 并更新清洗状态</div>
         </div>
     </div>
 </div>

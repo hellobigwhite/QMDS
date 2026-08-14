@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Open WP Menu</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <h1>打开 WP 菜单后台</h1>
+      <form id="loginForm">
+        <label for="siteUrls">网站 URL 或域名，每行一个</label>
+        <textarea id="siteUrls" name="siteUrls" rows="8" required></textarea>
+        <button id="submitButton" type="submit">批量登录并打开</button>
+      </form>
+      <p id="status" role="status"></p>
+      <ul id="results" aria-live="polite"></ul>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

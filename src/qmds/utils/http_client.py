@@ -38,12 +38,12 @@ class HttpClient:
     def _build_session(self) -> requests.Session:
         session = requests.Session()
         retry_strategy = Retry(
-            total=settings.max_retries,
-            backoff_factor=settings.retry_backoff_base,
+            total=1,
+            backoff_factor=0.5,
             status_forcelist=[429, 500, 502, 503, 504],
             allowed_methods=["GET", "POST"],
         )
-        adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=20, pool_maxsize=50)
+        adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=30, pool_maxsize=60)
         session.mount("http://", adapter)
         session.mount("https://", adapter)
         return session
@@ -56,20 +56,21 @@ class HttpClient:
         url: str,
         method: str = "GET",
         *,
-        timeout: Optional[int] = None,
+        timeout=None,
         verify: bool = True,
         **kwargs,
     ) -> requests.Response:
         headers = self.get_headers()
         headers.update(kwargs.pop("headers", {}))
         proxy = self.proxy_manager.get_proxy() if self.proxy_manager else None
+        effective_timeout = timeout or settings.request_timeout
 
         try:
             resp = self._session.request(
                 method=method,
                 url=url,
                 headers=headers,
-                timeout=timeout or settings.request_timeout,
+                timeout=effective_timeout,
                 proxies=proxy,
                 verify=verify,
                 **kwargs,
@@ -80,24 +81,6 @@ class HttpClient:
                 raise RateLimitError(f"429 Too Many Requests: {url}")
             resp.raise_for_status()
             return resp
-        except requests.exceptions.SSLError:
-            if verify:
-                resp = self._session.request(
-                    method=method,
-                    url=url,
-                    headers=headers,
-                    timeout=timeout or settings.request_timeout,
-                    proxies=proxy,
-                    verify=False,
-                    **kwargs,
-                )
-                if resp.status_code == 429:
-                    if self.proxy_manager:
-                        self.proxy_manager.mark_bad(proxy)
-                    raise RateLimitError(f"429 Too Many Requests: {url}")
-                resp.raise_for_status()
-                return resp
-            raise
         except requests.exceptions.ProxyError as e:
             if proxy and self.proxy_manager:
                 self.proxy_manager.mark_bad(proxy)

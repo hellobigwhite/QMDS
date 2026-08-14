@@ -49,7 +49,7 @@ class ERPBuilder:
 
     def _get_jx(self, domain_name):
         url = f"https://erp.yswl.site/index.php?main_page=site&p=wh&sitename={domain_name}&ip="
-        resp = self._session.get(url, timeout=60)
+        resp = self._session.get(url, timeout=180)
         soup = BeautifulSoup(resp.text, "html.parser")
         domain_td = soup.find("td", string=domain_name)
         if not domain_td:
@@ -77,7 +77,7 @@ class ERPBuilder:
         return None
 
     def _get_form_ids(self, server_input, template_input, store_pf_input=""):
-        resp = self._session.get(ADD_PAGE_URL, timeout=60)
+        resp = self._session.get(ADD_PAGE_URL, timeout=180)
         soup = BeautifulSoup(resp.text, "html.parser")
         server_value = self._get_select_value(soup, "site_fwq_id", server_input)
         template_value = self._get_select_value(soup, "site_db_id", template_input)
@@ -192,7 +192,7 @@ class ERPBuilder:
         self._session.headers.update({"Referer": ADD_PAGE_URL})
         log.info(f"[{domain}] 提交URL: {target_url}")
         log.info(f"[{domain}] POST字段: {list(form_data.keys())}")
-        resp = self._session.post(target_url, data=form_data, timeout=60)
+        resp = self._session.post(target_url, data=form_data, timeout=180)
         try:
             body = resp.json()
         except Exception:

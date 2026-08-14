@@ -1,1 +1,219 @@
-/* QMDS Web Console - Additional styles */
+/* QMDS Web Console - Stylesheet */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: #f0f2f5; color: #1a1a2e; line-height: 1.6;
+}
+
+/* ── Navbar ────────────────────────────────── */
+.navbar {
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    color: #fff; padding: 0 24px; display: flex; align-items: center;
+    height: 56px; box-shadow: 0 2px 8px rgba(0,0,0,.15); position: sticky; top: 0; z-index: 100;
+}
+.navbar .brand { font-size: 18px; font-weight: 700; margin-right: 32px; letter-spacing: .5px; }
+.navbar .brand span { color: #4fc3f7; }
+.navbar a { color: rgba(255,255,255,.7); text-decoration: none; padding: 8px 14px; border-radius: 6px; font-size: 14px; transition: .2s; }
+.navbar a:hover, .navbar a.active { color: #fff; background: rgba(255,255,255,.1); }
+.nav-links { display: flex; gap: 4px; flex-wrap: wrap; }
+
+/* ── Dropdown ──────────────────────────────── */
+.nav-dropdown { position: relative; display: inline-flex; }
+.nav-dropdown > a { padding: 8px 14px; border-radius: 6px; font-size: 14px; color: rgba(255,255,255,.7); text-decoration: none; transition: .2s; cursor: pointer; }
+.nav-dropdown > a:hover { color: #fff; background: rgba(255,255,255,.1); }
+.dropdown-menu { display: none; position: absolute; top: 100%; left: 0; background: #1a1a2e; border: 1px solid rgba(255,255,255,.1); border-radius: 8px; min-width: 240px; padding: 6px; margin-top: 4px; box-shadow: 0 8px 24px rgba(0,0,0,.4); z-index: 200; }
+.nav-dropdown.active .dropdown-menu { display: block; }
+.dropdown-menu a { display: block; padding: 10px 14px; color: rgba(255,255,255,.7); text-decoration: none; font-size: 13px; border-radius: 6px; transition: .2s; }
+.dropdown-menu a:hover { color: #fff; background: rgba(79,195,247,.15); }
+.dropdown-menu .sub-desc { font-size: 11px; color: rgba(255,255,255,.4); margin-top: 2px; }
+
+/* ── Layout ────────────────────────────────── */
+.container { max-width: 1400px; margin: 0 auto; padding: 16px; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+.grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+.grid-5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 20px; }
+@media (max-width: 768px) { .grid-2, .grid-3, .grid-4, .grid-5 { grid-template-columns: 1fr; } }
+
+/* ── Cards ─────────────────────────────────── */
+.card {
+    background: #fff; border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,.06);
+    padding: 20px; margin-bottom: 20px;
+}
+.card h2 { font-size: 18px; margin-bottom: 16px; color: #1a1a2e; display: flex; align-items: center; gap: 8px; }
+.card h2 .badge { font-size: 12px; background: #e8eaf6; color: #3f51b5; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+.stat-card {
+    background: #fff; border-radius: 10px; padding: 20px; text-align: center;
+    box-shadow: 0 1px 4px rgba(0,0,0,.06); transition: transform .2s, box-shadow .2s;
+}
+.stat-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,.1); }
+.stat-card .value { font-size: 32px; font-weight: 700; color: #1a1a2e; }
+.stat-card .label { font-size: 13px; color: #666; margin-top: 4px; }
+.stat-card .icon { font-size: 28px; margin-bottom: 8px; }
+.stat-card .trend { font-size: 11px; margin-top: 4px; }
+.stat-card .trend-up { color: #4caf50; }
+.stat-card .trend-down { color: #f44336; }
+
+/* ── Stat card variants ────────────────────── */
+.stat-card-blue { border-left: 4px solid #2196f3; }
+.stat-card-green { border-left: 4px solid #4caf50; }
+.stat-card-orange { border-left: 4px solid #ff9800; }
+.stat-card-purple { border-left: 4px solid #9c27b0; }
+.stat-card-red { border-left: 4px solid #f44336; }
+.stat-card-teal { border-left: 4px solid #009688; }
+
+/* ── Shop card ─────────────────────────────── */
+.shopify-card { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border-radius: 12px; padding: 1.5rem; color: #fff; margin-bottom: 1.5rem; box-shadow: 0 4px 20px rgba(26,26,46,0.25); border: 1px solid rgba(255,255,255,0.08); }
+.shopify-card h3 { font-size: 1rem; margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; color: #4fc3f7; }
+.shopify-card .module-input { width: 100%; padding: 0.6rem 0.8rem; border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; font-size: 0.85rem; margin-bottom: 0.75rem; background: rgba(255,255,255,0.08); color: #fff; transition: all 0.2s; }
+.shopify-card .module-input:focus { outline: none; border-color: #4fc3f7; background: rgba(255,255,255,0.12); }
+.shopify-card .module-input::placeholder { color: rgba(255,255,255,0.4); }
+.shopify-card .module-submit { padding: 0.5rem 1.2rem; background: #4fc3f7; color: #1a1a2e; border: none; border-radius: 6px; font-weight: 600; font-size: 0.85rem; cursor: pointer; transition: all 0.2s; }
+.shopify-card .module-submit:hover { background: #81d4fa; transform: translateY(-1px); box-shadow: 0 2px 8px rgba(79,195,247,0.3); }
+.shopify-card .module-result { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,0.08); font-size: 0.85rem; color: rgba(255,255,255,0.7); }
+
+/* ── Forms ─────────────────────────────────── */
+form label { display: block; font-size: 13px; font-weight: 600; color: #444; margin-bottom: 4px; }
+form input, form select, form textarea {
+    width: 100%; padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px;
+    font-size: 14px; transition: .2s; margin-bottom: 12px;
+}
+form input:focus, form select:focus, form textarea:focus { border-color: #4fc3f7; outline: none; box-shadow: 0 0 0 2px rgba(79,195,247,.2); }
+
+/* ── Buttons ───────────────────────────────── */
+.btn {
+    display: inline-flex; align-items: center; gap: 6px; padding: 8px 20px;
+    border: none; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer;
+    transition: .2s; text-decoration: none; white-space: nowrap;
+}
+.btn-primary { background: #1a1a2e; color: #fff; }
+.btn-primary:hover { background: #16213e; transform: translateY(-1px); }
+.btn-success { background: #4caf50; color: #fff; }
+.btn-success:hover { background: #43a047; }
+.btn-info { background: #2196f3; color: #fff; }
+.btn-info:hover { background: #1e88e5; }
+.btn-warning { background: #ff9800; color: #fff; }
+.btn-warning:hover { background: #f57c00; }
+.btn-danger { background: #f44336; color: #fff; }
+.btn-danger:hover { background: #d32f2f; }
+.btn-secondary { background: #757575; color: #fff; }
+.btn-secondary:hover { background: #616161; }
+.btn-sm { padding: 4px 12px; font-size: 12px; }
+.btn[disabled] { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Tables ────────────────────────────────── */
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th { text-align: left; padding: 10px 12px; border-bottom: 2px solid #eee; color: #666; font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
+td { padding: 10px 12px; border-bottom: 1px solid #f0f0f0; }
+tr:hover td { background: #f8f9ff; }
+
+/* ── Badges ────────────────────────────────── */
+.badge-platform { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; }
+.badge-shopify { background: #e8f5e9; color: #2e7d32; }
+.badge-woocommerce { background: #fff3e0; color: #e65100; }
+.badge-magento { background: #fce4ec; color: #c62828; }
+.badge-unknown { background: #f5f5f5; color: #999; }
+
+/* ── Result box ────────────────────────────── */
+.result-box { background: #f8f9ff; border: 1px solid #e8eaf6; border-radius: 8px; padding: 16px; margin-top: 16px; font-size: 14px; }
+.result-box .stat-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #eee; }
+.result-box .stat-row:last-child { border-bottom: none; }
+.result-box .stat-row .stat-label { color: #666; }
+.result-box .stat-row .stat-value { font-weight: 600; }
+
+/* ── Flash messages ────────────────────────── */
+.flash { padding: 12px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 14px; }
+.flash-info { background: #e3f2fd; color: #1565c0; border: 1px solid #bbdefb; }
+.flash-success { background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
+.flash-error { background: #fce4ec; color: #c62828; border: 1px solid #f8bbd0; }
+.flash-warning { background: #fff3e0; color: #e65100; border: 1px solid #ffe0b2; }
+
+/* ── Progress bar ──────────────────────────── */
+.progress-bar { background: #e0e0e0; border-radius: 10px; height: 8px; overflow: hidden; }
+.progress-bar-fill { height: 100%; border-radius: 10px; transition: width 0.3s ease; background: linear-gradient(90deg, #4fc3f7, #2196f3); }
+.progress-bar-fill-success { background: linear-gradient(90deg, #66bb6a, #4caf50); }
+.progress-bar-fill-danger { background: linear-gradient(90deg, #ef5350, #f44336); }
+
+/* ── Data source cell ──────────────────────── */
+.data-source-cell { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; position: relative; }
+.data-source-cell:hover { background: #f0f7ff; }
+.data-source-text { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.data-source-cell.expanded { max-width: none; white-space: normal; z-index: 10; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.15); border-radius: 4px; padding: 4px 8px; }
+
+/* ── Detail grid ───────────────────────────── */
+.detail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.detail-item { padding: 12px; background: #f8f9ff; border-radius: 6px; }
+.detail-item .k { font-size: 12px; color: #666; margin-bottom: 4px; font-weight: 600; }
+.detail-item .v { font-size: 14px; }
+
+/* ── Utilities ─────────────────────────────── */
+pre { background: #1a1a2e; color: #e0e0e0; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 12px; max-height: 400px; }
+.text-muted { color: #999; font-size: 13px; }
+.mt-4 { margin-top: 16px; }
+.mb-4 { margin-bottom: 16px; }
+.flex { display: flex; align-items: center; gap: 12px; }
+.flex-between { display: flex; justify-content: space-between; align-items: center; }
+.gap-2 { gap: 8px; }
+.gap-4 { gap: 16px; }
+
+/* ── Chart containers ──────────────────────── */
+.chart-container { position: relative; height: 250px; width: 100%; }
+.chart-container-sm { position: relative; height: 180px; width: 100%; }
+
+/* ── Loading skeleton ──────────────────────── */
+.skeleton { background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%); background-size: 200% 100%; animation: skeleton-loading 1.5s infinite; border-radius: 4px; }
+@keyframes skeleton-loading { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+.skeleton-text { height: 16px; margin-bottom: 8px; }
+.skeleton-number { height: 32px; width: 80px; margin: 0 auto 4px; }
+
+/* ── Responsive navbar ─────────────────────── */
+@media (max-width: 900px) {
+    .navbar { height: auto; padding: 8px 16px; flex-wrap: wrap; }
+    .nav-links { gap: 2px; }
+    .navbar a { padding: 6px 10px; font-size: 13px; }
+    .dropdown-menu { min-width: 200px; }
+}
+
+/* ── Image previews (site generate images) ── */
+.img-preview {
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    background: #fafafa;
+    cursor: zoom-in;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    display: block;
+    margin: 0 auto;
+}
+.img-preview:hover {
+    transform: scale(1.05);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+.img-preview-banner {
+    width: 120px;
+    height: 50px;
+    object-fit: cover;
+}
+.img-preview-icon,
+.img-preview-logo {
+    width: 48px;
+    height: 48px;
+    object-fit: contain;
+}
+.img-preview-lightbox {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.85);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+    cursor: zoom-out;
+    padding: 24px;
+}
+.img-preview-lightbox img {
+    max-width: 90vw;
+    max-height: 90vh;
+    object-fit: contain;
+    border-radius: 4px;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+}

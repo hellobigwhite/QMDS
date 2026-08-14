@@ -2,21 +2,21 @@
 {% block content %}
 <div class="card">
     <h2>🕷️ 数据爬取</h2>
-    <p class="text-muted mb-4">并发爬取：按域名分组，同域名串行（防封），不同域名并发执行，保存到 <code>qmds_product_data.{category}_raw</code>。</p>
+    <p class="text-muted mb-4">并发爬取：按域名分组，同域名串行（防封），不同域名并发执行，保存到 <code>qmds_product_data.{category}__{subcategory}</code> 集合（clean_status=unclean）。</p>
 </div>
 
 {% if filtered_categories %}
 <div class="card" style="border-left: 4px solid #3b82f6;">
     <div style="display: flex; align-items: center; gap: 8px;">
         <span style="color: #3b82f6; font-weight: bold;">✓</span>
-        <span>已检测到 <code>qmds_url_stores</code> 数据库中的 <code>_filtered</code> 集合，共 {{ filtered_categories|length }} 个类目可用</span>
+        <span>已检测到 <code>qmds_url_stores</code> 数据库中的 <code>{category}__{subcategory}</code> 集合，共 {{ filtered_categories|length }} 个分类可用</span>
     </div>
 </div>
 {% else %}
 <div class="card" style="border-left: 4px solid #f59e0b;">
     <div style="display: flex; align-items: center; gap: 8px;">
         <span style="color: #f59e0b; font-weight: bold;">⚠</span>
-        <span>未检测到 <code>qmds_url_stores</code> 数据库中的 <code>_filtered</code> 集合。请先使用"店铺URL发现"功能获取店铺URL。</span>
+        <span>未检测到 <code>qmds_url_stores</code> 数据库中的 <code>{category}__{subcategory}</code> 集合。请先使用"店铺URL发现"功能获取店铺URL。</span>
     </div>
 </div>
 {% endif %}
@@ -24,21 +24,25 @@
 <div class="card">
     <h2>爬取配置</h2>
     <form method="POST" action="/product-data/crawl">
-        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px;">
             <div>
-                <label for="crawl_category">选择类目</label>
+                <label for="crawl_category">一级分类</label>
                 <select id="crawl_category" name="category" style="width:100%;" required {% if not filtered_categories %}disabled{% endif %}>
-                    <option value="">请选择类目</option>
-                    {% for cat in filtered_categories|default([]) %}
-                    <option value="{{ cat }}">{{ cat }}</option>
-                    {% endfor %}
+                    <option value="">请选择一级分类</option>
                 </select>
-                <small class="text-muted">从 <code>{category}_filtered</code> 获取URL</small>
+                <small class="text-muted">从 filtered 集合获取URL</small>
+            </div>
+            <div>
+                <label for="crawl_subcategory">二级分类</label>
+                <select id="crawl_subcategory" name="subcategory" style="width:100%;" {% if not filtered_categories %}disabled{% endif %}>
+                    <option value="">请先选择一级分类</option>
+                </select>
+                <small class="text-muted">留空默认 "other"</small>
             </div>
             <div>
                 <label for="max_sites">最大集合数</label>
-                <input type="number" id="max_sites" name="max_sites" value="10" min="1" max="1000" style="width:100%;">
-                <small class="text-muted">最多爬取的集合数量</small>
+                <input type="number" id="max_sites" name="max_sites" value="0" min="0" style="width:100%;">
+                <small class="text-muted">0=不限制，爬取所有可用URL</small>
             </div>
             <div>
                 <label for="max_workers">并发线程数</label>
@@ -59,15 +63,19 @@
         </div>
         <div class="detail-item">
             <div class="k">数据来源</div>
-            <div class="v"><code>qmds_url_stores.{category}_filtered</code> 集合中的店铺URL（按域名去重）</div>
+            <div class="v"><code>qmds_url_stores.{category}__{subcategory}</code> 集合中 filter_status=filtered 且 crawl_status=uncrawled 的店铺URL（按域名去重）</div>
         </div>
         <div class="detail-item">
             <div class="k">爬取方式</div>
-            <div class="v">按 <code>/collections/{handle}/products.json</code> 逐类爬取，每页200条，自动翻页</div>
+            <div class="v">按 <code>/products.json</code> 逐页爬取，每页200条，自动翻页</div>
         </div>
         <div class="detail-item">
             <div class="k">存储位置</div>
-            <div class="v"><code>qmds_product_data.{category}_raw</code> 集合</div>
+            <div class="v"><code>qmds_product_data.{category}__{subcategory}</code> 集合（clean_status=unclean, export_status=unexported）</div>
+        </div>
+        <div class="detail-item">
+            <div class="k">二级分类</div>
+            <div class="v">选择"全部二级分类"可依次爬取该一级分类下所有二级分类的商品；商品的 <code>source_subcategory</code> 字段记录二级分类，无二级分类时为 "other"</div>
         </div>
         <div class="detail-item">
             <div class="k">数据字段</div>
@@ -75,4 +83,66 @@
         </div>
     </div>
 </div>
+
+<script>
+// 解析 filtered_categories 前缀列表，提取一级分类和二级分类
+var filteredData = {{ filtered_categories|default([])|tojson }};
+var categoryMap = {};  // {category: [subcategory, ...]}
+
+filteredData.forEach(function(prefix) {
+    // 前缀格式: {category}__{subcategory}
+    var parts = prefix.split("__");
+    var cat = parts[0];
+    var sub = parts.length > 1 ? parts[1] : "other";
+    if (!categoryMap[cat]) {
+        categoryMap[cat] = [];
+    }
+    if (categoryMap[cat].indexOf(sub) === -1) {
+        categoryMap[cat].push(sub);
+    }
+});
+
+// 填充一级分类下拉框
+var categorySelect = document.getElementById('crawl_category');
+var subcategorySelect = document.getElementById('crawl_subcategory');
+Object.keys(categoryMap).sort().forEach(function(cat) {
+    var option = document.createElement('option');
+    option.value = cat;
+    option.textContent = cat + ' (' + categoryMap[cat].length + ' 个二级分类)';
+    categorySelect.appendChild(option);
+});
+
+// 一级分类变化时，更新二级分类下拉框
+categorySelect.addEventListener('change', function() {
+    var selectedCat = this.value;
+    subcategorySelect.innerHTML = '';
+    if (!selectedCat) {
+        var opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = '请先选择一级分类';
+        subcategorySelect.appendChild(opt);
+        return;
+    }
+    var subs = categoryMap[selectedCat] || [];
+    // 添加 "全部二级分类" 选项
+    var allSubOpt = document.createElement('option');
+    allSubOpt.value = '__all__';
+    allSubOpt.textContent = '全部二级分类 (' + subs.length + ' 个)';
+    subcategorySelect.appendChild(allSubOpt);
+    // 添加 "other" 选项
+    var otherOpt = document.createElement('option');
+    otherOpt.value = '';
+    otherOpt.textContent = 'other';
+    subcategorySelect.appendChild(otherOpt);
+    subs.sort().forEach(function(sub) {
+        if (sub === 'other') return;
+        var opt = document.createElement('option');
+        opt.value = sub;
+        opt.textContent = sub;
+        subcategorySelect.appendChild(opt);
+    });
+    // 默认选择 "全部二级分类"
+    subcategorySelect.value = '__all__';
+});
+</script>
 {% endblock %}

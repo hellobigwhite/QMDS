@@ -71,6 +71,7 @@
                 <button type="submit" class="btn btn-secondary" name="action" value="set_main_category">设置主分类</button>
                 <button type="submit" class="btn btn-warning" name="action" value="clear_cache">清理缓存</button>
                 <button type="submit" class="btn btn-secondary" name="action" value="configure_menu">设置菜单</button>
+                <button type="submit" class="btn btn-secondary" name="action" value="ai_configure_menu">AI构建菜单</button>
                 <button type="submit" class="btn btn-success" name="action" value="configure_sites">配置站点</button>
                 <button type="submit" class="btn btn-danger" name="action" value="delete_selected" onclick="return confirm('确定删除选中的已建站站点吗？');">删除选中</button>
             </div>
@@ -97,6 +98,35 @@
             </div>
         </div>
 
+        <div class="card" style="background:#f0fff0; margin-bottom:16px;">
+            <h3 style="font-size:14px; margin-bottom:12px;">导出勾选站点到Excel</h3>
+            <div class="flex mb-4" style="flex-wrap:wrap; gap:8px; align-items:center;">
+                <span class="text-muted" style="font-size:12px;">选择要导出的字段：</span>
+                <label style="font-size:13px;"><input type="checkbox" name="export_fields" value="build_time" checked> 建站时间</label>
+                <label style="font-size:13px;"><input type="checkbox" name="export_fields" value="domain" checked> 域名</label>
+                <label style="font-size:13px;"><input type="checkbox" name="export_fields" value="server" checked> 服务器</label>
+                <label style="font-size:13px;"><input type="checkbox" name="export_fields" value="template" checked> 模板底板</label>
+                <label style="font-size:13px;"><input type="checkbox" name="export_fields" value="category"> 大类</label>
+                <label style="font-size:13px;"><input type="checkbox" name="export_fields" value="main_category"> 主分类</label>
+                <label style="font-size:13px;"><input type="checkbox" name="export_fields" value="title"> 标题</label>
+                <label style="font-size:13px;"><input type="checkbox" name="export_fields" value="description"> 描述</label>
+                <label style="font-size:13px;"><input type="checkbox" name="export_fields" value="address"> 地址</label>
+                <label style="font-size:13px;"><input type="checkbox" name="export_fields" value="health_status"> 健康状态</label>
+                <label style="font-size:13px;"><input type="checkbox" name="export_fields" value="main_data_status"> 主数据状态</label>
+                <label style="font-size:13px;"><input type="checkbox" name="export_fields" value="extra_data_status"> 补充数据状态</label>
+                <label style="font-size:13px;"><input type="checkbox" name="export_fields" value="main_category_status"> 主分类状态</label>
+                <label style="font-size:13px;"><input type="checkbox" name="export_fields" value="auto_category_status"> 菜单状态</label>
+                <label style="font-size:13px;"><input type="checkbox" name="export_fields" value="plugin_status"> 插件状态</label>
+                <label style="font-size:13px;"><input type="checkbox" name="export_fields" value="media_status"> 媒体状态</label>
+                <label style="font-size:13px;"><input type="checkbox" name="export_fields" value="report_status"> 上报状态</label>
+                <label style="font-size:13px;"><input type="checkbox" name="export_fields" value="report_time"> 上报时间</label>
+                <label style="font-size:13px;"><input type="checkbox" name="export_fields" value="created_at"> 创建时间</label>
+                <button type="submit" class="btn btn-success" name="action" value="export_selected"
+                        onclick="return confirmExport();">导出勾选到Excel</button>
+            </div>
+            <p class="text-muted" style="font-size:12px;">默认导出 建站时间/域名/服务器/模板底板，建站时间格式为 年/月/日。</p>
+        </div>
+
         <div class="card" style="background:#f0f7ff; margin-bottom:16px;">
             <h3 style="font-size:14px; margin-bottom:12px;">快捷工具</h3>
             <div class="flex mb-4" style="flex-wrap:wrap; gap:8px;">
@@ -117,6 +147,7 @@
                     <option value="upload_extra">上传补充数据</option>
                     <option value="set_main_category">设置主分类</option>
                     <option value="configure_menu">设置菜单</option>
+                    <option value="ai_configure_menu">AI构建菜单</option>
                     <option value="clear_cache">清理缓存</option>
                     <option value="configure_sites">配置站点</option>
                 </select>
@@ -157,7 +188,7 @@
                             data-auto-category-status="{{ site.auto_category_status or '' }}"
                             data-plugin-status="{{ site.plugin_status or '' }}"
                             data-media-status="{{ site.media_status or '' }}"></td>
-                        <td><a href="http://{{ site.domain }}" target="_blank" style="color:#1565c0;">{{ site.domain }}</a></td>
+                        <td><a href="/site-management/{{ site._id }}/open-menu" target="_blank" title="点击登录并打开菜单后台" style="color:#1565c0; cursor:pointer;">{{ site.domain }}</a></td>
                         <td>{{ site.health_status or '未检查' }}</td>
                         <td>{{ site.main_data_status or '未上传' }}</td>
                         <td>{{ site.extra_data_status or '未上传' }}</td>
@@ -310,6 +341,20 @@ function submitPendingAction() {
     actionInput.value = action;
     
     form.submit();
+}
+
+function confirmExport() {
+    const selected = Array.from(document.querySelectorAll('input[name="selected_ids"]:checked'));
+    if (!selected.length) {
+        alert('请先勾选要导出的站点。');
+        return false;
+    }
+    const fields = Array.from(document.querySelectorAll('input[name="export_fields"]:checked'));
+    if (!fields.length) {
+        alert('请至少选择一个要导出的字段。');
+        return false;
+    }
+    return true;
 }
 
 document.getElementById('pendingSelector').addEventListener('change', syncRecommendedAction);

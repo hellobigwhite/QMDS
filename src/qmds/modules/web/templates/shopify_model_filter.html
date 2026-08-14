@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card" style="max-width:1200px;margin:0 auto;">
+    <h2>🤖 模型筛站导入</h2>
+    <p class="text-muted" style="margin-bottom:16px;">
+        从 <code>cc_c</code> 数据库的 <code>shopify_site</code> 集合导入模型筛站数据<br>
+        支持 AI 智能分类（抓取网站信息 + LLM 分类）和直接导入两种方式
+    </p>
+
+    <!-- ===== AI 智能分类区块 ===== -->
+    <div style="border:1px solid #e0e0e0;border-radius:8px;padding:16px;margin-bottom:20px;background:#fafafa;">
+        <h3 style="font-size:16px;margin-top:0;">🤖 AI 智能分类（在 cc_c.shopify_site 源集合上操作）</h3>
+        <p class="text-muted" style="font-size:13px;margin-bottom:12px;">
+            直接对 <code>cc_c.shopify_site</code> 中 <b>page_info 为空且无 category/subcategory</b> 的记录进行 AI 分类，结果写回源文档。<br>
+            分两步执行：① 抓取网站信息 ② LLM 分类。分类完成后再运行下方"直接导入"按 AI 结果导入到详细集合。
+        </p>
+
+        <form method="post" action="/shopify/model-filter-import" style="display:inline;">
+            <input type="hidden" name="action" value="ai_fetch_info">
+            <input type="hidden" name="source_db" value="cc_c">
+            <input type="hidden" name="source_collection" value="shopify_site">
+            <button type="submit" class="btn btn-primary" onclick="return confirmFetch()"
+                    style="margin-right:12px;">
+                📡 阶段1：抓取网站信息
+            </button>
+        </form>
+
+        <form method="post" action="/shopify/model-filter-import" style="display:inline;">
+            <input type="hidden" name="action" value="ai_filter">
+            <input type="hidden" name="source_db" value="cc_c">
+            <input type="hidden" name="source_collection" value="shopify_site">
+            <button type="submit" class="btn btn-success" onclick="return confirmClassify()">
+                🚀 阶段2：模型分类
+            </button>
+        </form>
+
+        <div style="margin-top:10px;font-size:12px;color:#888;">
+            <b>阶段1</b>：并发抓取每个站点首页 HTML + <code>/collections.json</code>，提取 title/meta/nav/collection_titles，写回源文档 <code>page_info</code> 字段（三级降级：远程代理 → 本地代理池 → 直连）<br>
+            <b>阶段2</b>：调用 MiMo LLM 分类，将 <code>category</code>/<code>subcategory</code>/<code>ai_status</code> 写回源文档。处理：非英文站、黑五类、综合站、无法识别
+        </div>
+    </div>
+
+    <!-- ===== 直接导入区块 ===== -->
+    <div style="border:1px solid #e0e0e0;border-radius:8px;padding:16px;background:#fff;">
+        <h3 style="font-size:16px;margin-top:0;">📥 直接导入（从 cc_c.shopify_site_01 导入到详细集合）</h3>
+        <p class="text-muted" style="font-size:13px;margin-bottom:12px;">
+            根据 <code>category</code>/<code>subcategory</code> 字段将数据从 <code>shopify_site_01</code> 导入到 <code>{category}__{subcategory}</code> 集合<br>
+            AI 分类完成后，可运行此步骤将分类结果导入到详细集合
+        </p>
+
+        <form method="post" action="/shopify/model-filter-import">
+            <input type="hidden" name="action" value="import">
+            <div class="form-group">
+                <label for="category">选择一级分类 *</label>
+                <select id="category" name="category" required>
+                    <option value="">-- 请选择一级分类 --</option>
+                    <option value="__all__" {% if selected_category == '__all__' %}selected{% endif %}>🌟 全部类目（批量导入所有类目）</option>
+                    {% for cat in categories %}
+                    <option value="{{ cat }}" {% if selected_category == cat %}selected{% endif %}>{{ cat }}</option>
+                    {% endfor %}
+                </select>
+                <small class="text-muted">
+                    选择"全部类目"将依次处理 21 个一级分类；选择具体类目仅处理该类目。
+                    源集合中 <code>category</code> 字段（Google Taxonomy 名称）匹配为此一级分类
+                </small>
+            </div>
+
+            <div class="form-group">
+                <label for="source_db">源数据库名</label>
+                <input type="text" id="source_db" name="source_db" value="cc_c" style="width:100%;" required>
+            </div>
+
+            <div class="form-group">
+                <label for="source_collection">源集合名</label>
+                <input type="text" id="source_collection" name="source_collection" value="shopify_site_01" style="width:100%;" required>
+            </div>
+
+            <div class="form-group">
+                <label for="batch_size">分批大小</label>
+                <input type="number" id="batch_size" name="batch_size" value="500" min="50" max="5000" step="50" style="width:200px;">
+                <small class="text-muted">每批处理的文档数量（50-5000）</small>
+            </div>
+
+            <button type="submit" class="btn btn-primary" onclick="return confirmImport()">🚀 启动导入任务</button>
+            <a href="/tasks" class="btn btn-secondary">查看任务进度</a>
+        </form>
+    </div>
+</div>
+
+<div class="card" style="max-width:1200px;margin:20px auto 0;">
+    <h2>📋 功能说明</h2>
+    <div style="padding:8px 0;">
+        <h3 style="font-size:15px;margin-bottom:8px;">🤖 AI 智能分类流程（在 cc_c.shopify_site 上操作）</h3>
+        <ol style="line-height:1.8;padding-left:20px;">
+            <li><b>阶段1 - 抓取网站信息</b>：查询 <code>page_info</code> 为空且无 <code>category</code>/<code>subcategory</code> 的记录，并发抓取首页 HTML 和 <code>/collections.json</code>，提取结构化信息写回 <code>page_info</code> 字段</li>
+            <li><b>阶段2 - LLM 分类</b>：读取已抓取 <code>page_info</code> 的记录，调用 MiMo 模型分类，将结果写回源文档：
+                <ul style="padding-left:20px;margin-top:4px;">
+                    <li>正常分类：写入 <code>category</code>（Google 名称）+ <code>subcategory</code>（完整路径），<code>ai_status=classified</code></li>
+                    <li>非英文站：<code>ai_status=non_english</code>，记录 <code>ai_language</code></li>
+                    <li>黑五类：<code>ai_status=black_five</code>，记录 <code>ai_black_five_type</code></li>
+                    <li>综合站：<code>ai_status=comprehensive</code>，记录 <code>ai_subcategories</code> 列表</li>
+                    <li>无法识别：<code>ai_status=unrecognized</code></li>
+                </ul>
+            </li>
+            <li><b>直接导入</b>：AI 分类完成后，运行下方导入，按 <code>category</code>/<code>subcategory</code> 字段导入到 <code>{category}__{subcategory}</code> 集合</li>
+        </ol>
+
+        <h3 style="font-size:15px;margin:12px 0 8px;">📥 直接导入数据流程</h3>
+        <ol style="line-height:1.8;padding-left:20px;">
+            <li>查询源集合中 <code>category</code> 字段匹配且 <code>extracted != true</code> 的文档</li>
+            <li>解析 <code>subcategory</code> 字段（Google Taxonomy 路径格式）的最后一段作为二级分类<br>
+                <span class="text-muted" style="font-size:12px;">
+                    例如: <code>Hardware &gt; Tools</code> -> 二级分类 <code>tools</code>；
+                    <code>Hardware &gt; Tools &gt; Hammers</code> -> 二级分类 <code>hammers</code>
+                </span>
+            </li>
+            <li>从 <code>final_url</code> 提取 <code>scheme://netloc</code> 作为 <code>store_url</code></li>
+            <li>写入目标集合 <code>{category}__{subcategory}</code>（upsert，按 domain 去重，设置 filter_status=filtered）</li>
+            <li>更新源文档：<code>extracted=true</code>、<code>extracted_at=时间戳</code>、<code>extracted_to=目标集合名</code></li>
+        </ol>
+
+        <h3 style="font-size:15px;margin:12px 0 8px;">幂等性 & 重复保护</h3>
+        <ul style="line-height:1.8;padding-left:20px;">
+            <li>AI 抓取：只处理 <code>page_info</code> 为空的记录，已抓取的不会重复处理</li>
+            <li>AI 分类：只处理已抓取但未分类（<code>ai_status</code> 为空/pending）的记录，已分类的不会重复处理</li>
+            <li>直接导入：源文档提取后标记 <code>extracted=true</code>，再次运行不会重复提取</li>
+            <li>任务支持停止：在任务页面可中断</li>
+        </ul>
+    </div>
+</div>
+
+<script>
+function confirmFetch() {
+    return confirm('确认启动【阶段1：抓取网站信息】任务？\n将并发抓取 cc_c.shopify_site 中 page_info 为空且无 category/subcategory 的记录。\n可在任务页面查看进度或停止。');
+}
+
+function confirmClassify() {
+    return confirm('确认启动【阶段2：模型分类】任务？\n将对已抓取 page_info 的记录调用 MiMo LLM 分类，结果写回源文档。\n请确保已先运行阶段1。可在任务页面查看进度或停止。');
+}
+
+function confirmImport() {
+    var sel = document.getElementById('category');
+    var cat = sel.value;
+    if (!cat) {
+        alert('请选择一级分类');
+        return false;
+    }
+    var msg = cat === '__all__'
+        ? '确认启动【全部类目】批量导入任务？\n将依次处理 21 个一级分类，可能耗时较长，可在任务页面查看进度或停止。'
+        : '确认启动导入任务？将从源集合提取【' + cat + '】类目数据并标记已提取记录。';
+    return confirm(msg);
+}
+</script>
+{% endblock %}

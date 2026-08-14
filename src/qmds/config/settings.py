@@ -28,10 +28,14 @@ class Settings:
     # MongoDB
     mongo_uri: str = "mongodb://localhost:27017"
     mongo_db_url: str = "qmds_url_stores"
+    shopify_url_db_name: str = "shopify_url"              # 外部源数据库（shopify_url 库，只读）
+    comprehensive_collection: str = "comprehensive_stores"  # 综合站集合名
+    shopify_url_info_collection: str = "shopify_url_info"   # shopify_url 库网站信息缓存集合
 
     # Redis
     redis_host: str = "localhost"
     redis_port: int = 6379
+    redis_db: int = 0
 
     # 日志
     log_level: str = "INFO"
@@ -42,6 +46,11 @@ class Settings:
 
     # 网站分类器
     niche_threshold: float = 0.7  # 主营类目占比阈值（≥此值为专一站）
+
+    # AI 分类（MiMo LLM）
+    mimo_api_key: str = "sk-sqlv0zc1341mtj6nk6y9c6sulv4n6qbz3i4cvp0m24rwgn06"
+    glm_model: str = "mimo-v2.5"
+    ai_batch_size: int = 10
 
     def __post_init__(self):
         self.data_dir = self.project_root / self.data_dir
@@ -80,7 +89,13 @@ class Settings:
     def from_env(cls) -> "Settings":
         return cls(
             mongo_uri=os.getenv("MONGO_URI", "mongodb://localhost:27017"),
+            shopify_url_db_name=os.getenv("SHOPIFY_URL_DB_NAME", "shopify_url"),
+            comprehensive_collection=os.getenv("COMPREHENSIVE_COLLECTION", "comprehensive_stores"),
+            shopify_url_info_collection=os.getenv("SHOPIFY_URL_INFO_COLLECTION", "shopify_url_info"),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
+            mimo_api_key=os.getenv("MIMO_API_KEY", "sk-sqlv0zc1341mtj6nk6y9c6sulv4n6qbz3i4cvp0m24rwgn06"),
+            glm_model=os.getenv("GLM_MODEL", "mimo-v2.5"),
+            ai_batch_size=int(os.getenv("AI_BATCH_SIZE", "10")),
         )
 
 

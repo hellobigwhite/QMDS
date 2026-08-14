@@ -3,11 +3,13 @@
 <div class="card" style="max-width:1200px;margin:0 auto;">
     <h2>✏️ 编辑筛选记录</h2>
     <p class="text-muted" style="margin-bottom:16px;">
-        类目: <strong>{{ category }}</strong> | 
-        数据来源: <code>{{ category }}_filtered</code>
+        一级分类: <strong>{{ category }}</strong> | 
+        二级分类: <strong>{{ subcategory }}</strong> |
+        数据来源: <code>{{ category }}__{{ subcategory }}</code>
     </p>
 
     <form method="post">
+        <input type="hidden" name="old_subcategory" value="{{ subcategory }}">
         <div class="form-group">
             <label for="domain">域名</label>
             <input type="text" id="domain" name="domain" value="{{ doc.domain }}" required>
@@ -29,13 +31,14 @@
             <input type="text" id="collection_handle" name="collection_handle" value="{{ doc.collection_handle }}">
         </div>
         <div class="form-group">
-            <label for="subcategory">二级分类</label>
+            <label for="subcategory">二级分类（修改后将自动迁移到新集合）</label>
             <input type="text" id="subcategory" name="subcategory" value="{{ doc.subcategory or '' }}">
+            <small class="text-muted">留空归入 "other"</small>
         </div>
         
         <div style="display:flex;gap:12px;margin-top:20px;">
             <button type="submit" class="btn btn-primary">保存修改</button>
-            <a href="/shopify/filter-categories?category={{ category }}" class="btn btn-secondary">返回列表</a>
+            <a href="/shopify/filter-categories?category={{ category }}&subcategory={{ subcategory }}" class="btn btn-secondary">返回列表</a>
         </div>
     </form>
 </div>
