@@ -1160,6 +1160,32 @@ def site_reported():
                                total=0, page=1, page_size=20)
 
 
+@bp.route("/api/site-management/reported/domain-status", methods=["GET"])
+def reported_domain_status_api():
+    """获取域名状态自动更新的当前状态（供前端轮询弹窗提醒）"""
+    from qmds.modules.web.services.domain_status_scheduler import scheduler
+    try:
+        sched_status = scheduler.get_status()
+        site_db = get_site_db()
+        check = site_db.check_all_today_reported_resolved()
+        return jsonify({
+            "ok": True,
+            "scheduler": sched_status,
+            "today": check,
+        })
+    except Exception as e:
+        log.error(f"获取域名状态失败: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@bp.route("/api/site-management/reported/domain-status/ack", methods=["POST"])
+def reported_domain_status_ack_api():
+    """前端确认建站提醒后调用，重置提醒标志避免重复弹窗"""
+    from qmds.modules.web.services.domain_status_scheduler import scheduler
+    scheduler.reset_ready_notified()
+    return jsonify({"ok": True})
+
+
 @bp.route("/site-management/scheduled", methods=["GET", "POST"])
 def site_scheduled():
     """计划上报管理"""

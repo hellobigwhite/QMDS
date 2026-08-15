@@ -44,6 +44,10 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
     from qmds.modules.web.task_manager import start_cleanup_scheduler
     start_cleanup_scheduler()
 
+    # 启动域名状态自动更新调度器
+    from qmds.modules.web.services.domain_status_scheduler import start_domain_status_scheduler
+    start_domain_status_scheduler()
+
     # 注册所有 Blueprint
     from qmds.modules.web.routes.core import bp as core_bp
     from qmds.modules.web.routes.shopify import bp as shopify_bp

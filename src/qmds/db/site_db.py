@@ -802,6 +802,50 @@ class SiteDBClient:
         query = {"report_status": "已报"}
         return list(self.sites.find(query, {"domain": 1, "report_id": 1, "domain_status": 1}))
 
+    def list_domains_with_empty_status_today(self) -> list[dict]:
+        """列出当天上报且域名状态为空的域名（用于自动更新状态）"""
+        from datetime import timedelta
+        now = datetime.utcnow()
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day_start + timedelta(days=1)
+        query = {
+            "report_status": "已报",
+            "report_time": {"$gte": day_start.isoformat(), "$lt": day_end.isoformat()},
+            "$or": [
+                {"domain_status": {"$in": ["", None]}},
+                {"domain_status": {"$exists": False}},
+            ],
+        }
+        return list(self.sites.find(query, {"domain": 1, "report_id": 1, "domain_status": 1, "_id": 0}))
+
+    def check_all_today_reported_resolved(self) -> dict:
+        """检查当天上报的域名是否全部已解析（status 为 2 或 3）。
+        返回 {total, resolved, has_empty, all_resolved, ready_to_build}"""
+        from datetime import timedelta
+        now = datetime.utcnow()
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day_start + timedelta(days=1)
+        query = {
+            "report_status": "已报",
+            "report_time": {"$gte": day_start.isoformat(), "$lt": day_end.isoformat()},
+        }
+        docs = list(self.sites.find(query, {"domain_status": 1, "_id": 0}))
+        total = len(docs)
+        if total == 0:
+            return {"total": 0, "resolved": 0, "has_empty": False,
+                    "all_resolved": False, "ready_to_build": False}
+        resolved = 0
+        has_empty = False
+        for d in docs:
+            s = d.get("domain_status")
+            if s in (None, ""):
+                has_empty = True
+            elif str(s) in ("2", "3"):
+                resolved += 1
+        all_resolved = (resolved == total) and not has_empty
+        return {"total": total, "resolved": resolved, "has_empty": has_empty,
+                "all_resolved": all_resolved, "ready_to_build": all_resolved}
+
     def batch_update_login_path(self, site_ids: list[str], login_path: str) -> int:
         """批量更新登录路径"""
         return self._batch_update_field(site_ids, "login_path", login_path)
