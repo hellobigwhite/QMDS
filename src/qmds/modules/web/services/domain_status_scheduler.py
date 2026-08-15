@@ -28,9 +28,6 @@ class DomainStatusScheduler:
         # 自动更新状态
         self._last_run_time = None
         self._last_result = None  # dict: {checked, updated, failed, ready_to_build, message}
-        # 当天 ready_to_build 标志（重置：跨天或手动重置）
-        self._ready_date = None  # 触发 ready 的日期 (date 对象)
-        self._ready_notified = False
 
     def start(self):
         with self._lock:
@@ -66,11 +63,7 @@ class DomainStatusScheduler:
     def _tick(self):
         site_db = SiteDBClient()
         try:
-            today = datetime.utcnow().date()
-            # 跨天重置 ready 标志
-            if self._ready_date != today:
-                self._ready_date = None
-                self._ready_notified = False
+            today_text = datetime.utcnow().date().isoformat()
 
             domains = site_db.list_domains_with_empty_status_today()
             if not domains:
@@ -85,10 +78,9 @@ class DomainStatusScheduler:
                     "resolved": result["resolved"],
                     "message": "无可更新域名",
                 }
-                if result["ready_to_build"] and not self._ready_notified:
-                    self._ready_date = today
-                    self._ready_notified = True
+                if result["ready_to_build"] and not site_db.is_ready_notified(today_text):
                     self._notify_ready(result)
+                    site_db.add_ready_notified_date(today_text)
                 log.info(f"域名状态自动更新: 无待更新域名，今日上报 {result['total']}，已解析 {result['resolved']}")
                 return
 
@@ -139,10 +131,9 @@ class DomainStatusScheduler:
                 "resolved": result["resolved"],
                 "message": f"已更新 {updated}/{len(domains)}",
             }
-            if result["ready_to_build"] and not self._ready_notified:
-                self._ready_date = today
-                self._ready_notified = True
+            if result["ready_to_build"] and not site_db.is_ready_notified(today_text):
                 self._notify_ready(result)
+                site_db.add_ready_notified_date(today_text)
             log.info(f"域名状态自动更新完成: 更新 {updated}, 失败 {failed}, "
                      f"今日上报 {result['total']}, 已解析 {result['resolved']}, "
                      f"可建站 {result['ready_to_build']}")
@@ -155,8 +146,6 @@ class DomainStatusScheduler:
                 "running": self._running,
                 "last_run_time": self._last_run_time,
                 "last_result": self._last_result,
-                "ready_notified": self._ready_notified,
-                "ready_date": str(self._ready_date) if self._ready_date else None,
             }
 
     def _notify_ready(self, result: dict):
@@ -169,12 +158,6 @@ class DomainStatusScheduler:
             )
         except Exception as e:
             log.error(f"发送桌面通知失败: {e}")
-
-    def reset_ready_notified(self):
-        """前端用户确认后重置提醒标志，避免重复弹窗"""
-        with self._lock:
-            self._ready_notified = False
-            self._ready_date = None
 
 
 scheduler = DomainStatusScheduler()

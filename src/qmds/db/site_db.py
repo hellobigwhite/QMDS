@@ -563,6 +563,27 @@ class SiteDBClient:
                 self.set_setting(key, value)
         log.info("默认配置已初始化")
 
+    # ── 解析完成提醒状态持久化 ────────────────────────────────
+
+    READY_NOTIFY_KEY = "domain_ready_notified_dates"
+
+    def get_ready_notified_dates(self) -> list[str]:
+        """已发送过解析完成提醒的日期列表（持久化，重启不丢失）"""
+        raw = self.get_setting(self.READY_NOTIFY_KEY, "")
+        return [d for d in raw.split(",") if d]
+
+    def add_ready_notified_date(self, date_text: str) -> bool:
+        """记录某日期已发送提醒，持久化避免重复弹窗"""
+        dates = self.get_ready_notified_dates()
+        if date_text in dates:
+            return False
+        dates.append(date_text)
+        return self.set_setting(self.READY_NOTIFY_KEY, ",".join(dates))
+
+    def is_ready_notified(self, date_text: str) -> bool:
+        """某日期是否已发送过提醒"""
+        return date_text in self.get_ready_notified_dates()
+
     # ── 选项管理 ──────────────────────────────────────────────
 
     @property
@@ -803,7 +824,8 @@ class SiteDBClient:
         return list(self.sites.find(query, {"domain": 1, "report_id": 1, "domain_status": 1}))
 
     def list_domains_with_empty_status_today(self) -> list[dict]:
-        """列出当天上报且域名状态为空的域名（用于自动更新状态）"""
+        """列出当天上报且域名状态为空的域名（用于自动更新状态）。
+        只有状态为空才向上报API发请求；待解析(0)/待配置(1)/已解析(2/3)/已建站(4)均不再请求。"""
         from datetime import timedelta
         now = datetime.utcnow()
         day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -819,7 +841,8 @@ class SiteDBClient:
         return list(self.sites.find(query, {"domain": 1, "report_id": 1, "domain_status": 1, "_id": 0}))
 
     def check_all_today_reported_resolved(self) -> dict:
-        """检查当天上报的域名是否全部已解析（status 为 2 或 3）。
+        """检查当天上报的域名是否全部为已解析（status 为 2 或 3）。
+        已建站(4)/待解析(0)/待配置(1)/空状态均不算已解析，任一存在则不满足提醒条件。
         返回 {total, resolved, has_empty, all_resolved, ready_to_build}"""
         from datetime import timedelta
         now = datetime.utcnow()

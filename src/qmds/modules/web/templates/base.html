@@ -155,41 +155,6 @@
                 });
             });
         });
-
-        // ── 域名解析完成提醒轮询（全局，所有页面生效） ──────────────
-        (function () {
-            var POLL_INTERVAL = 60000; // 60 秒轮询一次
-            var acked = false;
-
-            function showModal(today) {
-                var msg = '当天上报的 ' + today.total + ' 个域名已全部解析完成，可以建站了！';
-                if (window.confirm(msg)) {
-                    acked = true;
-                } else {
-                    acked = true;
-                }
-                fetch('/api/site-management/reported/domain-status/ack', { method: 'POST' })
-                    .catch(function () {});
-            }
-
-            function poll() {
-                fetch('/api/site-management/reported/domain-status', { cache: 'no-store' })
-                    .then(function (r) { return r.json(); })
-                    .then(function (data) {
-                        if (!data.ok) return;
-                        var today = data.today || {};
-                        var sched = data.scheduler || {};
-                        // 调度器已触发 ready 且用户尚未确认 -> 弹窗
-                        if (today.ready_to_build && sched.ready_notified && !acked) {
-                            showModal(today);
-                        }
-                    })
-                    .catch(function () {});
-            }
-
-            poll();
-            setInterval(poll, POLL_INTERVAL);
-        })();
     </script>
 </body>
 </html>

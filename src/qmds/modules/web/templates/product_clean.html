@@ -55,7 +55,7 @@
                         <th>一级分类</th>
                         <th>二级分类</th>
                         <th>原始数据</th>
-                        <th>清洗后数据</th>
+                        <th>未清洗数据</th>
                         <th>操作</th>
                     </tr>
                 </thead>
@@ -278,7 +278,7 @@ function renderStats(stats) {
             if (catStat.category === selectedCat) {
                 var opt = document.createElement('option');
                 opt.value = catStat.subcategory;
-                opt.textContent = catStat.subcategory + ' (原始: ' + catStat.raw_count + ', 清洗后: ' + catStat.clean_count + ')';
+                opt.textContent = catStat.subcategory + ' (原始: ' + catStat.raw_count + ', 未清洗: ' + catStat.unclean_count + ')';
                 subSelect.appendChild(opt);
             }
         });
@@ -314,7 +314,7 @@ function renderStats(stats) {
         tr.appendChild(tdRaw);
 
         var tdClean = document.createElement('td');
-        tdClean.textContent = catStat.clean_count || 0;
+        tdClean.textContent = catStat.unclean_count || 0;
         tr.appendChild(tdClean);
 
         var tdAction = document.createElement('td');
