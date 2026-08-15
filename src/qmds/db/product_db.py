@@ -85,6 +85,9 @@ CLEAN_STATUS_FAILED = "failed"        # 清洗失败
 EXPORT_STATUS_UNEXPORTED = "unexported"  # 未导出
 EXPORT_STATUS_EXPORTED = "exported"      # 已导出
 
+# 单次 $in / update_many 批量操作的最大文档数（过大的批量会使 mongod 内存剧烈尖峰，曾导致 OOM 崩溃）
+DB_BATCH_SIZE = 500
+
 # 导出字段配置
 EXPORT_COLUMNS = [
     "SKU", "标题", "描述", "子描述", "图片",
@@ -341,6 +344,13 @@ class ProductDBClient:
         col.create_index([("export_count", ASCENDING)], name="idx_export_count")
         col.create_index([("last_export_time", ASCENDING)], name="idx_last_export_time")
 
+        # 状态组合查询复合索引（导出流程查 clean_status=cleaned 且 export_status=unexported，
+        # 原单字段索引需扫描数万条才能返回少量结果）
+        col.create_index(
+            [("clean_status", ASCENDING), ("export_status", ASCENDING)],
+            name="idx_clean_export_status",
+        )
+
         # 标题索引（用于导出查询）
         col.create_index([("标题", ASCENDING)], name="idx_title")
 
@@ -431,16 +441,20 @@ class ProductDBClient:
         if not unique_keys:
             return 0
 
-        # 在同一集合中更新 clean_status 为 cleaned
-        result = col.update_many(
-            {"unique_key": {"$in": unique_keys}},
-            {"$set": {
-                "clean_status": CLEAN_STATUS_CLEANED,
-                "clean_time": clean_time,
-            }}
-        )
+        # 在同一集合中更新 clean_status 为 cleaned（分批，避免 $in 列表过大导致 mongod 内存尖峰）
+        modified = 0
+        for i in range(0, len(unique_keys), DB_BATCH_SIZE):
+            batch = unique_keys[i:i + DB_BATCH_SIZE]
+            result = col.update_many(
+                {"unique_key": {"$in": batch}},
+                {"$set": {
+                    "clean_status": CLEAN_STATUS_CLEANED,
+                    "clean_time": clean_time,
+                }}
+            )
+            modified += result.modified_count
         self._stats_cache.invalidate()
-        return result.modified_count
+        return modified
 
     # ── 清洗操作 ──────────────────────────────────────────
 
@@ -565,8 +579,8 @@ class ProductDBClient:
 
         # 更新通过的为 cleaned
         if passed_keys:
-            for i in range(0, len(passed_keys), 10000):
-                batch = passed_keys[i:i + 10000]
+            for i in range(0, len(passed_keys), DB_BATCH_SIZE):
+                batch = passed_keys[i:i + DB_BATCH_SIZE]
                 col.update_many(
                     {"unique_key": {"$in": batch}},
                     {"$set": {"clean_status": CLEAN_STATUS_CLEANED, "clean_time": clean_time}}
@@ -575,8 +589,8 @@ class ProductDBClient:
         # 更新未通过的为 failed
         failed_keys = list(all_keys - set(passed_keys))
         if failed_keys:
-            for i in range(0, len(failed_keys), 10000):
-                batch = failed_keys[i:i + 10000]
+            for i in range(0, len(failed_keys), DB_BATCH_SIZE):
+                batch = failed_keys[i:i + DB_BATCH_SIZE]
                 col.update_many(
                     {"unique_key": {"$in": batch}},
                     {"$set": {"clean_status": CLEAN_STATUS_FAILED, "clean_time": clean_time}}
@@ -781,12 +795,16 @@ class ProductDBClient:
         if clean_time:
             update_data["clean_time"] = clean_time
 
-        result = col.update_many(
-            {"unique_key": {"$in": unique_keys}},
-            {"$set": update_data}
-        )
+        modified = 0
+        for i in range(0, len(unique_keys), DB_BATCH_SIZE):
+            batch = unique_keys[i:i + DB_BATCH_SIZE]
+            result = col.update_many(
+                {"unique_key": {"$in": batch}},
+                {"$set": update_data}
+            )
+            modified += result.modified_count
         self._stats_cache.invalidate()
-        return result.modified_count
+        return modified
 
     def reset_clean_status(self, category: str, subcategory: str = "") -> int:
         """重置指定分类的清洗状态为未清洗"""
@@ -969,15 +987,17 @@ class ProductDBClient:
         export_time = datetime.utcnow().isoformat()
         marked = 0
         if exported_ids:
-            result = col.update_many(
-                {"_id": {"$in": exported_ids}},
-                {"$set": {
-                    "export_status": EXPORT_STATUS_EXPORTED,
-                    "export_time": export_time,
-                    "last_export_time": export_time,
-                }, "$inc": {"export_count": 1}}
-            )
-            marked = result.modified_count
+            for i in range(0, len(exported_ids), DB_BATCH_SIZE):
+                batch = exported_ids[i:i + DB_BATCH_SIZE]
+                result = col.update_many(
+                    {"_id": {"$in": batch}},
+                    {"$set": {
+                        "export_status": EXPORT_STATUS_EXPORTED,
+                        "export_time": export_time,
+                        "last_export_time": export_time,
+                    }, "$inc": {"export_count": 1}}
+                )
+                marked += result.modified_count
 
         # 同步 _counters 的导出计数
         if marked > 0:
@@ -1094,8 +1114,8 @@ class ProductDBClient:
             cat, sub = parse_collection_prefix(prefix)
             col = self.collection(cat, sub)
             prefix_marked = 0
-            for i in range(0, len(ids), 10000):
-                batch = ids[i:i + 10000]
+            for i in range(0, len(ids), DB_BATCH_SIZE):
+                batch = ids[i:i + DB_BATCH_SIZE]
                 result = col.update_many(
                     {"_id": {"$in": batch}},
                     {"$set": {
