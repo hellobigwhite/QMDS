@@ -244,15 +244,19 @@ class MongoDBClient:
             upsert=True,
         )
 
-    def _inc_counters(self, collection_key: str, increments: dict):
+    def _inc_counters(self, collection_key: str, increments: dict, doc_delta: int = 0):
         """批量增减多个状态计数（单次 $inc 操作）
 
         Args:
             collection_key: 集合名
             increments: {"uncrawled": -1, "crawled": 1} -- 各状态的增减量
+            doc_delta: 集合文档总数变化量。同一文档的状态迁移传 0（默认），
+                       新增/删除文档时传 ±N，保证 total 与集合文档数一致
+                       （与 rebuild_counters 的 total = count_documents({}) 对齐）
         """
         inc_doc = {f"counts.{k}": v for k, v in increments.items()}
-        inc_doc["total"] = sum(increments.values())
+        if doc_delta:
+            inc_doc["total"] = doc_delta
         self._counters_col().update_one(
             {"_id": collection_key},
             {
@@ -286,10 +290,13 @@ class MongoDBClient:
             result[ctype].append(doc)
         return result
 
-    def rebuild_counters(self) -> dict:
+    def rebuild_counters(self, progress_callback=None) -> dict:
         """全量重建 _counters 集合，修复 $inc 漂移
 
         遍历所有集合，用 aggregate $group 统计各状态计数，覆盖写入 _counters。
+
+        Args:
+            progress_callback: 进度回调 fn(processed, total, message)，可选
 
         Returns:
             {"rebuilt": N, "errors": [...]} -- 重建的计数器数量和错误列表
@@ -297,15 +304,29 @@ class MongoDBClient:
         from qmds.config.categories import parse_collection_prefix
 
         self.ensure_counters_indexes()
+
+        # 预先收集目标集合，用于进度上报（先统计再清空，避免清空后进度异常）
+        unfiltered_cats = self.list_categories()
+        filtered_prefixes = self.list_filtered_categories()
+
         # 清空旧计数器
         self._counters_col().delete_many({})
 
         rebuilt = 0
         errors = []
         ts = datetime.utcnow().isoformat()
+        step_total = len(unfiltered_cats) + len(filtered_prefixes) + 3
+        step_done = 0
+
+        def _report(msg: str):
+            nonlocal step_done
+            step_done += 1
+            if progress_callback:
+                # InterruptedError 向上传播以支持任务停止；其它回调异常忽略
+                progress_callback(step_done, step_total, msg)
 
         # 1. unfiltered 集合（{category}，不含 __）
-        for cat in self.list_categories():
+        for cat in unfiltered_cats:
             try:
                 col = self.unfiltered_col(cat)
                 counts = {}
@@ -330,9 +351,10 @@ class MongoDBClient:
                 rebuilt += 1
             except Exception as e:
                 errors.append(f"unfiltered {cat}: {e}")
+            _report(f"unfiltered: {cat}")
 
         # 2. filtered 集合（{category}__{subcategory}）
-        for prefix in self.list_filtered_categories():
+        for prefix in filtered_prefixes:
             try:
                 cat, sub = parse_collection_prefix(prefix)
                 col = self.db[prefix]
@@ -357,6 +379,7 @@ class MongoDBClient:
                 rebuilt += 1
             except Exception as e:
                 errors.append(f"filtered {prefix}: {e}")
+            _report(f"filtered: {prefix}")
 
         # 3. filtered_failed 集合
         try:
@@ -383,6 +406,7 @@ class MongoDBClient:
             rebuilt += 1
         except Exception as e:
             errors.append(f"filtered_failed: {e}")
+        _report("filtered_failed")
 
         # 4. comprehensive_stores 集合
         try:
@@ -409,6 +433,7 @@ class MongoDBClient:
             rebuilt += 1
         except Exception as e:
             errors.append(f"comprehensive: {e}")
+        _report("comprehensive")
 
         # 5. shopify_url_info 集合
         try:
@@ -433,6 +458,7 @@ class MongoDBClient:
             rebuilt += 1
         except Exception as e:
             errors.append(f"shopify_url_info: {e}")
+        _report("shopify_url_info")
 
         log.info(f"计数器重建完成: {rebuilt} 个集合, {len(errors)} 个错误")
         return {"rebuilt": rebuilt, "errors": errors}
@@ -522,16 +548,18 @@ class MongoDBClient:
             "created_at": doc.get("created_at", ts),
         }
 
-        ff.update_one(
+        result = ff.update_one(
             {"domain": domain, "collection_handle": new_doc.get("collection_handle", "")},
             {"$set": new_doc},
             upsert=True,
         )
-        uf.delete_one({"domain": domain})
-        # 计数器：unfiltered -1, filtered(subcategory) +1
+        deleted = uf.delete_one({"domain": domain}).deleted_count
+        # 计数器：unfiltered -1（仅真正删除时）, filtered(subcategory) +1（仅新插入时计文档数）
         self._set_counter_type(prefix, "filtered", category, normalize_subcategory(subcategory))
-        self._inc_counter(category, "unfiltered", -1)
-        self._inc_counters(prefix, {"filtered": 1, "uncrawled": 1})
+        if deleted > 0:
+            self._inc_counter(category, "unfiltered", -1)
+        self._inc_counters(prefix, {"filtered": 1, "uncrawled": 1},
+                           doc_delta=1 if result.upserted_id else 0)
         log.info(f"已移动: {domain} -> {prefix}")
         return True
 
@@ -555,19 +583,24 @@ class MongoDBClient:
         ts = datetime.utcnow().isoformat()
         success = crawl_info.get("success", False) if crawl_info else False
         products = crawl_info.get("products", 0) if crawl_info else 0
+        new_status = CRAWL_STATUS_CRAWLED if success else CRAWL_STATUS_FAILED
+
+        # 先查旧状态，仅在状态真正变化时迁移计数（避免重复爬取反复扣减 uncrawled）
+        old_doc = col.find_one({"url": url}, {"crawl_status": 1, "_id": 0})
+        old_status = old_doc.get("crawl_status") if old_doc else None
 
         result = col.update_one(
             {"url": url},
             {"$set": {
-                "crawl_status": CRAWL_STATUS_CRAWLED if success else CRAWL_STATUS_FAILED,
+                "crawl_status": new_status,
                 "crawl_time": ts,
                 "crawl_products": products,
                 "crawl_success": success,
             }}
         )
-        if result.modified_count > 0:
-            new_status = CRAWL_STATUS_CRAWLED if success else CRAWL_STATUS_FAILED
-            self._inc_counters(prefix, {"uncrawled": -1, new_status: 1})
+        if result.modified_count > 0 or (old_doc and old_status == new_status):
+            if old_status is not None and old_status != new_status:
+                self._inc_counters(prefix, {old_status: -1, new_status: 1})
             log.info(f"已标记爬取: {url} -> {prefix}")
             return True
         return False
@@ -587,13 +620,24 @@ class MongoDBClient:
         col = self.filtered_col(category, subcategory)
         ts = datetime.utcnow().isoformat()
 
+        # 先查旧状态，仅在状态真正变化时迁移计数（避免重复/未匹配 URL 导致计数漂移）
+        all_urls = [item.get("url", "") for item in url_crawl_info_list if item.get("url")]
+        if not all_urls:
+            return 0
+        old_status_map = {
+            doc["url"]: doc.get("crawl_status")
+            for doc in col.find({"url": {"$in": all_urls}}, {"url": 1, "crawl_status": 1, "_id": 0})
+        }
+
         # 构建批量更新操作
         from pymongo import UpdateOne
         operations = []
+        valid_items = []
         for item in url_crawl_info_list:
             url = item.get("url", "")
             if not url:
                 continue
+            valid_items.append(item)
             success = item.get("success", False)
             products = item.get("products", 0)
             operations.append(UpdateOne(
@@ -611,14 +655,23 @@ class MongoDBClient:
 
         result = col.bulk_write(operations, ordered=False)
         moved_count = result.modified_count or 0
-        if moved_count > 0:
-            # 批量统计各状态数量
-            crawled_count = sum(1 for item in url_crawl_info_list if item.get("success", False))
-            failed_count = moved_count - crawled_count
-            if crawled_count > 0:
-                self._inc_counters(prefix, {"uncrawled": -crawled_count, "crawled": crawled_count})
-            if failed_count > 0:
-                self._inc_counters(prefix, {"uncrawled": -failed_count, "crawl_failed": failed_count})
+
+        # 按实际旧状态 -> 新状态统计迁移量
+        status_moves: dict[tuple, int] = {}
+        for item in valid_items:
+            url = item.get("url", "")
+            old_status = old_status_map.get(url)
+            if old_status is None or old_status == "":
+                continue
+            new_status = CRAWL_STATUS_CRAWLED if item.get("success", False) else CRAWL_STATUS_FAILED
+            if old_status != new_status:
+                status_moves[(old_status, new_status)] = status_moves.get((old_status, new_status), 0) + 1
+        if status_moves:
+            incs: dict[str, int] = {}
+            for (old_s, new_s), n in status_moves.items():
+                incs[old_s] = incs.get(old_s, 0) - n
+                incs[new_s] = incs.get(new_s, 0) + n
+            self._inc_counters(prefix, incs)
             log.info(f"批量标记爬取完成: {moved_count} 条URL -> {prefix}")
         return moved_count
 
@@ -684,6 +737,11 @@ class MongoDBClient:
         self.ensure_filtered_failed_indexes()
         ts = datetime.utcnow().isoformat()
 
+        old_doc = col.find_one(
+            {"domain": domain, "category": category}, {"reason": 1, "_id": 0}
+        )
+        old_reason = old_doc.get("reason") if old_doc else None
+
         doc = {
             "domain": domain,
             "store_url": store_url,
@@ -699,7 +757,7 @@ class MongoDBClient:
         if extra:
             doc.update(extra)
 
-        col.update_one(
+        result = col.update_one(
             {"domain": domain, "category": category},
             {"$set": doc, "$setOnInsert": {"created_at": ts}},
             upsert=True,
@@ -707,11 +765,18 @@ class MongoDBClient:
 
         # 从 unfiltered 集合删除
         uf = self.unfiltered_col(category)
-        uf.delete_one({"domain": domain})
-        # 计数器：unfiltered -1, filtered_failed +1(按reason)
+        deleted = uf.delete_one({"domain": domain}).deleted_count
+        # 计数器：unfiltered -1（仅真正删除时）, filtered_failed +1(按reason，仅新插入时)
         self._set_counter_type(FILTERED_FAILED_COLLECTION, "filtered_failed")
-        self._inc_counter(category, "unfiltered", -1)
-        self._inc_counters(FILTERED_FAILED_COLLECTION, {"filter_failed": 1, reason: 1})
+        if deleted > 0:
+            self._inc_counter(category, "unfiltered", -1)
+        if result.upserted_id:
+            self._inc_counters(FILTERED_FAILED_COLLECTION,
+                               {"filter_failed": 1, reason: 1}, doc_delta=1)
+        elif old_reason and old_reason != reason:
+            # 已存在记录的 reason 变化：迁移按 reason 的细分计数
+            self._inc_counters(FILTERED_FAILED_COLLECTION,
+                               {old_reason: -1, reason: 1})
         log.info(f"filtered_failed 写入: {domain} (category={category}, reason={reason})")
         return True
 
@@ -770,12 +835,14 @@ class MongoDBClient:
         # 从 unfiltered 集合删除（跨大类迁移时从原类目删除）
         uf_category = from_category or category
         uf = self.unfiltered_col(uf_category)
-        uf.delete_one({"domain": domain})
-        # 计数器：unfiltered -1, filtered(subcategory) +1
+        deleted = uf.delete_one({"domain": domain}).deleted_count
+        # 计数器：unfiltered -1（仅真正删除时）, filtered(subcategory) +1（仅新插入时）
         prefix = make_collection_prefix(category, subcategory_norm)
         self._set_counter_type(prefix, "filtered", category, subcategory_norm)
-        self._inc_counter(uf_category, "unfiltered", -1)
-        self._inc_counters(prefix, {"filtered": 1, "uncrawled": 1})
+        if deleted > 0:
+            self._inc_counter(uf_category, "unfiltered", -1)
+        if result.upserted_id:
+            self._inc_counters(prefix, {"filtered": 1, "uncrawled": 1}, doc_delta=1)
         if from_category and from_category != category:
             log.info(f"AI 分类跨大类迁移: {domain} {from_category} -> {category}__{subcategory_norm}")
         else:
@@ -886,7 +953,7 @@ class MongoDBClient:
         )
         if result.upserted_id:
             self._set_counter_type(prefix, "filtered", category, normalize_subcategory(subcategory))
-            self._inc_counters(prefix, {"filtered": 1, "uncrawled": 1})
+            self._inc_counters(prefix, {"filtered": 1, "uncrawled": 1}, doc_delta=1)
         return result.upserted_id is not None or result.modified_count > 0
 
     def add_filtered_manual(self, category: str, store_url: str, collection_url: str,
@@ -945,7 +1012,8 @@ class MongoDBClient:
         if result.upserted_id:
             sub = normalize_subcategory(subcategory)
             self._set_counter_type(make_collection_prefix(category, sub), "filtered", category, sub)
-            self._inc_counters(make_collection_prefix(category, sub), {"filtered": 1, "uncrawled": 1})
+            self._inc_counters(make_collection_prefix(category, sub),
+                               {"filtered": 1, "uncrawled": 1}, doc_delta=1)
         return result.upserted_id is not None or result.modified_count > 0
 
     def add_filtered_batch(self, category: str, urls: list[dict], subcategory: str = "") -> dict:
@@ -966,6 +1034,7 @@ class MongoDBClient:
         created = 0
         updated = 0
         errors = []
+        created_subs: list[str] = []
 
         for item in urls:
             try:
@@ -1006,7 +1075,6 @@ class MongoDBClient:
                     if not collection_title:
                         collection_title = collection_handle
 
-                    existing = col.find_one({"domain": domain, "collection_handle": collection_handle})
                     result = col.update_one(
                         {"domain": domain, "collection_handle": collection_handle},
                         {"$set": {
@@ -1028,6 +1096,7 @@ class MongoDBClient:
                     )
                     if result.upserted_id:
                         created += 1
+                        created_subs.append(item_sub)
                     elif result.modified_count > 0:
                         updated += 1
                 else:
@@ -1039,7 +1108,6 @@ class MongoDBClient:
                     collection_handle = ""
                     collection_title = ""
 
-                    existing = col.find_one({"domain": domain, "collection_handle": ""})
                     result = col.update_one(
                         {"domain": domain, "collection_handle": ""},
                         {"$set": {
@@ -1061,24 +1129,22 @@ class MongoDBClient:
                     )
                     if result.upserted_id:
                         created += 1
+                        created_subs.append(item_sub)
                     elif result.modified_count > 0:
                         updated += 1
             except Exception as e:
                 errors.append(f"添加失败: {item} - {e}")
 
         log.info(f"批量添加 [{category}]: 新增 {created}, 更新 {updated}, 错误 {len(errors)}")
-        if created > 0:
-            sub_counts = {}
-            for item in urls:
-                item_sub = item.get("subcategory", "").strip() or subcategory
+        if created_subs:
+            # 仅对新插入（upsert）的条目增加计数，避免已存在条目被重复计数
+            sub_counts: dict[str, int] = {}
+            for item_sub in created_subs:
                 prefix = make_collection_prefix(category, item_sub)
-                if prefix not in sub_counts:
-                    sub_counts[prefix] = {"filtered": 0, "uncrawled": 0}
-                sub_counts[prefix]["filtered"] += 1
-                sub_counts[prefix]["uncrawled"] += 1
-            for prefix, incs in sub_counts.items():
+                sub_counts[prefix] = sub_counts.get(prefix, 0) + 1
+            for prefix, n in sub_counts.items():
                 self._set_counter_type(prefix, "filtered", category, normalize_subcategory(prefix.split("__")[-1] if "__" in prefix else "other"))
-                self._inc_counters(prefix, incs)
+                self._inc_counters(prefix, {"filtered": n, "uncrawled": n}, doc_delta=n)
         return {"created": created, "updated": updated, "errors": errors}
 
     # ── 查询 ──────────────────────────────────────────────
@@ -1087,7 +1153,11 @@ class MongoDBClient:
         """列出所有有 unfiltered 数据的一级分类（{category} 集合，不含 __ 分隔符）"""
         categories = set()
         for name in self.db.list_collection_names():
-            if name.startswith("system."):
+            if name.startswith("system.") or name.startswith("_"):
+                continue
+            # 排除内部固定集合（计数器 / 过滤失败 / 综合站 / 信息缓存，非类目集合）
+            if name in (COUNTERS_COLLECTION, FILTERED_FAILED_COLLECTION,
+                        settings.comprehensive_collection, settings.shopify_url_info_collection):
                 continue
             # 排除带旧后缀的集合（避免误识别为一级分类）
             if name.endswith("_filtered") or name.endswith("_crawled") or name.endswith("_unfiltered"):
@@ -1268,6 +1338,19 @@ class MongoDBClient:
             self._inc_counter(category, "unfiltered", -count)
         return count
 
+    def _sync_unfiltered_status_counters(self, category: str):
+        """用实际数据校正 unfiltered 集合的 pending/classified 计数（轻量 aggregate）"""
+        col = self.unfiltered_col(category)
+        pending = col.count_documents({"status": SITE_INFO_STATUS_PENDING})
+        classified = col.count_documents({"status": SITE_INFO_STATUS_CLASSIFIED})
+        self._counters_col().update_one(
+            {"_id": category},
+            {"$set": {
+                f"counts.{SITE_INFO_STATUS_PENDING}": pending,
+                f"counts.{SITE_INFO_STATUS_CLASSIFIED}": classified,
+            }},
+        )
+
     def get_filtered_stores(self, category: str, limit: int = 100, skip: int = 0, subcategory: str = "") -> list[dict]:
         """获取指定分类的 filtered 店铺数据（未爬取的）
 
@@ -1348,7 +1431,8 @@ class MongoDBClient:
         )
         if result.upserted_id:
             self._set_counter_type(settings.comprehensive_collection, "comprehensive")
-            self._inc_counters(settings.comprehensive_collection, {"filtered": 1, "uncrawled": 1})
+            self._inc_counters(settings.comprehensive_collection,
+                               {"filtered": 1, "uncrawled": 1}, doc_delta=1)
         log.info(f"综合站写入: {domain} -> {settings.comprehensive_collection}")
         return result.upserted_id is not None or result.modified_count > 0
 
@@ -1383,6 +1467,10 @@ class MongoDBClient:
         """
         ts = datetime.utcnow().isoformat()
         col = self.unfiltered_col(category)
+        old_doc = col.find_one(
+            {"domain": domain, "filter_status": FILTER_STATUS_UNFILTERED},
+            {"status": 1, "_id": 0},
+        )
         result = col.update_one(
             {"domain": domain, "filter_status": FILTER_STATUS_UNFILTERED},
             {"$set": {
@@ -1391,6 +1479,14 @@ class MongoDBClient:
                 "updated_at": ts,
             }},
         )
+        if result.modified_count > 0:
+            # 同步 status 计数（pending/classified）：旧状态有效且变化时迁移；
+            # 旧文档无 status（计数器未计入）时只加新状态
+            old_status = (old_doc or {}).get("status") if old_doc else None
+            if old_status != SITE_INFO_STATUS_PENDING:
+                if old_status:
+                    self._inc_counter(category, old_status, -1)
+                self._inc_counter(category, SITE_INFO_STATUS_PENDING, 1)
         return result.modified_count > 0
 
     def get_unfiltered_for_classify(self, category: str) -> list[dict]:
@@ -1413,10 +1509,19 @@ class MongoDBClient:
         """标记 unfiltered 文档为已分类（status=classified）"""
         ts = datetime.utcnow().isoformat()
         col = self.unfiltered_col(category)
+        old_doc = col.find_one({"domain": domain}, {"status": 1, "_id": 0})
         result = col.update_one(
             {"domain": domain},
             {"$set": {"status": SITE_INFO_STATUS_CLASSIFIED, "updated_at": ts}},
         )
+        if result.modified_count > 0:
+            # 同步 status 计数（pending -> classified）：旧状态有效且变化时迁移；
+            # 旧文档无 status（计数器未计入）时只加新状态
+            old_status = (old_doc or {}).get("status") if old_doc else None
+            if old_status != SITE_INFO_STATUS_CLASSIFIED:
+                if old_status:
+                    self._inc_counter(category, old_status, -1)
+                self._inc_counter(category, SITE_INFO_STATUS_CLASSIFIED, 1)
         return result.modified_count > 0
 
     def get_filtered_by_id(self, category: str, doc_id: str, subcategory: str = "") -> Optional[dict]:
@@ -1473,7 +1578,7 @@ class MongoDBClient:
         if result.deleted_count > 0 and doc:
             prefix = make_collection_prefix(category, doc.get("subcategory", "other"))
             crawl_status = doc.get("crawl_status", CRAWL_STATUS_UNCRAWLED)
-            self._inc_counters(prefix, {"filtered": -1, crawl_status: -1})
+            self._inc_counters(prefix, {"filtered": -1, crawl_status: -1}, doc_delta=-1)
         return result.deleted_count > 0
 
     def delete_filtered_many(self, category: str, doc_ids: list[str], subcategory: str = "") -> int:
@@ -1493,16 +1598,19 @@ class MongoDBClient:
         docs = list(col.find({"_id": {"$in": object_ids}}, {"crawl_status": 1, "subcategory": 1}))
         result = col.delete_many({"_id": {"$in": object_ids}})
         if result.deleted_count > 0:
-            sub_counts = {}
+            sub_counts: dict[str, dict] = {}
             for doc in docs:
                 sub = doc.get("subcategory", "other")
                 prefix = make_collection_prefix(category, sub)
                 if prefix not in sub_counts:
-                    sub_counts[prefix] = {"filtered": 0, "uncrawled": 0, "crawled": 0, "crawl_failed": 0}
+                    sub_counts[prefix] = {"filtered": 0, "uncrawled": 0, "crawled": 0,
+                                          "crawl_failed": 0, "_deleted": 0}
                 sub_counts[prefix]["filtered"] -= 1
                 sub_counts[prefix][doc.get("crawl_status", CRAWL_STATUS_UNCRAWLED)] -= 1
+                sub_counts[prefix]["_deleted"] += 1
             for prefix, incs in sub_counts.items():
-                self._inc_counters(prefix, incs)
+                doc_delta = incs.pop("_deleted")
+                self._inc_counters(prefix, incs, doc_delta=-doc_delta)
         return result.deleted_count
 
     # ── 批量导入 ──────────────────────────────────────────────
@@ -1678,7 +1786,7 @@ class MongoDBClient:
                     ts = datetime.utcnow().isoformat()
                     collection_url = store_url  # 源数据无 collection handle
 
-                    ff.update_one(
+                    upsert_result = ff.update_one(
                         {"domain": domain, "collection_handle": ""},
                         {"$set": {
                             "domain": domain,
@@ -1700,9 +1808,11 @@ class MongoDBClient:
                     )
                     imported += 1
 
-                    prefix = make_collection_prefix(category, subcategory_norm)
-                    self._set_counter_type(prefix, "filtered", category, subcategory_norm)
-                    self._inc_counters(prefix, {"filtered": 1, "uncrawled": 1})
+                    # 仅新插入时计数，避免重跑导入时双倍计数
+                    if upsert_result.upserted_id:
+                        prefix = make_collection_prefix(category, subcategory_norm)
+                        self._set_counter_type(prefix, "filtered", category, subcategory_norm)
+                        self._inc_counters(prefix, {"filtered": 1, "uncrawled": 1}, doc_delta=1)
 
                     # 标记源文档为已提取
                     src_col.update_one(

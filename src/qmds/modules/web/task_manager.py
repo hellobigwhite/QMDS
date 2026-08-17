@@ -173,6 +173,24 @@ def start_cleanup_scheduler():
                 log.error(f"清理任务异常: {e}")
     t = threading.Thread(target=cleanup_loop, daemon=True, name="cleanup_scheduler")
     t.start()
+    return t
+
+
+def start_counter_calibration_scheduler(interval_hours: float = 6.0):
+    """启动计数器定时校准调度器（默认每 6 小时全量重建一次 _counters，修复 $inc 漂移）"""
+    def calibrate_loop():
+        while True:
+            try:
+                time.sleep(interval_hours * 3600)
+                # 复用 core 路由的校准逻辑（内部含防重复锁与任务状态管理）
+                from qmds.modules.web.routes.core import run_counter_calibration_if_idle
+                run_counter_calibration_if_idle(source="scheduler")
+            except Exception as e:
+                log.error(f"计数器定时校准异常: {e}")
+    t = threading.Thread(target=calibrate_loop, daemon=True, name="counter_calibration_scheduler")
+    t.start()
+    log.info(f"计数器定时校准调度器已启动（间隔 {interval_hours} 小时）")
+    return t
 
 
 def make_progress_callback(task_id: str):

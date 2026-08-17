@@ -41,8 +41,16 @@ def create_app(http_client: Optional[HttpClient] = None) -> Flask:
         return {"now": datetime.now(), "module_name": "QMDS 管理控制台"}
 
     # 启动任务清理调度器
-    from qmds.modules.web.task_manager import start_cleanup_scheduler
+    from qmds.modules.web.task_manager import (
+        start_cleanup_scheduler,
+        start_counter_calibration_scheduler,
+    )
     start_cleanup_scheduler()
+
+    # 启动计数器定时校准调度器（间隔小时数，默认 6；<=0 禁用）
+    calibrate_hours = float(os.environ.get("COUNTER_CALIBRATE_HOURS", "6"))
+    if calibrate_hours > 0:
+        start_counter_calibration_scheduler(interval_hours=calibrate_hours)
 
     # 启动域名状态自动更新调度器
     from qmds.modules.web.services.domain_status_scheduler import start_domain_status_scheduler

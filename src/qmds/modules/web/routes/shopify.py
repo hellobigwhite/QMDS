@@ -812,13 +812,22 @@ def shopify_filter_edit(category, doc_id):
                 new_doc["filter_status"] = new_doc.get("filter_status", "filtered")
                 new_doc["crawl_status"] = new_doc.get("crawl_status", "uncrawled")
                 new_col = db.filtered_col(category, new_subcategory)
-                new_col.update_one(
+                upsert_result = new_col.update_one(
                     {"domain": new_doc.get("domain", ""), "collection_handle": new_doc.get("collection_handle", "")},
                     {"$set": new_doc},
                     upsert=True,
                 )
                 # 从旧集合删除
                 db.delete_filtered_by_id(category, doc_id, subcategory=old_subcategory)
+                # 同步新集合计数器：仅新插入时（若目标已有同 domain+handle 记录则不增计）
+                if upsert_result.upserted_id:
+                    from qmds.config.categories import make_collection_prefix
+                    new_sub_norm = normalize_subcategory(new_subcategory)
+                    new_prefix = make_collection_prefix(category, new_sub_norm)
+                    db._set_counter_type(new_prefix, "filtered", category, new_sub_norm)
+                    db._inc_counters(new_prefix,
+                                     {"filtered": 1, new_doc.get("crawl_status", "uncrawled"): 1},
+                                     doc_delta=1)
                 flash(f"记录已更新并迁移到二级分类: {normalize_subcategory(new_subcategory)}", "success")
                 return redirect(url_for("shopify.shopify_filter_categories", category=category, subcategory=normalize_subcategory(new_subcategory)))
             else:

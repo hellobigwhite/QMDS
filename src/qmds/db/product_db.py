@@ -166,15 +166,19 @@ class ProductDBClient:
             upsert=True,
         )
 
-    def _inc_counters(self, collection_key: str, increments: dict):
+    def _inc_counters(self, collection_key: str, increments: dict, doc_delta: int = 0):
         """批量增减多个状态计数（单次 $inc 操作）
 
         Args:
             collection_key: 集合名（如 "hardware__tools"）
             increments: {"unclean": -1, "cleaned": 1} -- 各状态的增减量
+            doc_delta: 集合文档总数变化量。同一文档的状态迁移传 0（默认），
+                       新增/删除文档时传 ±N，保证 total 与集合文档数一致
+                       （与 rebuild_product_counters 的 total = sum(clean_counts) 对齐）
         """
         inc_doc = {f"counts.{k}": v for k, v in increments.items()}
-        inc_doc["total"] = sum(increments.values())
+        if doc_delta:
+            inc_doc["total"] = doc_delta
         self._counters_col().update_one(
             {"_id": collection_key},
             {
@@ -229,10 +233,13 @@ class ProductDBClient:
             upsert=True,
         )
 
-    def rebuild_product_counters(self) -> dict:
+    def rebuild_product_counters(self, progress_callback=None) -> dict:
         """全量重建所有产品集合的计数器，修复 $inc 漂移
 
         遍历所有产品集合，用 aggregate $group 统计各状态计数，覆盖写入 _counters。
+
+        Args:
+            progress_callback: 进度回调 fn(processed, total, message)，可选
 
         Returns:
             {"rebuilt": N, "errors": [...]} -- 重建的计数器数量和错误列表
@@ -243,8 +250,10 @@ class ProductDBClient:
 
         rebuilt = 0
         errors = []
+        items = self.list_categories_with_sub()
+        step_total = len(items)
 
-        for item in self.list_categories_with_sub():
+        for idx, item in enumerate(items, 1):
             category = item["category"]
             subcategory = item["subcategory"]
             try:
@@ -252,6 +261,9 @@ class ProductDBClient:
                 rebuilt += 1
             except Exception as e:
                 errors.append(f"product {item['prefix']}: {e}")
+            if progress_callback:
+                # InterruptedError 向上传播以支持任务停止；其它回调异常忽略
+                progress_callback(idx, step_total, f"product: {item['prefix']}")
 
         log.info(f"产品计数器重建完成: {rebuilt} 个集合, {len(errors)} 个错误")
         return {"rebuilt": rebuilt, "errors": errors}
@@ -415,10 +427,19 @@ class ProductDBClient:
 
         try:
             col.insert_many(to_insert, ordered=False)
-            return len(to_insert)
+            inserted = len(to_insert)
         except BulkWriteError as exc:
             write_errors = exc.details.get("writeErrors", []) if exc.details else []
-            return max(len(to_insert) - len(write_errors), 0)
+            inserted = max(len(to_insert) - len(write_errors), 0)
+
+        # 同步 _counters：新文档为 unclean + unexported
+        if inserted > 0:
+            prefix = make_collection_prefix(category, subcategory)
+            self._set_counter_type(prefix, "product", category, normalize_subcategory(subcategory))
+            self._inc_counters(prefix,
+                               {CLEAN_STATUS_UNCLEAN: inserted, "unexported": inserted},
+                               doc_delta=inserted)
+        return inserted
 
     def save_clean_products(self, category: str, subcategory: str, products: List[dict]) -> int:
         """将清洗通过的商品在同一集合中更新状态为 cleaned（不再跨集合移动）
@@ -843,14 +864,14 @@ class ProductDBClient:
              "export_status": EXPORT_STATUS_UNEXPORTED})
         result = col.delete_many({"clean_status": {"$in": [CLEAN_STATUS_CLEANED, CLEAN_STATUS_FAILED]}})
         deleted = result.deleted_count
-        # 同步 _counters：各状态减少对应数量
+        # 同步 _counters：各状态减少对应数量，total 减少实际删除数
         if deleted > 0:
             incs = {CLEAN_STATUS_CLEANED: -del_cleaned,
                     CLEAN_STATUS_FAILED: -del_failed,
                     "exported": -del_exported,
                     "unexported": -del_unexported}
             self._set_counter_type(prefix, "product", category, normalize_subcategory(subcategory))
-            self._inc_counters(prefix, incs)
+            self._inc_counters(prefix, incs, doc_delta=-deleted)
         self._stats_cache.invalidate()
         return deleted
 

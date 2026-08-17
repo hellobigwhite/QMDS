@@ -73,7 +73,12 @@
     </div>
 
     <div class="card">
-        <h2>📊 集合计数</h2>
+        <h2 style="display:flex;justify-content:space-between;align-items:center;">
+            📊 集合计数
+            <button id="btn-calibrate" class="btn btn-secondary" style="font-size:12px;padding:4px 12px;"
+                    onclick="calibrateCounters()">🔄 校准计数器</button>
+        </h2>
+        <div id="calibrate-status" style="display:none;font-size:12px;color:#666;margin-bottom:8px;"></div>
         <div id="collection-counts">
             <p class="text-muted">加载中...</p>
         </div>
@@ -234,6 +239,67 @@ function loadCollectionCounts() {
             container.innerHTML = html;
         })
         .catch(() => { document.getElementById('collection-counts').innerHTML = '<p class="text-muted">加载失败</p>'; });
+}
+
+// ── 计数器校准 ──
+let calibrateTimer = null;
+
+function calibrateCounters() {
+    const btn = document.getElementById('btn-calibrate');
+    const status = document.getElementById('calibrate-status');
+    btn.disabled = true;
+    btn.textContent = '⏳ 校准中...';
+    status.style.display = 'block';
+    status.textContent = '正在启动校准任务...';
+
+    fetch('/api/calibrate-counters', {method: 'POST'})
+        .then(r => r.json().then(body => ({ok: r.ok, body})))
+        .then(({ok, body}) => {
+            if (!ok || !body.ok) {
+                btn.disabled = false;
+                btn.textContent = '🔄 校准计数器';
+                status.textContent = body.error || '启动失败';
+                return;
+            }
+            status.textContent = '校准任务已启动，正在后台执行...';
+            pollCalibrateTask(body.task_id);
+        })
+        .catch(() => {
+            btn.disabled = false;
+            btn.textContent = '🔄 校准计数器';
+            status.textContent = '请求失败，请重试';
+        });
+}
+
+function pollCalibrateTask(taskId) {
+    if (calibrateTimer) clearInterval(calibrateTimer);
+    calibrateTimer = setInterval(() => {
+        fetch('/api/tasks')
+            .then(r => r.json())
+            .then(tasks => {
+                const t = (tasks || []).find(x => x.id === taskId);
+                if (!t) return;
+                const pct = t.progress || 0;
+                document.getElementById('calibrate-status').textContent =
+                    `${t.message || '进行中'} (${pct}%)`;
+                if (t.status === 'completed' || t.status === 'failed' || t.status === 'stopped') {
+                    clearInterval(calibrateTimer);
+                    calibrateTimer = null;
+                    const btn = document.getElementById('btn-calibrate');
+                    btn.disabled = false;
+                    btn.textContent = '🔄 校准计数器';
+                    const color = t.status === 'completed' ? '#4caf50' : '#f44336';
+                    const statusEl = document.getElementById('calibrate-status');
+                    statusEl.style.color = color;
+                    statusEl.textContent = t.message || t.status;
+                    if (t.status === 'completed') {
+                        loadDashboardStats();
+                        loadCollectionCounts();
+                    }
+                }
+            })
+            .catch(() => {});
+    }, 2000);
 }
 
 loadDashboardStats();

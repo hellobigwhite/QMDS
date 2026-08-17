@@ -28,6 +28,8 @@ class DomainStatusScheduler:
         # 自动更新状态
         self._last_run_time = None
         self._last_result = None  # dict: {checked, updated, failed, ready_to_build, message}
+        # 日志去重：状态无变化时不重复打印
+        self._last_log = ""
 
     def start(self):
         with self._lock:
@@ -81,7 +83,9 @@ class DomainStatusScheduler:
                 if result["ready_to_build"] and not site_db.is_ready_notified(today_text):
                     self._notify_ready(result)
                     site_db.add_ready_notified_date(today_text)
-                log.info(f"域名状态自动更新: 无待更新域名，今日上报 {result['total']}，已解析 {result['resolved']}")
+                self._log_once(
+                    f"域名状态自动更新: 无待更新域名，今日上报 {result['total']}，已解析 {result['resolved']}"
+                )
                 return
 
             # 获取上报账号配置
@@ -134,11 +138,18 @@ class DomainStatusScheduler:
             if result["ready_to_build"] and not site_db.is_ready_notified(today_text):
                 self._notify_ready(result)
                 site_db.add_ready_notified_date(today_text)
-            log.info(f"域名状态自动更新完成: 更新 {updated}, 失败 {failed}, "
-                     f"今日上报 {result['total']}, 已解析 {result['resolved']}, "
-                     f"可建站 {result['ready_to_build']}")
+            self._log_once(f"域名状态自动更新完成: 更新 {updated}, 失败 {failed}, "
+                           f"今日上报 {result['total']}, 已解析 {result['resolved']}, "
+                           f"可建站 {result['ready_to_build']}")
         finally:
             site_db.close()
+
+    def _log_once(self, message: str):
+        """状态无变化时不重复打印日志，避免刷屏"""
+        if message == self._last_log:
+            return
+        self._last_log = message
+        log.info(message)
 
     def get_status(self) -> dict:
         with self._lock:

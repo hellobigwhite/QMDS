@@ -1,6 +1,7 @@
 """核心路由 — 仪表盘、发现、检测、提取、流水线、任务、API"""
 
 import json
+import threading
 import time
 
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
@@ -36,6 +37,143 @@ def api_collection_counts():
         mongo = get_mongo_db()
         data = mongo.get_all_collection_counts()
         return jsonify({"ok": True, "data": data})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ── 计数器校准 ──────────────────────────────────────────────
+
+_counter_calibration_lock = threading.Lock()
+
+
+def _is_calibrating() -> bool:
+    """是否已有校准任务在运行（running/stopping 状态的 calibrate_counters 任务）"""
+    for t in task_manager.list():
+        if t.get("action") == "calibrate_counters" and t.get("status") in ("running", "stopping"):
+            return True
+    return False
+
+
+def _make_rebuild_progress_cb(task_id: str):
+    """适配 db 层的三参数进度回调约定 fn(processed, total, message) -> task_manager"""
+    def cb(processed, total, message):
+        if task_manager.is_stopped(task_id):
+            raise InterruptedError("任务被用户停止")
+        task_manager.update(
+            task_id,
+            progress=int(processed / total * 100) if total else 0,
+            current=processed, total=total,
+            message=message,
+        )
+    return cb
+
+
+def run_counter_calibration(task_id: str):
+    """校准计数器：全量重建 qmds_url_stores 与 qmds_product_data 的 _counters。
+
+    以集合实际数据为准（count_documents / aggregate），覆盖写入 _counters，
+    修复 $inc 漂移、历史脏数据、外部直改导致的不一致。
+    """
+    from qmds.db.mongodb import MongoDBClient
+    from qmds.db.product_db import ProductDBClient
+
+    mongo = MongoDBClient()
+    product_db = ProductDBClient()
+    try:
+        task_manager.update(task_id, message="校准店铺库计数器 (qmds_url_stores)...", progress=5)
+        r1 = mongo.rebuild_counters(progress_callback=_make_rebuild_progress_cb(task_id))
+        task_manager.add_log(task_id, f"店铺库: 重建 {r1['rebuilt']} 个集合, "
+                                      f"错误 {len(r1['errors'])} 个", "info")
+        for err in r1["errors"]:
+            task_manager.add_log(task_id, f"  - {err}", "warning")
+
+        task_manager.update(task_id, message="校准商品库计数器 (qmds_product_data)...", progress=60)
+        r2 = product_db.rebuild_product_counters(progress_callback=_make_rebuild_progress_cb(task_id))
+        task_manager.add_log(task_id, f"商品库: 重建 {r2['rebuilt']} 个集合, "
+                                      f"错误 {len(r2['errors'])} 个", "info")
+        for err in r2["errors"]:
+            task_manager.add_log(task_id, f"  - {err}", "warning")
+
+        total_rebuilt = r1["rebuilt"] + r2["rebuilt"]
+        total_errors = len(r1["errors"]) + len(r2["errors"])
+        summary = f"校准完成: 共重建 {total_rebuilt} 个集合计数器" + \
+                  (f"，{total_errors} 个错误" if total_errors else "")
+        task_manager.update(task_id, status="completed", message=summary,
+                            result={"url_stores": r1["rebuilt"],
+                                    "product_data": r2["rebuilt"],
+                                    "errors": total_errors},
+                            progress=100)
+        task_manager.add_log(task_id, summary, "info")
+        log.info(f"计数器校准完成: {summary}")
+    except InterruptedError:
+        task_manager.update(task_id, status="stopped", message="校准已停止")
+        task_manager.add_log(task_id, "校准被用户停止", "warning")
+    except Exception as e:
+        log.error(f"计数器校准失败: {e}")
+        task_manager.update(task_id, status="failed", message=f"校准失败: {e}")
+        task_manager.add_log(task_id, f"校准失败: {e}", "error")
+    finally:
+        mongo.close()
+        product_db.close()
+        _counter_calibration_lock.release()
+
+
+@bp.route("/api/calibrate-counters", methods=["POST"])
+def api_calibrate_counters():
+    """手动触发计数器校准（后台任务，防重复触发）"""
+    result = run_counter_calibration_if_idle(source="manual")
+    if result is None:
+        return jsonify({"ok": False, "error": "校准任务正在运行中，请稍后"}), 409
+    return jsonify({"ok": True, "task_id": result, "message": "计数器校准任务已启动"})
+
+
+def run_counter_calibration_if_idle(source: str = "manual"):
+    """启动校准任务（若未在运行）。返回 task_id，已在运行则返回 None。
+
+    Args:
+        source: 触发来源（manual=手动按钮 / scheduler=定时调度器）
+    """
+    if not _counter_calibration_lock.acquire(blocking=False):
+        return None
+    try:
+        if _is_calibrating():
+            return None
+        task_id = f"calibrate_counters_{int(time.time())}"
+        task_manager.create(task_id, "calibrate_counters", f"全部集合 ({source})")
+        task_manager.start_task_thread(task_id, lambda: run_counter_calibration(task_id))
+        return task_id
+    except Exception:
+        # 启动失败时释放锁（run_counter_calibration 的 finally 只在任务实际启动后负责释放）
+        _counter_calibration_lock.release()
+        raise
+
+
+@bp.route("/api/counter-consistency")
+def api_counter_consistency():
+    """抽查计数器与实际数据的一致性（轻量：每个类型抽查第一个集合 + estimated_document_count 对比 total）"""
+    try:
+        mongo = get_mongo_db()
+        checks = []
+        counts = mongo.get_all_collection_counts()
+        for ctype, items in counts.items():
+            for item in items[:3]:
+                col_name = item.get("_id")
+                if not col_name:
+                    continue
+                actual = mongo.db[col_name].estimated_document_count()
+                cached = item.get("total", 0)
+                checks.append({
+                    "collection": col_name,
+                    "type": ctype,
+                    "counter_total": cached,
+                    "actual_total": actual,
+                    "drift": actual - cached,
+                    "consistent": abs(actual - cached) <= max(50, int(actual * 0.10)),
+                })
+        inconsistent = sum(1 for c in checks if not c["consistent"])
+        return jsonify({"ok": True, "data": {
+            "checks": checks, "inconsistent": inconsistent, "checked": len(checks),
+        }})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
