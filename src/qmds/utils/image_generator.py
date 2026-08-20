@@ -141,6 +141,13 @@ IMAGE_MODELS = [
         "label": "豆包 Seedream 4.0（火山方舟）",
         "desc": "火山方舟豆包文生图 4.0，需配置 ARK API Key",
     },
+    {
+        "value": "doubao-seedream-5-0-260128",
+        "provider": "ark",
+        "model_id": "doubao-seedream-5-0-260128",
+        "label": "豆包 Seedream 5.0（火山方舟）",
+        "desc": "火山方舟豆包文生图 5.0，需配置 ARK API Key",
+    }
 ]
 
 # 默认模型值
@@ -524,15 +531,56 @@ class ImageGenerator:
             raise last_error
         return None
 
+    # 火山方舟豆包 Seedream 5.0 要求图片至少 3,686,400 像素，否则返回 400 InvalidParameter。
+    # 下限高于此值的 provider 都会用到这个常量。
+    ARK_MIN_PIXELS = 3686400
+
+    def _resolve_request_size(self, size: str) -> str:
+        """根据 provider 返回实际请求 API 用的 size 字符串。
+
+        - jisuai：原样返回。
+        - ark：保持宽高比放大到至少 ARK_MIN_PIXELS 像素，避免 400 InvalidParameter。
+          若原始 size 已达标则原样返回。
+        """
+        if self._provider != "ark":
+            return size
+        try:
+            w_str, h_str = size.lower().split("x", 1)
+            w, h = int(w_str), int(h_str)
+        except Exception:
+            return size
+        if w <= 0 or h <= 0:
+            return size
+        min_pixels = self.ARK_MIN_PIXELS
+        pixels = w * h
+        if pixels >= min_pixels:
+            return size
+        import math
+        scale = math.sqrt(min_pixels / pixels)
+        new_w = int(round(w * scale))
+        new_h = int(round(h * scale))
+        # 对齐到 16 的倍数（扩散模型常见约束），并保证像素总数达标
+        new_w = max((new_w + 15) // 16 * 16, 16)
+        new_h = max((new_h + 15) // 16 * 16, 16)
+        while new_w * new_h < min_pixels:
+            new_w += 16
+        return f"{new_w}x{new_h}"
+
     async def _call_image_api(self, prompt: str, size: str) -> Optional[bytes]:
         """根据当前模型 provider 调度到对应的文生图 API。
 
         - provider == "jisuai": 调用 _call_jisuai（支持多 key 轮换）
         - provider == "ark":    调用 _call_ark（单 key + 代理轮换）
+
+        对于 ark provider，若传入 size 像素数低于 ARK_MIN_PIXELS，
+        会自动按宽高比放大请求尺寸，避免 400 错误；调用方拿到的仍是原图数据。
         """
+        request_size = self._resolve_request_size(size)
+        if request_size != size:
+            log.info(f"ark 请求尺寸放大: {size} -> {request_size} (满足最小像素 {self.ARK_MIN_PIXELS})")
         if self._provider == "ark":
-            return await self._call_ark(prompt=prompt, size=size)
-        return await self._call_jisuai(prompt=prompt, model_id=self._model_id, size=size)
+            return await self._call_ark(prompt=prompt, size=request_size)
+        return await self._call_jisuai(prompt=prompt, model_id=self._model_id, size=request_size)
 
     async def _interruptible_sleep(self, seconds: float):
         """可被 stop() 打断的异步 sleep。
@@ -621,6 +669,15 @@ A professional high-quality e-commerce website banner for products related to "{
                     continue
 
                 image = image.convert("RGB")
+                # ark provider 可能请求了放大尺寸，这里缩放回逻辑 banner_size
+                try:
+                    bw_str, bh_str = banner_size.lower().split("x", 1)
+                    bw, bh = int(bw_str), int(bh_str)
+                    if image.size != (bw, bh):
+                        log.info(f"banner 缩放回逻辑尺寸: {image.size} -> {bw}x{bh}")
+                        image = image.resize((bw, bh), Image.LANCZOS)
+                except Exception as _e:
+                    log.warning(f"解析 banner_size 失败，跳过缩放: {_e}")
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
                 # 二分法压缩至指定大小
