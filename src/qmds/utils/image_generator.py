@@ -5,6 +5,7 @@ import base64
 import os
 import random
 import re
+import statistics
 import threading
 import time
 from io import BytesIO
@@ -12,7 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 import requests
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from qmds.config import settings as _settings
 from qmds.utils.logger import get_logger
@@ -147,6 +148,13 @@ IMAGE_MODELS = [
         "model_id": "doubao-seedream-5-0-260128",
         "label": "豆包 Seedream 5.0（火山方舟）",
         "desc": "火山方舟豆包文生图 5.0，需配置 ARK API Key",
+    },
+    {
+        "value": " doubao-seedream-4-5-251128",
+        "provider": "ark",
+        "model_id": "doubao-seedream-4-5-251128",
+        "label": "豆包 Seedream 4.5（火山方舟）",
+        "desc": "火山方舟豆包文生图 4.5，需配置 ARK API Key",
     }
 ]
 
@@ -190,6 +198,14 @@ DEFAULT_CONFIG = {
     "icon_concurrency": 1,
     "banner_max_size_kb": 300,
     "white_threshold": 245,
+    # 豆包 Seedream 水印移除配置
+    # 配置项结构：{"enabled": bool, "position": "bottom_right"|"bottom_left", "width": int, "height": int}
+    "remove_ark_watermark": {
+        "enabled": True,
+        "position": "bottom_right",
+        "width": 200,   # 水印区域宽度（像素）
+        "height": 60,   # 水印区域高度（像素）
+    },
 }
 
 
@@ -611,6 +627,69 @@ class ImageGenerator:
             return Image.open(BytesIO(resp.content))
         return None
 
+    def _remove_ark_watermark(self, image: Image.Image) -> Image.Image:
+        """移除火山方舟豆包水印（右下角小logo）。
+
+        如果 provider 不是 ark，或配置中禁用了水印移除，则原样返回。
+        修补策略：用周围像素的中位数填充水印区域。
+        """
+        if self._provider != "ark":
+            return image
+        wm_cfg = self.config.get("remove_ark_watermark", {})
+        if not wm_cfg.get("enabled", True):
+            return image
+        try:
+            w, h = wm_cfg.get("width", 200), wm_cfg.get("height", 60)
+            pos = wm_cfg.get("position", "bottom_right")
+            iw, ih = image.size
+            if pos == "bottom_right":
+                x0, y0 = iw - w, ih - h
+            elif pos == "bottom_left":
+                x0, y0 = 0, ih - h
+            else:
+                return image
+            x0, y0 = max(x0, 0), max(y0, 0)
+            x1, y1 = min(x0 + w, iw), min(y0 + h, ih)
+            if (x1 - x0) < 4 or (y1 - y0) < 4:
+                return image
+            # 取水印区域四周的样本，计算中位色（排除水印区域内的像素）
+            margin = 25
+            sample_pixels = []
+            # 上方样本
+            for sx in range(max(x0 - margin, 0), min(x1 + margin, iw)):
+                for sy in range(max(y0 - margin, 0), y0):
+                    if 0 <= sx < iw and 0 <= sy < ih:
+                        sample_pixels.append(image.getpixel((sx, sy)))
+            # 下方样本
+            for sx in range(max(x0 - margin, 0), min(x1 + margin, iw)):
+                for sy in range(y1, min(y1 + margin, ih)):
+                    if 0 <= sx < iw and 0 <= sy < ih:
+                        sample_pixels.append(image.getpixel((sx, sy)))
+            # 左侧样本
+            for sy in range(max(y0 - margin, 0), min(y1 + margin, ih)):
+                for sx in range(max(x0 - margin, 0), x0):
+                    if 0 <= sx < iw and 0 <= sy < ih:
+                        sample_pixels.append(image.getpixel((sx, sy)))
+            # 右侧样本
+            for sy in range(max(y0 - margin, 0), min(y1 + margin, ih)):
+                for sx in range(x1, min(x1 + margin, iw)):
+                    if 0 <= sx < iw and 0 <= sy < ih:
+                        sample_pixels.append(image.getpixel((sx, sy)))
+            if not sample_pixels:
+                return image
+            # 计算中位数（按通道）
+            med_r = int(statistics.median(p[0] for p in sample_pixels))
+            med_g = int(statistics.median(p[1] for p in sample_pixels))
+            med_b = int(statistics.median(p[2] for p in sample_pixels))
+            fill_color = (med_r, med_g, med_b)
+            # 用中位色填充水印区域
+            draw = ImageDraw.Draw(image)
+            draw.rectangle([x0, y0, x1, y1], fill=fill_color)
+            log.info(f"已移除豆包水印: region=({x0},{y0})-({x1},{y1}), fill={fill_color}")
+        except Exception as e:
+            log.warning(f"水印移除失败，跳过: {e}")
+        return image
+
     # ── Step 0: Banner ──────────────────────────────────────
 
     def _build_banner_prompt(self, keyword: str) -> tuple:
@@ -678,6 +757,10 @@ A professional high-quality e-commerce website banner for products related to "{
                         image = image.resize((bw, bh), Image.LANCZOS)
                 except Exception as _e:
                     log.warning(f"解析 banner_size 失败，跳过缩放: {_e}")
+
+                # 移除豆包水印（仅ark provider）
+                image = self._remove_ark_watermark(image)
+
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
                 # 二分法压缩至指定大小
@@ -771,6 +854,9 @@ A professional website favicon icon for "{keyword}".
                     if attempt < max_retries - 1:
                         await self._interruptible_sleep(3 * (attempt + 1))
                     continue
+
+                # 移除豆包水印（仅ark provider，在convert之前）
+                image = self._remove_ark_watermark(image)
 
                 # 转RGBA并调整大小
                 image = image.convert("RGBA")
