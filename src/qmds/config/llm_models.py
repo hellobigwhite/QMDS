@@ -4,6 +4,7 @@
 所有 LLM 文本功能从此处读取模型配置，避免分散硬编码。
 """
 
+import re
 import threading
 from typing import Optional
 
@@ -158,15 +159,14 @@ def has_llm_api_key(model_config: dict, site_db=None) -> bool:
 # =========================
 
 def get_llm_extra_body(model_config: dict) -> Optional[dict]:
-    """返回 extra_body 参数（provider 专属）
+    """返回 extra_body 参数
 
-    MiMo 需要 {"thinking": {"type": "disabled"}}，
-    Ark 不需要此参数。
+    MiMo 和 Ark（Doubao-Seed-1.x 等思考模型）均支持
+    {"thinking": {"type": "disabled"}} 关闭深度思考。
+    思考型模型若不关闭思考，token 会被 reasoning 耗尽导致 content 为空。
+    若模型不支持该参数，chat_completion_with_fallback 会自动降级重试。
     """
-    provider = model_config.get("provider", "mimo")
-    if provider == "mimo":
-        return {"thinking": {"type": "disabled"}}
-    return None
+    return {"thinking": {"type": "disabled"}}
 
 
 def get_llm_system_message(model_config: dict) -> str:
@@ -204,3 +204,74 @@ def resolve_llm_model(model_value: str = "", site_db=None) -> dict:
         "extra_body": get_llm_extra_body(config),
         "system_message": get_llm_system_message(config),
     }
+
+
+# =========================
+# 响应解析与调用封装
+# =========================
+
+_THINK_RE = re.compile(r'<think>.*?</think>', re.DOTALL | re.IGNORECASE)
+
+
+def extract_llm_text(message) -> str:
+    """从 LLM 响应消息中健壮地提取纯文本
+
+    处理思考型模型（火山方舟 Doubao-Seed / DeepSeek-R1 等）的常见输出形态：
+    1. content 中含 <think>...</think> 思考块 → 剥离
+    2. content 为空（token 被 reasoning 耗尽）→ 回退到
+       message.reasoning_content，从中提取最后的 JSON/文本主体
+    3. markdown 代码围栏 ```json ...``` → 剥离
+
+    Returns:
+        清洗后的文本；完全无内容时返回空字符串
+    """
+    text = (getattr(message, "content", None) or "")
+    text = _THINK_RE.sub('', text).strip()
+
+    if not text:
+        # content 为空：尝试从 reasoning_content 提取最终答案
+        rc = getattr(message, "reasoning_content", None) or ""
+        if rc:
+            log.warning("LLM content 为空，尝试从 reasoning_content 提取（思考模型 token 耗尽）")
+            m = re.search(r'[\[{].*[\]}]', rc, re.DOTALL)
+            if m:
+                text = m.group(0)
+
+    if not text:
+        return ""
+
+    # 剥离 markdown 围栏
+    text = re.sub(r'^```(?:json)?\s*', '', text.strip())
+    text = re.sub(r'\s*```$', '', text)
+    return text.strip()
+
+
+def chat_completion_with_fallback(client, *, config: dict, messages: list,
+                                  temperature: float, max_completion_tokens: int,
+                                  top_p: float, timeout):
+    """统一的 chat.completions 调用封装
+
+    特性：
+    - 自动附加 thinking disabled 参数（避免思考模型耗尽 token）
+    - 模型不支持 thinking 参数时自动降级重试（去掉 extra_body）
+    """
+    kwargs = dict(
+        model=config["model_id"],
+        messages=messages,
+        temperature=temperature,
+        max_completion_tokens=max_completion_tokens,
+        top_p=top_p,
+        timeout=timeout,
+    )
+    extra_body = get_llm_extra_body(config)
+    if extra_body:
+        try:
+            return client.chat.completions.create(**kwargs, extra_body=extra_body)
+        except Exception as e:
+            err_lower = str(e).lower()
+            if "thinking" in err_lower and ("not support" in err_lower or "invalid" in err_lower
+                                            or "unsupported" in err_lower or "未知" in str(e)):
+                log.warning(f"模型 {config['model_id']} 不支持 thinking 参数，降级为不带 extra_body 重试")
+                return client.chat.completions.create(**kwargs)
+            raise
+    return client.chat.completions.create(**kwargs)

@@ -19,6 +19,8 @@ from qmds.config.llm_models import (
     has_llm_api_key,
     get_llm_extra_body,
     get_llm_system_message,
+    extract_llm_text,
+    chat_completion_with_fallback,
 )
 from qmds.utils.logger import get_logger
 from qmds.utils.wp_menu_config import (
@@ -198,8 +200,9 @@ def _call_llm_build_menu(main_cat, target_top, id_to_info, tree_data, site_db=No
         api_key = get_llm_api_key(config, site_db)
         try:
             client = OpenAI(base_url=config["base_url"], api_key=api_key)
-            completion = client.chat.completions.create(
-                model=config["model_id"],
+            completion = chat_completion_with_fallback(
+                client,
+                config=config,
                 messages=[
                     {"role": "system", "content": get_llm_system_message(config)},
                     {"role": "user", "content": prompt},
@@ -208,10 +211,11 @@ def _call_llm_build_menu(main_cat, target_top, id_to_info, tree_data, site_db=No
                 max_completion_tokens=_LLM_MAX_TOKENS,
                 top_p=0.95,
                 timeout=_LLM_TIMEOUT,
-                extra_body=get_llm_extra_body(config),
             )
-            content = completion.choices[0].message.content.strip()
-            content = re.sub(r'^```(?:json)?\s*|\s*```$', '', content)
+            message = completion.choices[0].message
+            content = extract_llm_text(message)
+            if not content:
+                raise ValueError("LLM 返回空内容（思考 token 耗尽或模型无输出）")
             result = json.loads(content)
 
             items = result.get("items", [])

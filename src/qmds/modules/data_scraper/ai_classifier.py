@@ -31,6 +31,8 @@ from qmds.config.llm_models import (
     has_llm_api_key,
     get_llm_extra_body,
     get_llm_system_message,
+    extract_llm_text,
+    chat_completion_with_fallback,
 )
 from qmds.core.exceptions import ProxyError, RateLimitError
 from qmds.utils.logger import get_logger
@@ -674,20 +676,21 @@ def classify_store(
     last_err = ""
     for attempt in range(3):
         try:
-            completion = client.chat.completions.create(
-                model=config["model_id"],
+            completion = chat_completion_with_fallback(
+                client,
+                config=config,
                 messages=[
                     {"role": "system", "content": get_llm_system_message(config)},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.3,
-                max_completion_tokens=300,
+                max_completion_tokens=800,
                 top_p=0.95,
-                timeout=10,
-                extra_body=get_llm_extra_body(config),
+                timeout=30,
             )
-            content = completion.choices[0].message.content.strip()
-            content = re.sub(r'^```(?:json)?\s*|\s*```$', '', content)
+            content = extract_llm_text(completion.choices[0].message)
+            if not content:
+                raise ValueError("LLM 返回空内容（思考 token 耗尽或模型无输出）")
             result = json.loads(content)
 
             if result.get("is_black_five"):

@@ -350,8 +350,9 @@ class TestClassifyStore:
         assert result["subcategory"] == "无法识别"
         assert mock_client.chat.completions.create.call_count == 3
 
-    def test_no_mimo_key(self):
-        """未配置 MIMO_API_KEY -> 返回无法识别"""
+    @patch("qmds.modules.data_scraper.ai_classifier.has_llm_api_key", return_value=False)
+    def test_no_mimo_key(self, mock_has_key):
+        """未配置任何 LLM API Key -> 返回无法识别（不发起网络调用）"""
         ai_classifier.settings.mimo_api_key = ""
         reset_glm_client()
 
@@ -359,6 +360,7 @@ class TestClassifyStore:
         result = classify_store(page_info, "example.com")
 
         assert result["category"] == "无法识别"
+        mock_has_key.assert_called()
 
     def test_needs_fetch_no_domain(self):
         """page_info 缺 meta/nav 且无 domain -> 无法识别"""

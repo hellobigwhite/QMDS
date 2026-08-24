@@ -31,6 +31,8 @@ from qmds.config.llm_models import (
     has_llm_api_key,
     get_llm_extra_body,
     get_llm_system_message,
+    extract_llm_text,
+    chat_completion_with_fallback,
     count_mimo_keys,
 )
 from qmds.utils.data_cleaner import read_table_file
@@ -185,6 +187,9 @@ def _parse_llm_response(content: str) -> dict:
     """解析 LLM 返回内容，多层容错"""
     content = content.strip()
 
+    # 第0层：剥离思考模型的 <think> 块
+    content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL | re.IGNORECASE).strip()
+
     # 第1层：去除 markdown 围栏
     content = re.sub(r'^```(?:json)?\s*|\s*```$', '', content).strip()
 
@@ -251,8 +256,9 @@ def _call_llm_optimize(
         try:
             prompt = _build_prompt(categories, reference_paths, confirmed_expressions, attempt)
             client = OpenAI(base_url=config["base_url"], api_key=api_key)
-            completion = client.chat.completions.create(
-                model=config["model_id"],
+            completion = chat_completion_with_fallback(
+                client,
+                config=config,
                 messages=[
                     {"role": "system", "content": get_llm_system_message(config)},
                     {"role": "user", "content": prompt},
@@ -261,9 +267,10 @@ def _call_llm_optimize(
                 max_completion_tokens=_LLM_MAX_TOKENS,
                 top_p=0.95,
                 timeout=_LLM_TIMEOUT,
-                extra_body=get_llm_extra_body(config),
             )
-            content = completion.choices[0].message.content.strip()
+            content = extract_llm_text(completion.choices[0].message)
+            if not content:
+                raise ValueError("LLM 返回空内容（思考 token 耗尽或模型无输出）")
             cleaned = _parse_llm_response(content)
             return cleaned
 
