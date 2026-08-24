@@ -536,6 +536,7 @@ def shopify_filter_categories():
                     google_to_qmds_category,
                 )
                 db_inner = MongoDBClient()
+                site_db_inner = SiteDBClient()
                 try:
                     stores = db_inner.get_unfiltered_for_classify(category)
                     total = len(stores)
@@ -1282,9 +1283,7 @@ def shopify_model_filter_import():
 
         def run_task():
             from qmds.db.mongodb import MongoDBClient
-            from qmds.db.site_db import SiteDBClient
             db_inner = MongoDBClient()
-            site_db_inner = SiteDBClient()
             try:
                 task_manager.add_log(task_id, f"任务启动: 模型筛站导入", "info")
                 if is_all:

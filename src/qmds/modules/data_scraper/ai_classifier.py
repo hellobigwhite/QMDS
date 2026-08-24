@@ -86,23 +86,41 @@ _glm_client: Optional["OpenAI"] = None
 _glm_client_config: Optional[dict] = None
 
 
-def _get_glm_client(site_db=None) -> "OpenAI":
-    """获取全局 OpenAI 客户端（懒加载，复用连接）
-
-    从统一配置 llm_models.py 读取 base_url / api_key / model_id，
-    支持 MiMo 和 Ark 两种 provider。
-    """
-    global _glm_client, _glm_client_config
-    if _glm_client is not None and _glm_client_config is not None:
-        return _glm_client
-    if not HAS_OPENAI:
-        raise RuntimeError("openai 未安装，无法创建 LLM 客户端")
-
+def _resolve_runtime_config(site_db=None) -> dict:
+    """解析当前生效的模型配置（site_db 的 llm_model 设置优先于 settings）"""
     model_value = settings.llm_model
     if site_db is not None:
         model_value = site_db.get_setting("llm_model", "") or model_value
+    return get_llm_model_config(model_value)
 
-    config = get_llm_model_config(model_value)
+
+def _get_glm_client(config: dict, site_db=None) -> "OpenAI":
+    """获取 LLM 客户端（懒加载，复用连接）
+
+    从统一配置 llm_models.py 读取 base_url / api_key / model_id，
+    支持 MiMo 和 Ark 两种 provider。
+
+    缓存命中判定只看 (provider, base_url, model_id)：
+    - 同模型复用客户端（避免 MiMo key 轮换导致每次重建）
+    - 切换模型自动重建，保证 Web 配置页切换后立即生效，
+      不会出现「Ark 配置 + MiMo 旧客户端」的错配
+    - 同模型更换 API Key 时由 config_routes 保存动作触发
+      reset_glm_client() 强制刷新
+    """
+    global _glm_client, _glm_client_config
+    if not HAS_OPENAI:
+        raise RuntimeError("openai 未安装，无法创建 LLM 客户端")
+
+    if (_glm_client is not None and _glm_client_config is not None
+            and _glm_client_config.get("provider") == config.get("provider")
+            and _glm_client_config.get("base_url") == config.get("base_url")
+            and _glm_client_config.get("model_id") == config.get("model_id")):
+        return _glm_client
+
+    if _glm_client is not None and _glm_client_config is not None:
+        log.info(f"LLM 模型配置变更，重建客户端: "
+                 f"{_glm_client_config['model_id']} -> {config['model_id']}")
+
     api_key = get_llm_api_key(config, site_db)
     if not api_key:
         raise RuntimeError(f"LLM API Key 未配置（provider={config['provider']}）")
@@ -660,19 +678,16 @@ def classify_store(
         log.error("openai 未安装，无法分类")
         return _unrecognized()
 
-    if site_db is not None:
-        model_value = site_db.get_setting("llm_model", "") or settings.llm_model
-        config = get_llm_model_config(model_value)
-        if not has_llm_api_key(config, site_db):
-            log.error(f"LLM API Key 未配置（provider={config['provider']}），无法分类")
-            return _unrecognized()
-        client = _get_glm_client(site_db)
-    else:
-        config = _glm_client_config or get_llm_model_config(settings.llm_model)
-        if not has_llm_api_key(config):
-            log.error(f"LLM API Key 未配置（provider={config['provider']}），无法分类")
-            return _unrecognized()
-        client = _get_glm_client()
+    config = _resolve_runtime_config(site_db)
+    if not has_llm_api_key(config, site_db):
+        log.error(f"LLM API Key 未配置（provider={config['provider']}），无法分类")
+        return _unrecognized()
+    try:
+        client = _get_glm_client(config, site_db)
+    except RuntimeError as e:
+        log.error(f"创建 LLM 客户端失败: {e}")
+        return _unrecognized()
+
     last_err = ""
     for attempt in range(3):
         try:

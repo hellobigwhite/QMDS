@@ -146,12 +146,16 @@ def get_llm_api_key(model_config: dict, site_db=None) -> str:
 
 
 def has_llm_api_key(model_config: dict, site_db=None) -> bool:
-    """检查指定模型的 API Key 是否已配置"""
-    try:
-        key = get_llm_api_key(model_config, site_db)
-        return bool(key)
-    except RuntimeError:
-        return False
+    """检查指定模型的 API Key 是否已配置（无副作用，不推进 MiMo key 轮换）"""
+    provider = model_config.get("provider", "mimo")
+
+    if provider == "ark":
+        if site_db is not None and site_db.get_setting("ark_api_key", ""):
+            return True
+        return bool(settings.ark_api_key)
+
+    # mimo: key 文件有可用 key，或 settings.mimo_api_key 有默认值
+    return count_mimo_keys() > 0 or bool(settings.mimo_api_key)
 
 
 # =========================

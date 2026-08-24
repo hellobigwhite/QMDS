@@ -91,6 +91,13 @@ def site_config():
                 log.error(f"保存AI菜单 API Key 文件失败: {e}")
                 flash(f"保存AI菜单 API Key 文件失败: {e}", "error")
 
+            # LLM 模型或 Ark Key 变更时重置缓存的 LLM 客户端，确保下次调用立即生效
+            try:
+                from qmds.modules.data_scraper.ai_classifier import reset_glm_client
+                reset_glm_client()
+            except Exception as e:
+                log.warning(f"重置 LLM 客户端失败: {e}")
+
             flash("配置已保存", "success")
             return redirect(url_for("config.site_config"))
 
