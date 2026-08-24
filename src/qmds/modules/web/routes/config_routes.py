@@ -3,6 +3,7 @@
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 
 from qmds.config import settings
+from qmds.config.llm_models import list_llm_models
 from qmds.modules.web.db_helpers import get_site_db
 from qmds.utils.logger import get_logger
 
@@ -56,6 +57,7 @@ def site_config():
                 "seo_proxy": request.form.get("seo_proxy", ""),
                 "seo_api_key": request.form.get("seo_api_key", ""),
                 "ark_api_key": request.form.get("ark_api_key", ""),
+                "llm_model": request.form.get("llm_model", ""),
                 "rocket_cleanup_frequency": request.form.get("rocket_cleanup_frequency", "daily"),
                 "rocket_preload_links": request.form.get("rocket_preload_links", "1"),
                 "rocket_minify_css": request.form.get("rocket_minify_css", "1"),
@@ -95,6 +97,8 @@ def site_config():
         current_settings = site_db.get_all_settings()
         current_settings["jisuai_api_keys"] = _read_jisuai_keys_file()
         current_settings["menu_ai_api_keys"] = _read_menu_ai_keys_file()
+        current_settings["llm_models"] = list_llm_models()
+        current_settings["current_llm_model"] = current_settings.get("llm_model", "") or settings.llm_model
         return render_template("site_config.html", settings=current_settings)
     except Exception as e:
         log.error(f"配置页面错误: {e}")

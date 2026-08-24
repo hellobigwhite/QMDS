@@ -52,6 +52,12 @@ class Settings:
     glm_model: str = "mimo-v2.5"
     ai_batch_size: int = 10
 
+    # 火山方舟（Ark）— 用于 LLM 文本模型和图片生成
+    ark_api_key: str = ""
+
+    # LLM 文本模型选择（筛站/补充分类/构建菜单共用）
+    llm_model: str = "mimo-v2.5"
+
     def __post_init__(self):
         self.data_dir = self.project_root / self.data_dir
         if self.log_file is None:
@@ -96,6 +102,8 @@ class Settings:
             mimo_api_key=os.getenv("MIMO_API_KEY", "sk-sqlv0zc1341mtj6nk6y9c6sulv4n6qbz3i4cvp0m24rwgn06"),
             glm_model=os.getenv("GLM_MODEL", "mimo-v2.5"),
             ai_batch_size=int(os.getenv("AI_BATCH_SIZE", "10")),
+            ark_api_key=os.getenv("ARK_API_KEY", ""),
+            llm_model=os.getenv("LLM_MODEL", "mimo-v2.5"),
         )
 
 

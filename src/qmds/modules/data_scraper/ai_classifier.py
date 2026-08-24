@@ -25,6 +25,13 @@ from urllib3.util.retry import Retry
 
 from qmds.config import settings
 from qmds.config.categories import SHOPIFY_TO_GOOGLE_CATEGORY
+from qmds.config.llm_models import (
+    get_llm_model_config,
+    get_llm_api_key,
+    has_llm_api_key,
+    get_llm_extra_body,
+    get_llm_system_message,
+)
 from qmds.core.exceptions import ProxyError, RateLimitError
 from qmds.utils.logger import get_logger
 
@@ -74,28 +81,44 @@ def google_to_qmds_category(google_name: str) -> Optional[str]:
 # =========================
 
 _glm_client: Optional["OpenAI"] = None
+_glm_client_config: Optional[dict] = None
 
 
-def _get_glm_client() -> "OpenAI":
-    """获取全局 OpenAI 客户端（懒加载，复用连接）"""
-    global _glm_client
-    if _glm_client is not None:
+def _get_glm_client(site_db=None) -> "OpenAI":
+    """获取全局 OpenAI 客户端（懒加载，复用连接）
+
+    从统一配置 llm_models.py 读取 base_url / api_key / model_id，
+    支持 MiMo 和 Ark 两种 provider。
+    """
+    global _glm_client, _glm_client_config
+    if _glm_client is not None and _glm_client_config is not None:
         return _glm_client
     if not HAS_OPENAI:
         raise RuntimeError("openai 未安装，无法创建 LLM 客户端")
-    if not settings.mimo_api_key:
-        raise RuntimeError("MIMO_API_KEY 未配置，无法创建 LLM 客户端")
+
+    model_value = settings.llm_model
+    if site_db is not None:
+        model_value = site_db.get_setting("llm_model", "") or model_value
+
+    config = get_llm_model_config(model_value)
+    api_key = get_llm_api_key(config, site_db)
+    if not api_key:
+        raise RuntimeError(f"LLM API Key 未配置（provider={config['provider']}）")
+
     _glm_client = OpenAI(
-        base_url="https://api.xiaomimimo.com/v1",
-        api_key=settings.mimo_api_key,
+        base_url=config["base_url"],
+        api_key=api_key,
     )
+    _glm_client_config = config
+    log.info(f"LLM 客户端已创建: {config['label']} (provider={config['provider']}, model={config['model_id']})")
     return _glm_client
 
 
 def reset_glm_client():
-    """重置 LLM 客户端（测试用）"""
-    global _glm_client
+    """重置 LLM 客户端（测试用 / 模型切换时调用）"""
+    global _glm_client, _glm_client_config
     _glm_client = None
+    _glm_client_config = None
 
 
 # =========================
@@ -588,14 +611,16 @@ def classify_store(
     domain: str,
     http_client=None,
     debug: bool = False,
+    site_db=None,
 ) -> dict:
-    """调用 MiMo LLM 对站点分类
+    """调用 LLM 对站点分类
 
     Args:
         page_info: 页面信息 dict（title/meta_description/nav_categories/shop_name/url_keywords/collection_titles）
         domain: 店铺域名（page_info 信息不全时抓首页兜底）
         http_client: QMDS HttpClient 实例（走代理）
         debug: 是否打印调试信息
+        site_db: 可选的 SiteDB 实例（Web 模式下传入，读取数据库中的 llm_model 配置）
 
     Returns:
         {
@@ -629,25 +654,37 @@ def classify_store(
 
     prompt = build_prompt(title, meta, nav, shop, url_kw, homepage_content, collection_titles)
 
-    if not HAS_OPENAI or not settings.mimo_api_key:
-        log.error("openai 未安装或 MIMO_API_KEY 未配置，无法分类")
+    if not HAS_OPENAI:
+        log.error("openai 未安装，无法分类")
         return _unrecognized()
 
-    client = _get_glm_client()
+    if site_db is not None:
+        model_value = site_db.get_setting("llm_model", "") or settings.llm_model
+        config = get_llm_model_config(model_value)
+        if not has_llm_api_key(config, site_db):
+            log.error(f"LLM API Key 未配置（provider={config['provider']}），无法分类")
+            return _unrecognized()
+        client = _get_glm_client(site_db)
+    else:
+        config = _glm_client_config or get_llm_model_config(settings.llm_model)
+        if not has_llm_api_key(config):
+            log.error(f"LLM API Key 未配置（provider={config['provider']}），无法分类")
+            return _unrecognized()
+        client = _get_glm_client()
     last_err = ""
     for attempt in range(3):
         try:
             completion = client.chat.completions.create(
-                model=settings.glm_model,
+                model=config["model_id"],
                 messages=[
-                    {"role": "system", "content": "You are MiMo, an AI assistant. Respond with valid JSON only."},
+                    {"role": "system", "content": get_llm_system_message(config)},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.3,
                 max_completion_tokens=300,
                 top_p=0.95,
                 timeout=10,
-                extra_body={"thinking": {"type": "disabled"}},
+                extra_body=get_llm_extra_body(config),
             )
             content = completion.choices[0].message.content.strip()
             content = re.sub(r'^```(?:json)?\s*|\s*```$', '', content)

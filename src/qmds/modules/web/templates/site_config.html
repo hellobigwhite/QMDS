@@ -101,6 +101,24 @@
     </div>
 
     <div class="card">
+        <h2>LLM 文本模型配置</h2>
+        <p class="text-muted mb-4">用于筛站、补充一级分类、构建菜单的 AI 文本模型。选择不同的模型将影响所有 AI 文本功能的调用。</p>
+        <div>
+            <label>选择模型</label>
+            <select name="llm_model" style="width:100%; max-width:480px;">
+                {% for m in settings.llm_models|default([]) %}
+                <option value="{{ m.value }}" {{ 'selected' if m.value == settings.current_llm_model|default('mimo-v2.5') else '' }}>
+                    {{ m.label }} — {{ m.desc }}
+                </option>
+                {% endfor %}
+            </select>
+            <small style="color:#666;font-size:12px;">
+                MiMo 模型使用 menu_ai_api_keys.txt 中的 Key；火山方舟模型使用上方配置的 ark_api_key。
+            </small>
+        </div>
+    </div>
+
+    <div class="card">
         <h2>WP Rocket 配置</h2>
         <div class="grid-2">
             <div>

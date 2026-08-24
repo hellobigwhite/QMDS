@@ -11,7 +11,6 @@
 import json
 import os
 import re
-import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -26,6 +25,14 @@ from qmds.config.categories import (
     SHOPIFY_TO_GOOGLE_CATEGORY,
     _load_category_lines,
 )
+from qmds.config.llm_models import (
+    get_llm_model_config,
+    get_llm_api_key,
+    has_llm_api_key,
+    get_llm_extra_body,
+    get_llm_system_message,
+    count_mimo_keys,
+)
 from qmds.utils.data_cleaner import read_table_file
 from qmds.utils.logger import get_logger
 
@@ -38,42 +45,15 @@ except ImportError:
     HAS_OPENAI = False
     log.warning("openai 未安装，模型优化分类功能不可用")
 
-# ── LLM Configuration (复用 ai_menu_builder 配置) ──
-_LLM_BASE_URL = "https://api.xiaomimimo.com/v1"
-_LLM_MODEL = "mimo-v2.5-pro"
+# ── LLM Configuration (统一配置，从 llm_models.py 读取) ──
 _LLM_MAX_TOKENS = 8000
 _LLM_TIMEOUT = 30
-
-# ── API Key file (复用 menu_ai_api_keys.txt) ──
-_KEYS_FILE = settings.project_root / "menu_ai_api_keys.txt"
-
-# ── Thread-safe key rotation ──
-_key_lock = threading.Lock()
-_key_index = 0
 
 # ── 分批阈值 ──
 BATCH_SIZE = 300
 
 # ── 21个一级大类（Google 可读名，本地预过滤用） ──
 _TOP_CATEGORIES = set(SHOPIFY_TO_GOOGLE_CATEGORY.values())
-
-
-def _load_api_keys() -> list[str]:
-    if not _KEYS_FILE.exists():
-        return []
-    lines = _KEYS_FILE.read_text(encoding="utf-8").strip().splitlines()
-    return [line.strip() for line in lines if line.strip() and not line.startswith("#")]
-
-
-def _get_next_api_key() -> str:
-    global _key_index
-    with _key_lock:
-        keys = _load_api_keys()
-        if not keys:
-            raise RuntimeError("未配置 AI API Key（menu_ai_api_keys.txt 为空或不存在）")
-        key = keys[_key_index % len(keys)]
-        _key_index += 1
-    return key
 
 
 # ── Google 参考路径构建 ──────────────────────────────
@@ -243,11 +223,12 @@ def _call_llm_optimize(
     reference_paths: list[str],
     confirmed_expressions: Optional[dict] = None,
     log_callback=None,
+    site_db=None,
 ) -> dict:
     """调用 LLM 优化分类，返回映射字典
 
     对策：
-    - 多 key 轮换 + key 失效跳过
+    - 多 key 轮换 + key 失效跳过（MiMo provider）
     - 429 指数退避
     - 3 次重试 + 温度递降
     - 返回解析多层容错
@@ -255,27 +236,32 @@ def _call_llm_optimize(
     if not HAS_OPENAI:
         raise RuntimeError("openai 未安装")
 
+    model_value = settings.llm_model
+    if site_db is not None:
+        model_value = site_db.get_setting("llm_model", "") or model_value
+    config = get_llm_model_config(model_value)
+
     last_err = ""
-    total_keys = len(_load_api_keys())
+    total_keys = 1 if config["provider"] == "ark" else count_mimo_keys()
     attempted_keys = 0
 
     for attempt in range(3):
-        api_key = _get_next_api_key()
+        api_key = get_llm_api_key(config, site_db)
         attempted_keys += 1
         try:
             prompt = _build_prompt(categories, reference_paths, confirmed_expressions, attempt)
-            client = OpenAI(base_url=_LLM_BASE_URL, api_key=api_key)
+            client = OpenAI(base_url=config["base_url"], api_key=api_key)
             completion = client.chat.completions.create(
-                model=_LLM_MODEL,
+                model=config["model_id"],
                 messages=[
-                    {"role": "system", "content": "You are MiMo, an AI assistant. Respond with valid JSON only."},
+                    {"role": "system", "content": get_llm_system_message(config)},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.3 if attempt == 0 else 0.1,
                 max_completion_tokens=_LLM_MAX_TOKENS,
                 top_p=0.95,
                 timeout=_LLM_TIMEOUT,
-                extra_body={"thinking": {"type": "disabled"}},
+                extra_body=get_llm_extra_body(config),
             )
             content = completion.choices[0].message.content.strip()
             cleaned = _parse_llm_response(content)
@@ -383,6 +369,7 @@ def optimize_dataframe(
     df: pd.DataFrame,
     category_col: Optional[str] = None,
     log_callback=None,
+    site_db=None,
 ) -> tuple[pd.DataFrame, dict]:
     """对 DataFrame 的分类列进行模型优化
 
@@ -434,7 +421,7 @@ def optimize_dataframe(
 
     if len(to_optimize) <= BATCH_SIZE:
         _log(f"一次性调用模型，共 {len(to_optimize)} 个分类")
-        mappings = _call_llm_optimize(to_optimize, reference_paths, log_callback=log_callback)
+        mappings = _call_llm_optimize(to_optimize, reference_paths, log_callback=log_callback, site_db=site_db)
         all_mappings.update(mappings)
         # 收集单级分类的统一表达，用于跨批一致性
         for orig, optimized in mappings.items():
@@ -449,6 +436,7 @@ def optimize_dataframe(
                 batch, reference_paths,
                 confirmed_expressions=confirmed_expressions if confirmed_expressions else None,
                 log_callback=log_callback,
+                site_db=site_db,
             )
             all_mappings.update(mappings)
             for orig, optimized in mappings.items():
@@ -490,6 +478,7 @@ def optimize_file(
     category_col: Optional[str] = None,
     output_suffix: str = "_optimized",
     log_callback=None,
+    site_db=None,
 ) -> dict:
     """优化单个表格文件
 
@@ -519,7 +508,7 @@ def optimize_file(
     original_count = len(df)
     _log(f"数据量: {original_count} 行")
 
-    df, mappings = optimize_dataframe(df, category_col, log_callback)
+    df, mappings = optimize_dataframe(df, category_col, log_callback, site_db=site_db)
 
     # 保存结果
     output_file = file_path.parent / f"{file_path.stem}{output_suffix}{file_path.suffix}"
@@ -544,6 +533,7 @@ def optimize_folder(
     output_folder: Optional[str | Path] = None,
     output_suffix: str = "_optimized",
     log_callback=None,
+    site_db=None,
 ) -> dict:
     """批量优化文件夹中的表格文件
 
@@ -581,7 +571,7 @@ def optimize_folder(
     for file_path in files:
         _log(f"处理文件: {file_path.name}")
         try:
-            result = optimize_file(file_path, category_col, output_suffix, log_callback)
+            result = optimize_file(file_path, category_col, output_suffix, log_callback, site_db=site_db)
             results["processed"] += 1
             results["details"].append({
                 "file": file_path.name,

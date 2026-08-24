@@ -368,14 +368,18 @@ def category_optimize():
                 task_manager.update(task_id, message="正在优化分类结构...")
 
                 from qmds.utils.category_optimizer import optimize_file
+                from qmds.db.site_db import SiteDBClient
 
                 def log_callback(message, level="info"):
                     task_manager.add_log(task_id, message, level)
+
+                _site_db = SiteDBClient()
 
                 result = optimize_file(
                     file_path=file_path,
                     category_col=category_field,
                     log_callback=log_callback,
+                    site_db=_site_db,
                 )
 
                 if task_manager.is_stopped(task_id):

@@ -1678,7 +1678,7 @@ def site_built():
                                         main_cat = site_info.get("main_category", "")
                                         task_manager.add_log(task_id, f"[{domain}] [AI构建菜单] 主分类: {main_cat}", "info")
                                         wp_password = _site_db.get_setting("wp_password") or os.environ.get("WP_PASSWORD", "")
-                                        ai_configurator = AiMenuConfigurator(wp_password)
+                                        ai_configurator = AiMenuConfigurator(wp_password, site_db=_site_db)
                                         task_manager.update(task_id, current=current, progress=intra_progress,
                                                             message=f"[步骤{step_idx+1}] [{current}/{run_total}] [{domain}] AI构建菜单...")
 
@@ -2144,7 +2144,7 @@ def site_built():
                                                     message=f"[{current}/{total}] [{domain}] 读取菜单配置...")
                                 wp_password = _site_db.get_setting("wp_password") or os.environ.get("WP_PASSWORD", "")
                                 from qmds.utils.ai_menu_builder import AiMenuConfigurator
-                                ai_configurator = AiMenuConfigurator(wp_password)
+                                ai_configurator = AiMenuConfigurator(wp_password, site_db=_site_db)
                                 def ai_menu_progress(msg):
                                     task_manager.update(task_id, current=current,
                                                         progress=int((current - 0.1) / total * 100),

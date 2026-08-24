@@ -8,12 +8,18 @@ independent from the existing wp_menu_config.py weighted-random approach.
 import os
 import re
 import json
-import threading
 from typing import Optional
 
 import requests
 
 from qmds.config import settings
+from qmds.config.llm_models import (
+    get_llm_model_config,
+    get_llm_api_key,
+    has_llm_api_key,
+    get_llm_extra_body,
+    get_llm_system_message,
+)
 from qmds.utils.logger import get_logger
 from qmds.utils.wp_menu_config import (
     safe_json,
@@ -40,42 +46,9 @@ except ImportError:
     HAS_OPENAI = False
     log.warning("openai 未安装，AI 构建菜单功能不可用")
 
-# ── LLM Configuration (hardcoded, independent from settings.mimo_api_key) ──
-_LLM_BASE_URL = "https://api.xiaomimimo.com/v1"
-_LLM_MODEL = "mimo-v2.5"
+# ── LLM Configuration (统一配置，从 llm_models.py 读取) ──
 _LLM_MAX_TOKENS = 2000
 _LLM_TIMEOUT = 30
-
-# ── API Key file ──
-_KEYS_FILE = settings.project_root / "menu_ai_api_keys.txt"
-
-# ── Thread-safe key rotation ──
-_key_lock = threading.Lock()
-_key_index = 0
-
-
-def _load_api_keys() -> list[str]:
-    if not _KEYS_FILE.exists():
-        return []
-    lines = _KEYS_FILE.read_text(encoding="utf-8").strip().splitlines()
-    keys = []
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        keys.append(line)
-    return keys
-
-
-def _get_next_api_key() -> str:
-    global _key_index
-    with _key_lock:
-        keys = _load_api_keys()
-        if not keys:
-            raise RuntimeError("未配置 AI 菜单 API Key（menu_ai_api_keys.txt 为空或不存在）")
-        key = keys[_key_index % len(keys)]
-        _key_index += 1
-    return key
 
 
 # ── Category data preparation (reuses wp_menu_config logic) ──
@@ -206,10 +179,15 @@ Return ONLY valid JSON (no markdown, no code fences):
 
 # ── LLM Call ──
 
-def _call_llm_build_menu(main_cat, target_top, id_to_info, tree_data):
+def _call_llm_build_menu(main_cat, target_top, id_to_info, tree_data, site_db=None):
     """Call LLM to build menu. Returns list of {id, children_ids} or raises."""
     if not HAS_OPENAI:
         raise RuntimeError("openai 未安装")
+
+    model_value = settings.llm_model
+    if site_db is not None:
+        model_value = site_db.get_setting("llm_model", "") or model_value
+    config = get_llm_model_config(model_value)
 
     cat_list_str = _build_category_list(id_to_info)
     tree_summary = _build_tree_summary(tree_data, id_to_info)
@@ -217,20 +195,20 @@ def _call_llm_build_menu(main_cat, target_top, id_to_info, tree_data):
 
     last_err = ""
     for attempt in range(3):
-        api_key = _get_next_api_key()
+        api_key = get_llm_api_key(config, site_db)
         try:
-            client = OpenAI(base_url=_LLM_BASE_URL, api_key=api_key)
+            client = OpenAI(base_url=config["base_url"], api_key=api_key)
             completion = client.chat.completions.create(
-                model=_LLM_MODEL,
+                model=config["model_id"],
                 messages=[
-                    {"role": "system", "content": "You are MiMo, an AI assistant. Respond with valid JSON only."},
+                    {"role": "system", "content": get_llm_system_message(config)},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.4,
                 max_completion_tokens=_LLM_MAX_TOKENS,
                 top_p=0.95,
                 timeout=_LLM_TIMEOUT,
-                extra_body={"thinking": {"type": "disabled"}},
+                extra_body=get_llm_extra_body(config),
             )
             content = completion.choices[0].message.content.strip()
             content = re.sub(r'^```(?:json)?\s*|\s*```$', '', content)
@@ -350,7 +328,7 @@ def apply_main_cat_ai(menu_list, main_cat_name, all_cats):
 
 # ── Public API ──
 
-def build_ai_menu_list(all_cats, tree_data, main_cat=None, nav_width=1140):
+def build_ai_menu_list(all_cats, tree_data, main_cat=None, nav_width=1140, site_db=None):
     """LLM-driven menu construction.
 
     Returns: list of {id, title, children: [{id, title, children: []}]}
@@ -364,7 +342,7 @@ def build_ai_menu_list(all_cats, tree_data, main_cat=None, nav_width=1140):
 
     target_top = max(5, min(10, nav_width // 130))
 
-    llm_items = _call_llm_build_menu(main_cat, target_top, id_to_info, tree_data)
+    llm_items = _call_llm_build_menu(main_cat, target_top, id_to_info, tree_data, site_db=site_db)
     menu_list = _assemble_menu(llm_items, id_to_info)
 
     return menu_list
@@ -378,10 +356,11 @@ class AiMenuConfigurator:
     updateCategory.php for submission.
     """
 
-    def __init__(self, password=None):
+    def __init__(self, password=None, site_db=None):
         self._password = password
         self._session = requests.Session()
         self._session.verify = False
+        self._site_db = site_db
 
     def configure(self, domain, main_cat=None, progress_callback=None):
         """AI 菜单配置流程
@@ -418,7 +397,7 @@ class AiMenuConfigurator:
         if main_cat and main_cat.lower() not in ("home", "shop", "none", ""):
             cat_name = main_cat.rsplit("|||", 1)[-1].strip() if "|||" in main_cat else main_cat.strip()
 
-        menu_list = build_ai_menu_list(all_cats, tree_data, main_cat=cat_name, nav_width=nav_width)
+        menu_list = build_ai_menu_list(all_cats, tree_data, main_cat=cat_name, nav_width=nav_width, site_db=self._site_db)
 
         if cat_name:
             if progress_callback:

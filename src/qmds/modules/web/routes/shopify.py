@@ -529,6 +529,7 @@ def shopify_filter_categories():
                     FILTER_FAIL_REASON_BLACK_FIVE,
                     FILTER_FAIL_REASON_UNRECOGNIZED,
                 )
+                from qmds.db.site_db import SiteDBClient
                 from qmds.modules.data_scraper.ai_classifier import (
                     classify_store,
                     is_non_english,
@@ -541,12 +542,12 @@ def shopify_filter_categories():
                     task_manager.add_log(task_id, "任务启动: AI 智能分类（阶段2）", "info")
                     task_manager.add_log(task_id, f"类目: {category}, 待分类: {total}", "info")
 
-                    if not settings.mimo_api_key:
+                    if not settings.mimo_api_key and not settings.ark_api_key:
                         task_manager.update(
                             task_id, status="failed",
-                            message="失败: MIMO_API_KEY 未配置，无法调用 AI 分类",
+                            message="失败: LLM API Key 未配置，无法调用 AI 分类",
                         )
-                        task_manager.add_log(task_id, "MIMO_API_KEY 未配置，无法调用 AI 分类", "error")
+                        task_manager.add_log(task_id, "LLM API Key 未配置（MiMo menu_ai_api_keys.txt / Ark ark_api_key 均为空），无法调用 AI 分类", "error")
                         return
 
                     if total == 0:
@@ -594,7 +595,7 @@ def shopify_filter_categories():
                                 )
                             else:
                                 # LLM 分类（http_client=None，无网络请求）
-                                result = classify_store(page_info, domain, None)
+                                result = classify_store(page_info, domain, None, site_db=site_db_inner)
                                 llm_category = result.get("category", "")
                                 llm_subcategory = result.get("subcategory", "")
                                 source_subcategory = result.get("source_subcategory", "")
@@ -753,6 +754,7 @@ def shopify_filter_categories():
                     task_manager.add_log(task_id, f"任务异常: {e}", "error")
                 finally:
                     db_inner.close()
+                    site_db_inner.close()
 
             task_manager.start_task_thread(task_id, run_ai_task)
             flash(f"AI 智能分类任务已启动: {category}，可在任务页面查看进度", "info")
@@ -1015,8 +1017,8 @@ def shopify_model_filter_import():
 
         # ===== AI 抓取网站信息：在 cc_c.shopify_site 源集合上操作 =====
         if action == "ai_fetch_info":
-            if not settings.mimo_api_key:
-                flash("MIMO_API_KEY 未配置，无法进行 AI 分类流程", "error")
+            if not settings.mimo_api_key and not settings.ark_api_key:
+                flash("LLM API Key 未配置（MiMo / Ark 均为空），无法进行 AI 分类流程", "error")
                 return redirect(url_for("shopify.shopify_model_filter_import"))
 
             src_collection = (request.form.get("source_collection") or "shopify_site").strip()
@@ -1119,8 +1121,8 @@ def shopify_model_filter_import():
 
         # ===== AI 智能分类：在 cc_c.shopify_site 源集合上操作 =====
         if action == "ai_filter":
-            if not settings.mimo_api_key:
-                flash("MIMO_API_KEY 未配置，无法调用 AI 分类", "error")
+            if not settings.mimo_api_key and not settings.ark_api_key:
+                flash("LLM API Key 未配置（MiMo / Ark 均为空），无法调用 AI 分类", "error")
                 return redirect(url_for("shopify.shopify_model_filter_import"))
 
             src_collection = (request.form.get("source_collection") or "shopify_site").strip()
@@ -1129,10 +1131,12 @@ def shopify_model_filter_import():
 
             def run_classify_task():
                 from qmds.db.mongodb import MongoDBClient
+                from qmds.db.site_db import SiteDBClient
                 from qmds.modules.data_scraper.ai_classifier import (
                     classify_store, is_non_english,
                 )
                 db_inner = MongoDBClient()
+                site_db_inner = SiteDBClient()
                 try:
                     task_manager.add_log(task_id, "任务启动: AI 智能分类（cc_c.shopify_site）", "info")
                     task_manager.add_log(task_id, f"源: {source_db}.{src_collection}", "info")
@@ -1179,7 +1183,7 @@ def shopify_model_filter_import():
                                 task_manager.add_log(task_id, f"[{processed}/{total}] {domain} - 非英文站 ({lang})", "info")
                             else:
                                 # LLM 分类
-                                result = classify_store(page_info, domain, None)
+                                result = classify_store(page_info, domain, None, site_db=site_db_inner)
                                 llm_category = result.get("category", "")
                                 llm_subcategory = result.get("subcategory", "")
 
@@ -1261,6 +1265,7 @@ def shopify_model_filter_import():
                     task_manager.add_log(task_id, f"任务异常: {e}", "error")
                 finally:
                     db_inner.close()
+                    site_db_inner.close()
 
             task_manager.start_task_thread(task_id, run_classify_task)
             flash(f"AI 智能分类任务已启动，可在任务页面查看进度", "info")
@@ -1277,7 +1282,9 @@ def shopify_model_filter_import():
 
         def run_task():
             from qmds.db.mongodb import MongoDBClient
+            from qmds.db.site_db import SiteDBClient
             db_inner = MongoDBClient()
+            site_db_inner = SiteDBClient()
             try:
                 task_manager.add_log(task_id, f"任务启动: 模型筛站导入", "info")
                 if is_all:
