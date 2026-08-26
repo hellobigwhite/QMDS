@@ -2,8 +2,10 @@
 
 import json
 import random
+import threading
 import time
 import urllib3
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urlparse
@@ -25,8 +27,27 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36 Edg/134.0.0.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36 Edg/134.0.0.0",
+]
+
+# Shopify 首页 HTML 强特征（仅用于 meta.json 失败后的兜底，避免误报不收录弱特征）
+SHOPIFY_HTML_INDICATORS = [
+    "cdn.shopify.",
+    "/cdn/shop/",
+    "window.shopify",
+    "shopify.theme",
+    "shopify_payments",
+]
+
+# Shopify 响应头特征
+SHOPIFY_HEADER_INDICATORS = ("x-shopid", "x-sorting-hat-shopid")
+
+# 通用电商指标（在排除 Shopify 之后才判定；shopify_payments 已移入 Shopify 正向特征）
+GENERIC_ECOMMERCE_INDICATORS = [
+    "js.stripe.com", "stripe.js", "paypal.com/sdk",
+    "paypalobjects.com", "klarna.com", "squareup.com",
+    "afterpay.com",
+    '<meta name="generator" content="prestashop">', "opencart",
 ]
 
 
@@ -39,6 +60,7 @@ class DetectionResult:
     confidence: float = 0.0
     raw: dict = None
     page_text: str = ""  # 存储页面文本用于语言检测
+    inconclusive: bool = False  # True=网络失败/被拦截导致无法确认（区别于"确认非该平台"）
 
     def __bool__(self):
         return self.platform != Platform.UNKNOWN
@@ -172,6 +194,80 @@ class PlatformDetector:
 
     def __init__(self, proxy_manager: Optional[ProxyManager] = None):
         self._proxy_manager = proxy_manager
+        # 商品数据爬取使用的代理服务客户端（懒加载，meta.json 被 403 拦截时复检用）
+        self._proxy_service = None
+        self._proxy_service_failed = False
+        # 同域名互斥锁：避免并发检测轰击同一站点触发限流
+        self._domain_locks = defaultdict(threading.Lock)
+        self._locks_guard = threading.Lock()
+
+    def _get_domain_lock(self, domain: str) -> threading.Lock:
+        with self._locks_guard:
+            return self._domain_locks[domain]
+
+    def _get_proxy_service(self):
+        """懒加载代理服务客户端（与 ProductCrawler 共用同一服务），失败后永久停用"""
+        if self._proxy_service_failed:
+            return None
+        if self._proxy_service is None:
+            try:
+                from qmds.modules.data_scraper.product_crawler import ProxyServiceClient
+                self._proxy_service = ProxyServiceClient()
+            except Exception as e:
+                log.warning(f"代理服务客户端初始化失败，已停用: {e}")
+                self._proxy_service_failed = True
+                return None
+        return self._proxy_service
+
+    @staticmethod
+    def _shopify_result_from_meta(data: dict, confidence: float) -> DetectionResult:
+        """由 meta.json 内容构建 Shopify 检测结果"""
+        return DetectionResult(
+            platform=Platform.SHOPIFY,
+            product_count=int(data.get("published_products_count", 0) or 0),
+            store_name=data.get("name", ""),
+            currency=data.get("currency", "USD"),
+            confidence=confidence,
+            raw=data,
+        )
+
+    def _detect_shopify_via_proxy_service(self, meta_url: str) -> Optional[DetectionResult]:
+        """meta.json 被反爬拦截（如 403）时，通过商品爬取使用的代理服务重新请求"""
+        client = self._get_proxy_service()
+        if not client:
+            return None
+        log.info(f"meta.json 被拦截，尝试代理服务复检: {meta_url}")
+        data, status = client.fetch(meta_url)
+        if status == 200 and isinstance(data, dict) and "published_products_count" in data:
+            log.info(f"代理服务复检成功确认 Shopify: {meta_url}")
+            return self._shopify_result_from_meta(data, confidence=0.95)
+        return None
+
+    @staticmethod
+    def _matches_shopify_fingerprint(html: str, response=None) -> bool:
+        """首页 HTML / 响应头的 Shopify 特征匹配（第二判据）"""
+        if response is not None:
+            try:
+                headers = {(k or "").lower(): str(v) for k, v in dict(response.headers or {}).items()}
+                if any(name in headers for name in SHOPIFY_HEADER_INDICATORS):
+                    return True
+            except Exception:
+                pass
+        if not html:
+            return False
+        lowered = html.lower()
+        return any(indicator in lowered for indicator in SHOPIFY_HTML_INDICATORS)
+
+    def _fetch_page_text(self, url: str, headers: dict) -> str:
+        """获取页面 HTML 用于语言检测等后续处理"""
+        try:
+            response = _request_with_retry(url, proxy_manager=self._proxy_manager,
+                                           headers=headers, timeout=15)
+            if response and response.status_code == 200:
+                return response.text
+        except Exception:
+            pass
+        return ""
 
     def detect(self, url: str, url_map: dict = None) -> DetectionResult:
         """检测电商平台（与 YSQD detect_ecommerce_platform 一致）"""
@@ -182,94 +278,103 @@ class PlatformDetector:
             if not url.endswith("/"):
                 url += "/"
 
-            headers = get_browser_headers()
-            page_text = ""
+            domain = urlparse(url).netloc.lower()
+            with self._get_domain_lock(domain):
+                return self._detect_locked(url, url_map)
+        except Exception:
+            return DetectionResult(platform=Platform.UNKNOWN)
 
-            # 1. Shopify / WooCommerce / Magento / BigCommerce 检测
-            checks = [
-                ("Shopify", f"{url}meta.json", lambda r: "published_products_count" in r.json()),
-                ("WooCommerce", f"{url}wp-json/wc/v3/products?per_page=1", lambda r: isinstance(r.json(), list)),
-                ("Magento", f"{url}magento_version", lambda r: "Magento" in r.text),
-                ("Magento", f"{url}static/version", lambda r: r.status_code == 200),
-                ("BigCommerce", url, lambda r: "BigCommerce" in r.text),
-            ]
+    def _detect_locked(self, url: str, url_map: dict) -> DetectionResult:
+        headers = get_browser_headers()
+        network_failure = False
+        meta_json_blocked = False
 
-            for platform_name, check_url, predicate in checks:
-                try:
-                    response = _request_with_retry(check_url, proxy_manager=self._proxy_manager,
-                                                   headers=headers, timeout=15)
-                    if response and response.status_code == 200 and predicate(response):
-                        # 获取首页内容用于语言检测
-                        try:
-                            page_response = _request_with_retry(url, proxy_manager=self._proxy_manager,
-                                                               headers=headers, timeout=15)
-                            if page_response and page_response.status_code == 200:
-                                page_text = page_response.text
-                        except Exception:
-                            pass
-                        result = self._to_result(platform_name, url, response)
-                        result.page_text = page_text
-                        return result
-                except Exception:
-                    pass
+        # 1. Shopify / WooCommerce / Magento / BigCommerce 检测
+        checks = [
+            ("Shopify", f"{url}meta.json", lambda r: "published_products_count" in r.json(), 20, 3),
+            ("WooCommerce", f"{url}wp-json/wc/v3/products?per_page=1", lambda r: isinstance(r.json(), list), 15, 2),
+            ("Magento", f"{url}magento_version", lambda r: "Magento" in r.text, 15, 2),
+            ("Magento", f"{url}static/version", lambda r: r.status_code == 200, 15, 2),
+            ("BigCommerce", url, lambda r: "BigCommerce" in r.text, 15, 2),
+        ]
 
-            # 2. 通用电商指标（Stripe/PayPal/Klarna 等）
+        for platform_name, check_url, predicate, timeout, retries in checks:
             try:
-                response = _request_with_retry(url, proxy_manager=self._proxy_manager,
+                response = _request_with_retry(check_url, proxy_manager=self._proxy_manager,
+                                               headers=headers, timeout=timeout, max_retries=retries)
+            except Exception:
+                response = None
+            if response is None:
+                if platform_name == "Shopify":
+                    network_failure = True
+                continue
+            try:
+                matched = response.status_code == 200 and predicate(response)
+            except Exception:
+                # 200 但内容非预期（如返回 HTML 密码页导致 JSON 解析失败）
+                matched = False
+            if matched:
+                result = self._to_result(platform_name, url, response)
+                result.page_text = self._fetch_page_text(url, headers)
+                return result
+            if platform_name == "Shopify" and response.status_code == 403:
+                meta_json_blocked = True
+
+        # 2. meta.json 被 403 拦截 → 用商品爬取的代理服务重新请求
+        if meta_json_blocked:
+            result = self._detect_shopify_via_proxy_service(f"{url}meta.json")
+            if result:
+                result.page_text = self._fetch_page_text(url, headers)
+                return result
+
+        # 3. 首页 HTML / 响应头 Shopify 特征兜底（第二判据）
+        homepage_response = None
+        try:
+            homepage_response = _request_with_retry(url, proxy_manager=self._proxy_manager,
+                                                    headers=headers, timeout=15)
+        except Exception:
+            homepage_response = None
+
+        page_text = ""
+        if homepage_response is None:
+            network_failure = True
+        elif homepage_response.status_code == 200:
+            page_text = homepage_response.text
+            if self._matches_shopify_fingerprint(page_text, homepage_response):
+                log.info(f"通过首页特征识别为 Shopify: {url}")
+                result = DetectionResult(platform=Platform.SHOPIFY, confidence=0.85)
+                result.page_text = page_text
+                return result
+
+        # 4. myshopify URL 回退
+        myshopify_url = url_map.get(url.rstrip("/"))
+        if myshopify_url:
+            if not myshopify_url.endswith("/"):
+                myshopify_url += "/"
+            try:
+                response = _request_with_retry(f"{myshopify_url}meta.json", proxy_manager=self._proxy_manager,
                                                headers=headers, timeout=15)
-                if response and response.status_code == 200:
-                    html_content = response.text.lower()
-                    indicators = [
-                        "js.stripe.com", "stripe.js", "paypal.com/sdk",
-                        "paypalobjects.com", "klarna.com", "squareup.com",
-                        "shopify_payments", "afterpay.com",
-                        '<meta name="generator" content="prestashop">', "opencart",
-                    ]
-                    if any(indicator in html_content for indicator in indicators):
-                        return DetectionResult(platform=Platform.UNKNOWN, confidence=0.3)
+                if response and response.status_code == 200 and "published_products_count" in response.json():
+                    result = self._to_result("Shopify", myshopify_url, response)
+                    result.page_text = self._fetch_page_text(myshopify_url, headers)
+                    return result
             except Exception:
                 pass
 
-            # 3. myshopify URL 回退
-            myshopify_url = url_map.get(url.rstrip("/"))
-            if myshopify_url:
-                if not myshopify_url.endswith("/"):
-                    myshopify_url += "/"
-                try:
-                    response = _request_with_retry(f"{myshopify_url}meta.json", proxy_manager=self._proxy_manager,
-                                                   headers=headers, timeout=15)
-                    if response and response.status_code == 200 and "published_products_count" in response.json():
-                        # 获取首页内容用于语言检测
-                        try:
-                            page_response = _request_with_retry(myshopify_url, proxy_manager=self._proxy_manager,
-                                                               headers=headers, timeout=15)
-                            if page_response and page_response.status_code == 200:
-                                page_text = page_response.text
-                        except Exception:
-                            pass
-                        result = self._to_result("Shopify", myshopify_url, response)
-                        result.page_text = page_text
-                        return result
-                except Exception:
-                    pass
+        # 5. 通用电商指标（已排除 Shopify 后才判定；命中仅说明是其他电商平台）
+        if page_text:
+            html_content = page_text.lower()
+            if any(indicator in html_content for indicator in GENERIC_ECOMMERCE_INDICATORS):
+                return DetectionResult(platform=Platform.UNKNOWN, confidence=0.3)
 
-            return DetectionResult(platform=Platform.UNKNOWN)
-        except Exception:
-            return DetectionResult(platform=Platform.UNKNOWN)
+        return DetectionResult(platform=Platform.UNKNOWN,
+                               inconclusive=network_failure or meta_json_blocked)
 
     def _to_result(self, platform_name: str, url: str, response) -> DetectionResult:
         """将平台名称和响应转换为 DetectionResult"""
         if platform_name == "Shopify":
             try:
-                data = response.json()
-                return DetectionResult(
-                    platform=Platform.SHOPIFY,
-                    product_count=int(data.get("published_products_count", 0)),
-                    store_name=data.get("name", ""),
-                    currency=data.get("currency", "USD"),
-                    confidence=1.0,
-                    raw=data,
-                )
+                return self._shopify_result_from_meta(response.json(), confidence=1.0)
             except Exception:
                 return DetectionResult(platform=Platform.SHOPIFY, confidence=0.9)
         elif platform_name == "WooCommerce":

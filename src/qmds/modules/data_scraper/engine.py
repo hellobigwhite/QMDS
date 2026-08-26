@@ -666,10 +666,11 @@ class DataScraperModule:
         return domains
 
     def _detect_platforms(self, urls: list[str], url_map: dict, workers: int) -> dict[str, dict]:
-        """多线程平台检测（使用全局线程池）"""
+        """多线程平台检测（使用全局线程池，网络失败的不确定结果二轮复检）"""
         detection_results: dict[str, dict] = {}
+        INCONCLUSIVE = "__inconclusive__"  # 网络失败/被拦截，无法确认
 
-        def _detect_single(url: str) -> tuple[str, Optional[dict]]:
+        def _detect_single(url: str) -> tuple[str, object]:
             thread_name = threading.current_thread().name
             detect_url = url_map.get(url) or url
             try:
@@ -682,29 +683,53 @@ class DataScraperModule:
                         "store_name": result.store_name,
                         "currency": result.currency,
                     }
+                if result and getattr(result, "inconclusive", False):
+                    return url, INCONCLUSIVE
                 return url, None
             except Exception as e:
                 log.debug(f"[{thread_name}] 检测失败 {url}: {e}")
-                return url, None
+                return url, INCONCLUSIVE
 
-        # 使用平台检测专用线程池
-        log.info(f"启动平台检测: {len(urls)} 个URL")
-        futures = {self.detect_executor.submit(_detect_single, url): url for url in urls}
-        done_count = 0
-        shopify_count = 0
-        total_count = len(futures)
-        for future in as_completed(futures):
-            done_count += 1
-            url, result = future.result()
-            if result:
-                detection_results[url] = result
-                shopify_count += 1
+        def _run_pass(pending_urls: list[str]) -> dict[str, object]:
+            results: dict[str, object] = {}
+            futures = {self.detect_executor.submit(_detect_single, u): u for u in pending_urls}
+            done_count = 0
+            total = len(futures)
+            for future in as_completed(futures):
+                done_count += 1
+                url, outcome = future.result()
+                results[url] = outcome
                 domain = extract_domain(url)
-                log.info(f"[{done_count}/{total_count}] Shopify: {domain} ({result['product_count']} 商品)")
-            else:
-                log.info(f"[{done_count}/{total_count}] 非 Shopify: {extract_domain(url)}")
+                if isinstance(outcome, dict):
+                    log.info(f"[{done_count}/{total}] Shopify: {domain} ({outcome['product_count']} 商品)")
+                elif outcome == INCONCLUSIVE:
+                    log.info(f"[{done_count}/{total}] 不确定(网络失败/拦截): {domain}")
+                else:
+                    log.info(f"[{done_count}/{total}] 非 Shopify: {domain}")
+            return results
 
-        log.info(f"平台检测完成: {shopify_count}/{total_count} 个 Shopify")
+        # 第一轮全量检测
+        log.info(f"启动平台检测: {len(urls)} 个URL")
+        outcomes = _run_pass(list(urls))
+
+        # 第二轮：仅对网络失败导致不确定的 URL 复检一次（避免瞬时故障造成漏判）
+        inconclusive_urls = sorted(u for u, o in outcomes.items() if o == INCONCLUSIVE)
+        if inconclusive_urls:
+            log.info(f"二轮复检不确定 URL: {len(inconclusive_urls)} 个")
+            time.sleep(2)
+            retry_outcomes = _run_pass(inconclusive_urls)
+            for u, o in retry_outcomes.items():
+                # 二轮仍不确定则按非 Shopify 定案
+                outcomes[u] = None if o == INCONCLUSIVE else o
+            recovered = sum(1 for o in retry_outcomes.values() if isinstance(o, dict))
+            log.info(f"二轮复检完成: 新增 Shopify {recovered} 个")
+
+        for url, outcome in outcomes.items():
+            if isinstance(outcome, dict):
+                detection_results[url] = outcome
+
+        shopify_count = len(detection_results)
+        log.info(f"平台检测完成: {shopify_count}/{len(urls)} 个 Shopify")
         return detection_results
 
     def _save_and_check_duplicates(self, db: MongoDBClient, category: str,
