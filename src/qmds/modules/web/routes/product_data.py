@@ -209,6 +209,7 @@ def product_data_clean():
         category = request.form.get("category", "__all__")
         subcategory = request.form.get("subcategory", "__all__").strip() or "__all__"
         force = request.form.get("force") == "1"
+        clear_sku = request.form.get("clear_sku") == "1"
         sub_display = subcategory if subcategory != "__all__" else "all"
         task_id = f"clean_{category}_{sub_display}_{int(time.time())}"
         task_manager.create(task_id, "clean_products", f"{category}/{sub_display}")
@@ -218,8 +219,9 @@ def product_data_clean():
             try:
                 from qmds.db.product_db import ProductDBClient
                 force_msg = "（强制模式）" if force else ""
-                task_manager.update(task_id, status="running", message=f"开始清洗: {category}/{sub_display}{force_msg}")
-                task_manager.add_log(task_id, f"任务启动: 清洗数据 {category}/{sub_display}{force_msg}", "info")
+                sku_msg = "（清空SKU）" if clear_sku else ""
+                task_manager.update(task_id, status="running", message=f"开始清洗: {category}/{sub_display}{force_msg}{sku_msg}")
+                task_manager.add_log(task_id, f"任务启动: 清洗数据 {category}/{sub_display}{force_msg}{sku_msg}", "info")
 
                 product_db = ProductDBClient()
                 cat_list = _resolve_category_list(product_db, category, subcategory)
@@ -241,13 +243,16 @@ def product_data_clean():
                     task_manager.update(task_id, message=f"清洗分类: {cat}/{sub_d}")
                     task_manager.add_log(task_id, f"开始清洗分类: {cat}/{sub_d}", "info")
 
-                    result = product_db.clean_category(cat, sub, force=force)
+                    result = product_db.clean_category(cat, sub, force=force, clear_sku=clear_sku)
                     total_processed += result["processed"]
                     total_cleaned += result["cleaned"]
                     total_removed += result["removed"]
 
                     task_manager.add_log(task_id,
                                          f"分类 {cat}/{sub_d}: 处理 {result['processed']} 条, 通过 {result['cleaned']} 条, 移除 {result['removed']} 条", "info")
+
+                    if result.get("sku_cleared"):
+                        task_manager.add_log(task_id, f"  ├─ 清空SKU: {result['sku_cleared']} 条", "info")
 
                     filter_stats = result.get("stats", {})
                     for reason, count in filter_stats.items():

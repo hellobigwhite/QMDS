@@ -479,16 +479,18 @@ class ProductDBClient:
 
     # ── 清洗操作 ──────────────────────────────────────────
 
-    def clean_category(self, category: str, subcategory: str = "", force: bool = False) -> Dict[str, int]:
+    def clean_category(self, category: str, subcategory: str = "", force: bool = False,
+                       clear_sku: bool = True) -> Dict[str, int]:
         """清洗指定分类的未清洗数据（在同一集合内更新状态，不跨集合移动）
 
         Args:
             category: 一级分类名称
             subcategory: 二级分类名称
             force: 是否强制清洗所有数据（包括已清洗的）
+            clear_sku: 是否清空本次处理数据的 SKU 字段内容（默认开启）
 
         Returns:
-            {"processed": 处理数量, "cleaned": 清洗后数量, "removed": 移除数量}
+            {"processed": 处理数量, "cleaned": 清洗后数量, "removed": 移除数量, "sku_cleared": 清空SKU数量}
         """
         from qmds.modules.data_scraper.pipeline.filters import (
             PLACEHOLDER_IMAGES, PROHIBITED_KEYWORDS, MIN_TITLE_LENGTH, MIN_PRICE, MAX_PRICE
@@ -587,7 +589,7 @@ class ProductDBClient:
 
         if total == 0:
             log.info(f"[{prefix}] 无待清洗数据")
-            return {"processed": 0, "cleaned": 0, "removed": 0}
+            return {"processed": 0, "cleaned": 0, "removed": 0, "sku_cleared": 0}
 
         log.info(f"[{prefix}] 待清洗数据: {total} 条")
 
@@ -597,6 +599,13 @@ class ProductDBClient:
             if count > 0:
                 log.info(f"  ├─ {reason}: {count} 条")
         log.info(f"  └─ 通过: {len(passed_keys)} 条")
+
+        # 清空 SKU 字段内容（可选，对本次处理的全部数据生效；须在状态更新前执行）
+        sku_cleared = 0
+        if clear_sku:
+            sku_result = col.update_many(query, {"$set": {"SKU": ""}})
+            sku_cleared = sku_result.modified_count
+            log.info(f"[{prefix}] 已清空 {sku_cleared} 条数据的 SKU 字段内容")
 
         # 更新通过的为 cleaned
         if passed_keys:
@@ -631,6 +640,7 @@ class ProductDBClient:
             "cleaned": len(passed_keys),
             "removed": total - len(passed_keys),
             "stats": stats,
+            "sku_cleared": sku_cleared,
         }
 
     # ── 查询 ──────────────────────────────────────────────

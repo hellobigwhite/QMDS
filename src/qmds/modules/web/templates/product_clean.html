@@ -26,6 +26,9 @@
             <label>
                 <input type="checkbox" name="force" value="1"> 强制清洗所有数据（包括已清洗的）
             </label>
+            <label style="margin-left: 20px;">
+                <input type="checkbox" name="clear_sku" value="1" checked> 清空 SKU 字段内容（默认开启，不需要请取消勾选）
+            </label>
         </div>
         <button type="submit" class="btn btn-warning" onclick="return confirm('确定要执行数据清洗吗？');">执行数据清洗</button>
     </form>
