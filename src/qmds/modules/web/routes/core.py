@@ -190,9 +190,9 @@ def api_dashboard_stats():
         total_categories = len(unfiltered_list)
         stats["shopify_stores"] = total_stores
         stats["shopify_categories"] = total_categories
-        stats["shopify_filtered"] = sum(c.get("total", 0) for c in counts.get("filtered", []))
-        stats["shopify_failed"] = sum(c.get("total", 0) for c in counts.get("filtered_failed", []))
-        stats["shopify_comprehensive"] = sum(c.get("total", 0) for c in counts.get("comprehensive", []))
+        stats["shopify_filtered"] = sum(c.get("counts", {}).get("filtered", 0) for c in counts.get("filtered", []))
+        stats["shopify_failed"] = sum(c.get("counts", {}).get("filter_failed", 0) for c in counts.get("filtered_failed", []))
+        stats["shopify_comprehensive"] = sum(c.get("counts", {}).get("filtered", 0) for c in counts.get("comprehensive", []))
         stats["shopify_info_pending"] = sum(c.get("counts", {}).get("pending", 0)
                                             for c in counts.get("info", []))
     except Exception:

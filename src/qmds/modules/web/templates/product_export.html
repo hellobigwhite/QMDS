@@ -45,7 +45,7 @@
 
 <div class="card">
     <h2>表格合并</h2>
-    <p class="text-muted mb-4">选择要合并的Excel文件，按标题去重后生成合并表格。</p>
+    <p class="text-muted mb-4">选择要合并的Excel文件，按名称（Name/标题）去重后生成合并表格。</p>
     <form id="mergeForm" method="POST" action="/product-data/merge">
         <div style="display: grid; grid-template-columns: 1fr; gap: 12px; margin-bottom: 12px;">
             <div>
@@ -91,7 +91,7 @@
                     <th>一级分类</th>
                     <th>二级分类</th>
                     <th>清洗后数据</th>
-                    <th>已导出</th>
+                    <th>未导出</th>
                     <th>操作</th>
                 </tr>
             </thead>
@@ -205,10 +205,10 @@ function renderCategoryStats(categories) {
 
     catSelect.innerHTML = '<option value="">请选择一级分类</option>';
 
-    // 收集一级分类（去重，只保留有 clean 数据的）
+    // 收集一级分类（去重，只保留真正可导出的未导出数据）
     var catMap = {};
     categories.forEach(function(catStat) {
-        if (catStat.clean_count > 0) {
+        if ((catStat.unexported_count || 0) > 0) {
             if (!catMap[catStat.category]) {
                 catMap[catStat.category] = [];
             }
@@ -238,12 +238,12 @@ function renderCategoryStats(categories) {
         // 添加"全部"选项
         var allOpt = document.createElement('option');
         allOpt.value = '__all__';
-        allOpt.textContent = '全部 (' + subs.reduce(function(sum, s) { return sum + s.clean_count; }, 0) + ' 条)';
+        allOpt.textContent = '全部 (' + subs.reduce(function(sum, s) { return sum + (s.unexported_count || 0); }, 0) + ' 条)';
         subSelect.appendChild(allOpt);
         subs.forEach(function(catStat) {
             var opt = document.createElement('option');
             opt.value = catStat.subcategory;
-            opt.textContent = catStat.subcategory + ' (' + catStat.clean_count + ' 条，已导出 ' + (catStat.exported_count || 0) + ')';
+            opt.textContent = catStat.subcategory + ' (' + (catStat.unexported_count || 0) + ' 条未导出)';
             subSelect.appendChild(opt);
         });
     };
@@ -251,7 +251,10 @@ function renderCategoryStats(categories) {
     // 更新表格
     document.getElementById('table-loading').style.display = 'none';
 
-    if (categories.length === 0) {
+    var exportableCategories = categories.filter(function(catStat) {
+        return (catStat.unexported_count || 0) > 0;
+    });
+    if (exportableCategories.length === 0) {
         document.getElementById('table-empty').style.display = 'block';
         return;
     }
@@ -259,7 +262,7 @@ function renderCategoryStats(categories) {
     var tbody = document.getElementById('stats-tbody');
     tbody.innerHTML = '';
 
-    categories.forEach(function(catStat) {
+    exportableCategories.forEach(function(catStat) {
         var tr = document.createElement('tr');
 
         var tdCat = document.createElement('td');
@@ -275,13 +278,13 @@ function renderCategoryStats(categories) {
         tr.appendChild(tdClean);
 
         var tdExported = document.createElement('td');
-        tdExported.textContent = catStat.exported_count || 0;
-        tdExported.style.color = '#10b981';
+        tdExported.textContent = catStat.unexported_count || 0;
+        tdExported.style.color = '#f59e0b';
         tdExported.style.fontWeight = '600';
         tr.appendChild(tdExported);
 
         var tdAction = document.createElement('td');
-        if (catStat.clean_count > 0) {
+        if ((catStat.unexported_count || 0) > 0) {
             var form = document.createElement('form');
             form.method = 'POST';
             form.action = '/product-data/export';

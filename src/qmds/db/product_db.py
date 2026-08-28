@@ -21,7 +21,7 @@ def _clean_excel_illegal_chars(value):
     return value
 
 
-from pymongo import MongoClient, ASCENDING
+from pymongo import MongoClient, ASCENDING, UpdateOne
 from pymongo.errors import ConnectionFailure, BulkWriteError
 from pymongo.collection import Collection
 
@@ -88,12 +88,75 @@ EXPORT_STATUS_EXPORTED = "exported"      # 已导出
 # 单次 $in / update_many 批量操作的最大文档数（过大的批量会使 mongod 内存剧烈尖峰，曾导致 OOM 崩溃）
 DB_BATCH_SIZE = 500
 
-# 导出字段配置
+# 导出字段配置（与 BB_Data_Tool 清洗输出列名完全一致）
 EXPORT_COLUMNS = [
-    "SKU", "标题", "描述", "子描述", "图片",
-    "原价", "折扣价", "变体", "分类",
-    "currency", "source_domain", "source_category", "source_subcategory",
+    "SKU", "Name", "Description", "Regular price", "Categories", "Images",
+    "cf_opingts", "自定义分类", "原站域名", "分布网站识别", "语言",
 ]
+
+
+def _build_export_row(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """将产品文档映射为 BB_Data_Tool 兼容的导出行
+
+    映射规则（与 BB 清洗输出语义一致）：
+    - Name           <- 标题
+    - Description    <- 描述 + <br> + 子描述（合并）
+    - Regular price  <- max(原价, 折扣价)，数值型
+    - Categories     <- 分类
+    - Images         <- 图片
+    - cf_opingts     <- 变体
+    - 自定义分类      <- source_category 的英文简化名映射为中文一级分类名
+    - 原站域名        <- source_domain
+    - 分布网站识别    <- 固定 0
+    - 语言           <- 固定 "en"
+    """
+    from qmds.config.categories import get_cn_category_name
+
+    def _as_str(value) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, list):
+            return ", ".join(str(item).strip() for item in value if str(item).strip())
+        return str(value).strip()
+
+    def _price_float(value) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    desc = _as_str(doc.get("描述"))
+    sub_desc = _as_str(doc.get("子描述"))
+    description = f"{desc}<br>{sub_desc}" if sub_desc else desc
+
+    regular_price = max(_price_float(doc.get("原价")), _price_float(doc.get("折扣价")))
+
+    source_category = _as_str(doc.get("source_category"))
+
+    return {
+        "SKU": _as_str(doc.get("SKU")),
+        "Name": _as_str(doc.get("标题")),
+        "Description": description,
+        "Regular price": round(regular_price, 2),
+        "Categories": _as_str(doc.get("分类")),
+        "Images": _as_str(doc.get("图片")),
+        "cf_opingts": _as_str(doc.get("变体")),
+        "自定义分类": get_cn_category_name(source_category) if source_category else "",
+        "原站域名": _as_str(doc.get("source_domain")),
+        "分布网站识别": 0,
+        "语言": "en",
+    }
+
+
+def _sanitize_export_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """对导出行做兜底清理：Excel 非法控制字符 + 超长截断（保留数值类型）"""
+    for key, value in list(row.items()):
+        if isinstance(value, str):
+            value = _clean_excel_illegal_chars(value)
+            if len(value) > 32000:
+                value = value[:32000] + "...[truncated]"
+            row[key] = value
+    return row
 
 
 class ProductDBClient:
@@ -217,6 +280,11 @@ class ProductDBClient:
             CLEAN_STATUS_FAILED: clean_counts.get(CLEAN_STATUS_FAILED, 0),
             "exported": export_counts.get(EXPORT_STATUS_EXPORTED, 0),
             "unexported": export_counts.get(EXPORT_STATUS_UNEXPORTED, 0),
+            # 页面“未导出”必须与实际导出查询完全一致，而不是所有状态的 unexported 总数。
+            "exportable": col.count_documents({
+                "clean_status": CLEAN_STATUS_CLEANED,
+                "export_status": EXPORT_STATUS_UNEXPORTED,
+            }),
         }
         total = sum(clean_counts.values()) if clean_counts else col.estimated_document_count()
 
@@ -474,28 +542,49 @@ class ProductDBClient:
                 }}
             )
             modified += result.modified_count
+        # 该公共方法也可能被清洗流程之外调用，更新后重建单集合计数器保证一致。
+        if modified:
+            self._rebuild_single_product_counter(category, subcategory)
         self._stats_cache.invalidate()
         return modified
 
     # ── 清洗操作 ──────────────────────────────────────────
 
     def clean_category(self, category: str, subcategory: str = "", force: bool = False,
-                       clear_sku: bool = True) -> Dict[str, int]:
+                       regenerate_sku: bool = True) -> Dict[str, int]:
         """清洗指定分类的未清洗数据（在同一集合内更新状态，不跨集合移动）
+
+        清洗过程中对通过的数据执行通用标准化并写回：
+        标题净化与站点名/域名移除、描述 HTML 白名单清洗、图片取首图、价格规范化、
+        分类标准化（分隔符统一|||/单数化/首字母大写/纯数字用 source_category 覆盖）、
+        source_category 下划线转空格、变体截断前2段属性并规范化；
+        标题/描述命中品牌黑名单、描述为空或非空变体格式非法的数据直接判为 failed。
+        通过的商品 SKU 全部重新生成递增编号。
 
         Args:
             category: 一级分类名称
             subcategory: 二级分类名称
             force: 是否强制清洗所有数据（包括已清洗的）
-            clear_sku: 是否清空本次处理数据的 SKU 字段内容（默认开启）
+            regenerate_sku: 是否为通过的商品重新生成 SKU（默认开启）
 
         Returns:
-            {"processed": 处理数量, "cleaned": 清洗后数量, "removed": 移除数量, "sku_cleared": 清空SKU数量}
+            {"processed": 处理数量, "cleaned": 清洗后数量, "removed": 移除数量, "sku_generated": 生成SKU数量}
         """
         from qmds.modules.data_scraper.pipeline.filters import (
             PLACEHOLDER_IMAGES, PROHIBITED_KEYWORDS, MIN_TITLE_LENGTH, MIN_PRICE, MAX_PRICE
         )
         from qmds.utils.language import is_non_english_text
+        from qmds.utils.text_cleaner import (
+            clean_title_text, clean_description_html, clean_price_value,
+            pick_first_image, hit_brand_blacklist,
+            remove_site_name, remove_site_domain, site_name_from_domain,
+        )
+        from qmds.utils.data_cleaner import normalize_categories, is_pure_numeric_category
+        from qmds.utils.text_cleaner import (
+            SKUGenerator, generate_reference_sku, clean_text,
+            normalize_variant_field, truncate_variant_field, is_valid_variant_format,
+        )
+        from html import unescape
 
         prefix = make_collection_prefix(category, subcategory)
         col = self.collection(category, subcategory)
@@ -505,23 +594,34 @@ class ProductDBClient:
             query = {}
         else:
             query = {"clean_status": CLEAN_STATUS_UNCLEAN}
-
         # 只投影清洗所需的字段，避免大字段（描述/HTML 等）撑爆内存
         projection = {
             "_id": 0,
             "unique_key": 1,
+            "SKU": 1,
             "折扣价": 1,
             "原价": 1,
             "标题": 1,
             "图片": 1,
             "描述": 1,
             "子描述": 1,
+            "分类": 1,
+            "变体": 1,
+            "source_domain": 1,
+            "source_category": 1,
         }
+
+        # SKU 重新编号生成器（regenerate_sku 开启时使用）
+        sku_generator = SKUGenerator(generate_reference_sku()) if regenerate_sku else None
 
         clean_time = datetime.utcnow().isoformat()
         passed_keys = []
         all_keys = set()
-        stats = {"价格超范围": 0, "标题过短": 0, "占位图": 0, "非英文": 0, "违禁词": 0, "无key": 0}
+        pending_updates = []
+        updates_flushed = 0
+        sku_generated_count = 0
+        stats = {"价格超范围": 0, "标题过短": 0, "描述为空": 0, "占位图": 0, "非英文": 0,
+                 "违禁词": 0, "品牌词": 0, "变体无效": 0, "无key": 0}
 
         # 流式遍历游标（按批次从服务器拉取），避免一次性 list() 把全部文档加载进内存导致 MemoryError
         total = 0
@@ -534,62 +634,120 @@ class ProductDBClient:
                 continue
             all_keys.add(unique_key)
 
+            # ── 数据标准化（通用清洗）──
+            # 对应 BB 流程：clean_text(全表净化) -> 各列清洗 -> 站点名/域名移除 -> replace_entities
+            source_domain = str(p.get("source_domain", "") or "").strip()
+            site_name = site_name_from_domain(source_domain)
+
+            title = clean_title_text(p.get("标题"))
+            title = remove_site_name(title, site_name).strip()
+            title = remove_site_domain(title, source_domain).strip()
+
+            desc = clean_description_html(clean_text(p.get("描述")))
+            sub_desc = clean_description_html(clean_text(p.get("子描述")))
+            desc = remove_site_domain(remove_site_name(desc, site_name), source_domain).strip()
+            sub_desc = remove_site_domain(remove_site_name(sub_desc, site_name), source_domain).strip()
+
+            img = pick_first_image(p.get("图片"))
+            discount_price = clean_price_value(p.get("折扣价"))
+            original_price = clean_price_value(p.get("原价"))
+
+            variant = unescape(normalize_variant_field(truncate_variant_field(clean_text(p.get("变体")))))
+
+            # 子描述可能是字符串形式的列表（"[a, b]"），先还原为纯文本用于检测
+            if sub_desc.startswith("["):
+                try:
+                    import ast
+                    tags_list = ast.literal_eval(sub_desc)
+                    tags_str = " ".join(str(t) for t in tags_list) if isinstance(tags_list, list) else sub_desc
+                except Exception:
+                    tags_str = sub_desc
+            else:
+                tags_str = sub_desc
+
+            # 分类标准化：ASCII净化 -> 实体解码 -> 分隔符统一|||/单数化/首字母大写；纯数字分类用 source_category 覆盖
+            cat_value = normalize_categories(unescape(clean_text(str(p.get("分类") or "")))).strip()
+            source_cat = clean_text(str(p.get("source_category") or "")).replace("_", " ").strip()
+            if cat_value and is_pure_numeric_category(cat_value) and source_cat:
+                cat_value = source_cat
+
+            # ── 品牌黑名单（检测范围与违禁词一致：标题+描述+子描述）──
+            if hit_brand_blacklist(f"{title} {desc} {tags_str}"):
+                stats["品牌词"] += 1
+                continue
+
             # ── 价格 ──
-            discount_price = p.get("折扣价")
-            original_price = p.get("原价")
-            price = 0.0
-            if discount_price not in (None, ""):
-                price = float(discount_price)
-            elif original_price not in (None, ""):
-                price = float(original_price)
+            price = discount_price if discount_price > 0 else original_price
             if not (MIN_PRICE <= price <= MAX_PRICE):
                 stats["价格超范围"] += 1
                 continue
 
             # ── 标题长度 ──
-            title = str(p.get("标题", "") or "").strip()
-            if len(title) < MIN_TITLE_LENGTH:
+            if len(title.strip()) < MIN_TITLE_LENGTH:
                 stats["标题过短"] += 1
                 continue
 
+            # ── 描述为空（对应表格二次清洗的删空描述规则）──
+            if not desc.strip():
+                stats["描述为空"] += 1
+                continue
+
             # ── 图片有效性 ──
-            img = str(p.get("图片", "") or "").strip()
             if not img or PLACEHOLDER_IMAGES.search(img):
                 stats["占位图"] += 1
                 continue
 
             # ── 英文检测 ──
-            desc = str(p.get("描述", "") or "").strip()
             text = f"{title} {desc}"
             if is_non_english_text(text):
                 stats["非英文"] += 1
                 continue
 
             # ── 违禁词 ──
-            tags_raw = p.get("子描述", "")
-            if isinstance(tags_raw, str) and tags_raw.startswith("["):
-                try:
-                    import ast
-                    tags_list = ast.literal_eval(tags_raw)
-                    tags_str = " ".join(str(t) for t in tags_list) if isinstance(tags_list, list) else tags_raw
-                except Exception:
-                    tags_str = tags_raw
-            else:
-                tags_str = str(tags_raw or "")
             check_text = f"{title} {desc} {tags_str}".lower()
             if any(kw in check_text for kw in PROHIBITED_KEYWORDS):
                 stats["违禁词"] += 1
                 continue
 
-            # ── 通过 ──
+            # ── 变体有效性（对应 variants_clean 校验：非空时段数≤2、须为 属性^值 且各值非空）──
+            if not is_valid_variant_format(variant):
+                stats["变体无效"] += 1
+                continue
+
+            # ── 通过：收集标准化后的字段写回 ──
             passed_keys.append(unique_key)
+            update_doc = {
+                "标题": title,
+                "描述": desc,
+                "子描述": sub_desc,
+                "图片": img,
+                "分类": cat_value,
+                "source_category": source_cat,
+                "变体": variant,
+                "原价": f"{original_price:.2f}" if original_price > 0 else "",
+                "折扣价": f"{discount_price:.2f}" if discount_price > 0 else "",
+            }
+            # SKU 重新编号：为通过的商品生成全新递增 SKU（覆盖原值）
+            if sku_generator:
+                update_doc["SKU"] = sku_generator.generate_sku()
+                sku_generated_count += 1
+            pending_updates.append(UpdateOne(
+                {"unique_key": unique_key},
+                {"$set": update_doc}
+            ))
+
+            # 分批刷盘，避免大集合时 update 文档（含标题/描述全文）在内存中无限累积
+            if len(pending_updates) >= DB_BATCH_SIZE:
+                col.bulk_write(pending_updates, ordered=False)
+                updates_flushed += len(pending_updates)
+                pending_updates = []
 
             if total % 10000 == 0:
                 log.info(f"[{prefix}] 进度: {total}")
 
         if total == 0:
             log.info(f"[{prefix}] 无待清洗数据")
-            return {"processed": 0, "cleaned": 0, "removed": 0, "sku_cleared": 0}
+            return {"processed": 0, "cleaned": 0, "removed": 0, "sku_generated": 0}
 
         log.info(f"[{prefix}] 待清洗数据: {total} 条")
 
@@ -600,12 +758,15 @@ class ProductDBClient:
                 log.info(f"  ├─ {reason}: {count} 条")
         log.info(f"  └─ 通过: {len(passed_keys)} 条")
 
-        # 清空 SKU 字段内容（可选，对本次处理的全部数据生效；须在状态更新前执行）
-        sku_cleared = 0
-        if clear_sku:
-            sku_result = col.update_many(query, {"$set": {"SKU": ""}})
-            sku_cleared = sku_result.modified_count
-            log.info(f"[{prefix}] 已清空 {sku_cleared} 条数据的 SKU 字段内容")
+        # 写回剩余批次（循环内已按 DB_BATCH_SIZE 分批刷盘）
+        if pending_updates:
+            col.bulk_write(pending_updates, ordered=False)
+            updates_flushed += len(pending_updates)
+            pending_updates = []
+        if updates_flushed:
+            log.info(f"[{prefix}] 已写回标准化数据: {updates_flushed} 条")
+        if sku_generated_count:
+            log.info(f"[{prefix}] 已生成 {sku_generated_count} 个新 SKU")
 
         # 更新通过的为 cleaned
         if passed_keys:
@@ -640,7 +801,7 @@ class ProductDBClient:
             "cleaned": len(passed_keys),
             "removed": total - len(passed_keys),
             "stats": stats,
-            "sku_cleared": sku_cleared,
+            "sku_generated": sku_generated_count,
         }
 
     # ── 查询 ──────────────────────────────────────────────
@@ -740,9 +901,14 @@ class ProductDBClient:
                 "category": category,
                 "subcategory": normalize_subcategory(subcategory),
                 "prefix": prefix,
-                "raw_count": doc.get("total", sum(counts.values())),
+                "raw_count": doc.get("total", (
+                counts.get(CLEAN_STATUS_UNCLEAN, 0)
+                + counts.get(CLEAN_STATUS_CLEANED, 0)
+                + counts.get(CLEAN_STATUS_FAILED, 0)
+            )),
                 "clean_count": counts.get(CLEAN_STATUS_CLEANED, 0),
                 "exported_count": counts.get("exported", 0),
+                "unexported_count": counts.get("exportable", 0),
                 "unclean_count": counts.get(CLEAN_STATUS_UNCLEAN, 0),
                 "cleaned_count": counts.get(CLEAN_STATUS_CLEANED, 0),
                 "failed_count": counts.get(CLEAN_STATUS_FAILED, 0),
@@ -764,6 +930,10 @@ class ProductDBClient:
             "raw_count": total_count,  # 集合总数
             "clean_count": status_counts.get(CLEAN_STATUS_CLEANED, 0),
             "exported_count": export_counts.get(EXPORT_STATUS_EXPORTED, 0),
+            "unexported_count": col.count_documents({
+                "clean_status": CLEAN_STATUS_CLEANED,
+                "export_status": EXPORT_STATUS_UNEXPORTED,
+            }),
             "unclean_count": status_counts.get(CLEAN_STATUS_UNCLEAN, 0),
             "cleaned_count": status_counts.get(CLEAN_STATUS_CLEANED, 0),
             "failed_count": status_counts.get(CLEAN_STATUS_FAILED, 0)
@@ -834,6 +1004,8 @@ class ProductDBClient:
                 {"$set": update_data}
             )
             modified += result.modified_count
+        if modified:
+            self._rebuild_single_product_counter(category, subcategory)
         self._stats_cache.invalidate()
         return modified
 
@@ -844,6 +1016,10 @@ class ProductDBClient:
         # 先统计将被重置的各状态数量，用于同步 _counters
         reset_cleaned = col.count_documents({"clean_status": CLEAN_STATUS_CLEANED})
         reset_failed = col.count_documents({"clean_status": CLEAN_STATUS_FAILED})
+        reset_exportable = col.count_documents({
+            "clean_status": CLEAN_STATUS_CLEANED,
+            "export_status": EXPORT_STATUS_UNEXPORTED,
+        })
         result = col.update_many(
             {"clean_status": {"$ne": CLEAN_STATUS_UNCLEAN}},
             {"$set": {"clean_status": CLEAN_STATUS_UNCLEAN, "clean_time": None}}
@@ -853,7 +1029,8 @@ class ProductDBClient:
         if modified > 0:
             incs = {CLEAN_STATUS_UNCLEAN: modified,
                     CLEAN_STATUS_CLEANED: -reset_cleaned,
-                    CLEAN_STATUS_FAILED: -reset_failed}
+                    CLEAN_STATUS_FAILED: -reset_failed,
+                    "exportable": -reset_exportable}
             self._set_counter_type(prefix, "product", category, normalize_subcategory(subcategory))
             self._inc_counters(prefix, incs)
         self._stats_cache.invalidate()
@@ -872,6 +1049,10 @@ class ProductDBClient:
         del_unexported = col.count_documents(
             {"clean_status": {"$in": [CLEAN_STATUS_CLEANED, CLEAN_STATUS_FAILED]},
              "export_status": EXPORT_STATUS_UNEXPORTED})
+        del_exportable = col.count_documents({
+            "clean_status": CLEAN_STATUS_CLEANED,
+            "export_status": EXPORT_STATUS_UNEXPORTED,
+        })
         result = col.delete_many({"clean_status": {"$in": [CLEAN_STATUS_CLEANED, CLEAN_STATUS_FAILED]}})
         deleted = result.deleted_count
         # 同步 _counters：各状态减少对应数量，total 减少实际删除数
@@ -879,7 +1060,8 @@ class ProductDBClient:
             incs = {CLEAN_STATUS_CLEANED: -del_cleaned,
                     CLEAN_STATUS_FAILED: -del_failed,
                     "exported": -del_exported,
-                    "unexported": -del_unexported}
+                    "unexported": -del_unexported,
+                    "exportable": -del_exportable}
             self._set_counter_type(prefix, "product", category, normalize_subcategory(subcategory))
             self._inc_counters(prefix, incs, doc_delta=-deleted)
         self._stats_cache.invalidate()
@@ -981,23 +1163,11 @@ class ProductDBClient:
         if not products:
             return None
 
-        # 只保留指定的导出字段
+        # 只保留指定的导出字段（BB 兼容列映射）
         rows = []
         exported_ids = []
         for doc in products:
-            row = {}
-            for c in EXPORT_COLUMNS:
-                value = doc.get(c)
-                if isinstance(value, list):
-                    cell = ", ".join(str(item).strip() for item in value if str(item).strip())
-                elif value is None:
-                    cell = ""
-                else:
-                    cell = str(value).strip()
-                cell = _clean_excel_illegal_chars(cell)
-                if len(cell) > 32000:
-                    cell = cell[:32000] + "...[truncated]"
-                row[c] = cell
+            row = _sanitize_export_row(_build_export_row(doc))
             rows.append(row)
             if doc.get("_id"):
                 exported_ids.append(doc["_id"])
@@ -1033,7 +1203,8 @@ class ProductDBClient:
         # 同步 _counters 的导出计数
         if marked > 0:
             self._set_counter_type(prefix, "product", category, normalize_subcategory(subcategory))
-            self._inc_counters(prefix, {"unexported": -marked, "exported": marked})
+            self._inc_counters(prefix, {"unexported": -marked, "exported": marked,
+                                         "exportable": -marked})
 
         self._stats_cache.invalidate()
         log.info(f"导出Excel: {filepath} ({len(rows)} 条)，已标记为已导出")
@@ -1045,7 +1216,7 @@ class ProductDBClient:
         """合并导出一级分类下所有二级分类的已清洗未导出数据到一个 Excel
 
         遍历该一级分类下的所有二级集合，查询 clean_status=cleaned 且 export_status=unexported
-        的文档，按 EXPORT_COLUMNS 提取字段，按"标题"去重后合并写入单个 Excel 文件，
+        的文档，按 EXPORT_COLUMNS 提取字段（BB 兼容列映射），按 Name 去重后合并写入单个 Excel 文件，
         并在各集合中标记为已导出。
 
         Args:
@@ -1094,19 +1265,7 @@ class ProductDBClient:
             sub_count += 1
             ids = []
             for doc in docs:
-                row = {}
-                for c in EXPORT_COLUMNS:
-                    value = doc.get(c)
-                    if isinstance(value, list):
-                        cell = ", ".join(str(it).strip() for it in value if str(it).strip())
-                    elif value is None:
-                        cell = ""
-                    else:
-                        cell = str(value).strip()
-                    cell = _clean_excel_illegal_chars(cell)
-                    if len(cell) > 32000:
-                        cell = cell[:32000] + "...[truncated]"
-                    row[c] = cell
+                row = _sanitize_export_row(_build_export_row(doc))
                 all_rows.append(row)
                 if doc.get("_id"):
                     ids.append(doc["_id"])
@@ -1120,11 +1279,11 @@ class ProductDBClient:
             log.info(f"合并导出 {category}: 无清洗后数据")
             return None
 
-        # 合并并按"标题"去重
+        # 合并并按 Name 去重
         df = pd.DataFrame(all_rows, columns=EXPORT_COLUMNS)
         before_dedup = len(df)
-        if "标题" in df.columns:
-            df = df.drop_duplicates(subset=["标题"], keep="first")
+        if "Name" in df.columns:
+            df = df.drop_duplicates(subset=["Name"], keep="first")
         dedup_count = before_dedup - len(df)
 
         # 写入 Excel（按日期/一级分类，如 exports/20260807/）
@@ -1160,7 +1319,8 @@ class ProductDBClient:
             # 同步该 prefix 的 _counters 导出计数
             if prefix_marked > 0:
                 self._set_counter_type(prefix, "product", cat, normalize_subcategory(sub))
-                self._inc_counters(prefix, {"unexported": -prefix_marked, "exported": prefix_marked})
+                self._inc_counters(prefix, {"unexported": -prefix_marked, "exported": prefix_marked,
+                                             "exportable": -prefix_marked})
 
         self._stats_cache.invalidate()
         log.info(f"合并导出Excel: {filepath} ({len(df)} 条，去重 {dedup_count} 条，"

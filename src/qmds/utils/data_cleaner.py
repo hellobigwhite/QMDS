@@ -7,6 +7,13 @@ from typing import Optional
 import pandas as pd
 from loguru import logger
 
+from qmds.utils.text_cleaner import (
+    clean_title_text, clean_description_html, pick_first_image,
+    clean_excel_illegal_chars, clean_text,
+    normalize_variant_field, truncate_variant_field,
+)
+from html import unescape
+
 
 IRREGULAR_NOUNS = {
     "women": "woman", "men": "man", "children": "child",
@@ -104,7 +111,7 @@ def read_table_file(file_path: Path) -> Optional[pd.DataFrame]:
 _NUM_SEP_RE = re.compile(r"[\s\-_.,/\\|:;]+")
 
 
-def _is_pure_numeric_category(val) -> bool:
+def is_pure_numeric_category(val) -> bool:
     """判断分类值是否为纯数字（去除空格及常见分隔符后全为数字）"""
     if val is None:
         return False
@@ -118,12 +125,17 @@ def _is_pure_numeric_category(val) -> bool:
 def clean_dataframe(df: pd.DataFrame, price_threshold: float = 2500.0) -> pd.DataFrame:
     """对DataFrame进行二次清洗
 
-    1. 删除Description字段为空的数据
-    2. 删除Regular price字段大于阈值的数据
-    3. 把Categories字段中分隔符统一为|||
-    4. 对Categories字段中单词进行单复数合并，统一改为单数，大小写统一
-    5. 去掉source_category字段值中的下划线（替换为空格）
-    6. 分类字段为纯数字时，用同行的source_category值覆盖（source_category为空则保留原值）
+    1. 标题/名称列通用净化（去逗号、反斜杠、合并空白、HTML提取文本）
+    2. Description列HTML白名单清洗（去注释/style/a标签属性等）
+    3. Images列多链接取第一张
+    4. 删除Description字段为空的数据
+    5. 删除Regular price字段大于阈值的数据
+    6. 把Categories字段中分隔符统一为|||
+    7. 对Categories字段中单词进行单复数合并，统一改为单数，大小写统一
+    8. 去掉source_category字段值中的下划线（替换为空格）
+    9. 分类字段为纯数字时，用同行的source_category值覆盖（source_category为空则保留原值）
+    10. 变体列按|||截断保留前2段属性并规范化（#连续合一）
+    11. 全表兜底清理Excel非法控制字符
     """
     original_count = len(df)
     logger.info(f"开始清洗，原始数据量: {original_count}")
@@ -133,6 +145,9 @@ def clean_dataframe(df: pd.DataFrame, price_threshold: float = 2500.0) -> pd.Dat
     price_col = None
     category_col = None
     source_cat_col = None
+    name_col = None
+    images_col = None
+    variant_col = None
 
     for col in df.columns:
         col_lower = col.strip().lower()
@@ -144,8 +159,42 @@ def clean_dataframe(df: pd.DataFrame, price_threshold: float = 2500.0) -> pd.Dat
             category_col = col
         elif col_lower == "source_category":
             source_cat_col = col
+        elif col_lower in ("name", "title", "标题"):
+            name_col = col
+        elif col_lower in ("images", "image", "图片"):
+            images_col = col
+        elif col_lower in ("variant", "variants", "变体"):
+            variant_col = col
 
-    # 1. 删除Description字段为空的数据
+    # 1. 标题/名称列通用净化
+    if name_col:
+        df[name_col] = df[name_col].apply(lambda x: clean_title_text(x) if pd.notna(x) else x)
+        logger.info(f"已完成{name_col}列文本净化")
+    else:
+        logger.warning("未找到Name/Title字段")
+
+    # 2. Description列HTML白名单清洗
+    if desc_col:
+        df[desc_col] = df[desc_col].apply(lambda x: clean_description_html(x) if pd.notna(x) else x)
+        logger.info(f"已完成{desc_col}列HTML清洗")
+    else:
+        logger.warning("未找到Description字段")
+
+    # 3. Images列多链接取第一张
+    if images_col:
+        df[images_col] = df[images_col].apply(lambda x: pick_first_image(x) if pd.notna(x) else x)
+        logger.info(f"已完成{images_col}列图片链接处理")
+
+    # 3.5 变体列：ASCII净化 + 截断前2段属性 + 规范化 + 实体解码
+    if variant_col:
+        def _clean_variant(x):
+            if pd.isna(x):
+                return x
+            return unescape(normalize_variant_field(truncate_variant_field(clean_text(str(x)))))
+        df[variant_col] = df[variant_col].apply(_clean_variant)
+        logger.info(f"已完成{variant_col}列变体处理")
+
+    # 4. 删除Description字段为空的数据
     if desc_col:
         before_count = len(df)
         df = df.dropna(subset=[desc_col])
@@ -155,7 +204,7 @@ def clean_dataframe(df: pd.DataFrame, price_threshold: float = 2500.0) -> pd.Dat
     else:
         logger.warning("未找到Description字段")
 
-    # 2. 删除Regular price字段大于阈值的数据
+    # 5. 删除Regular price字段大于阈值的数据
     if price_col:
         before_count = len(df)
         df[price_col] = pd.to_numeric(df[price_col], errors="coerce")
@@ -165,14 +214,14 @@ def clean_dataframe(df: pd.DataFrame, price_threshold: float = 2500.0) -> pd.Dat
     else:
         logger.warning("未找到Regular price字段")
 
-    # 3. 4. 处理Categories字段
+    # 6. 7. 处理Categories字段
     if category_col:
         df[category_col] = df[category_col].apply(normalize_categories)
         logger.info("已完成Categories字段标准化")
     else:
         logger.warning("未找到Categories字段")
 
-    # 5. 去掉source_category字段值中的下划线（替换为空格）
+    # 8. 去掉source_category字段值中的下划线（替换为空格）
     if source_cat_col:
         before_na = df[source_cat_col].isna().sum()
         df[source_cat_col] = df[source_cat_col].fillna("").astype(str).str.replace("_", " ", regex=False)
@@ -181,10 +230,10 @@ def clean_dataframe(df: pd.DataFrame, price_threshold: float = 2500.0) -> pd.Dat
     else:
         logger.warning("未找到source_category字段")
 
-    # 6. 分类字段为纯数字时，用同行的source_category覆盖（source_category为空则保留原值）
+    # 9. 分类字段为纯数字时，用同行的source_category覆盖（source_category为空则保留原值）
     if category_col and source_cat_col:
         cat_series = df[category_col].fillna("").astype(str)
-        numeric_mask = cat_series.apply(_is_pure_numeric_category)
+        numeric_mask = cat_series.apply(is_pure_numeric_category)
         src_series = df[source_cat_col].fillna("").astype(str).str.strip()
         src_nonempty_mask = src_series != ""
         replace_mask = numeric_mask & src_nonempty_mask
@@ -194,6 +243,12 @@ def clean_dataframe(df: pd.DataFrame, price_threshold: float = 2500.0) -> pd.Dat
             logger.info(f"纯数字分类替换为source_category: {replaced} 行")
         else:
             logger.info("无纯数字分类需要替换")
+
+    # 10. 全表兜底清理Excel非法控制字符
+    try:
+        df = df.map(clean_excel_illegal_chars)
+    except AttributeError:
+        df = df.applymap(clean_excel_illegal_chars)
 
     final_count = len(df)
     logger.info(f"清洗完成，最终数据量: {final_count}，共删除: {original_count - final_count} 条")

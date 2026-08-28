@@ -209,7 +209,7 @@ def product_data_clean():
         category = request.form.get("category", "__all__")
         subcategory = request.form.get("subcategory", "__all__").strip() or "__all__"
         force = request.form.get("force") == "1"
-        clear_sku = request.form.get("clear_sku") == "1"
+        regenerate_sku = request.form.get("regenerate_sku") == "1"
         sub_display = subcategory if subcategory != "__all__" else "all"
         task_id = f"clean_{category}_{sub_display}_{int(time.time())}"
         task_manager.create(task_id, "clean_products", f"{category}/{sub_display}")
@@ -219,7 +219,7 @@ def product_data_clean():
             try:
                 from qmds.db.product_db import ProductDBClient
                 force_msg = "（强制模式）" if force else ""
-                sku_msg = "（清空SKU）" if clear_sku else ""
+                sku_msg = "（重新编号SKU）" if regenerate_sku else ""
                 task_manager.update(task_id, status="running", message=f"开始清洗: {category}/{sub_display}{force_msg}{sku_msg}")
                 task_manager.add_log(task_id, f"任务启动: 清洗数据 {category}/{sub_display}{force_msg}{sku_msg}", "info")
 
@@ -243,7 +243,8 @@ def product_data_clean():
                     task_manager.update(task_id, message=f"清洗分类: {cat}/{sub_d}")
                     task_manager.add_log(task_id, f"开始清洗分类: {cat}/{sub_d}", "info")
 
-                    result = product_db.clean_category(cat, sub, force=force, clear_sku=clear_sku)
+                    result = product_db.clean_category(cat, sub, force=force,
+                                                        regenerate_sku=regenerate_sku)
                     total_processed += result["processed"]
                     total_cleaned += result["cleaned"]
                     total_removed += result["removed"]
@@ -251,8 +252,8 @@ def product_data_clean():
                     task_manager.add_log(task_id,
                                          f"分类 {cat}/{sub_d}: 处理 {result['processed']} 条, 通过 {result['cleaned']} 条, 移除 {result['removed']} 条", "info")
 
-                    if result.get("sku_cleared"):
-                        task_manager.add_log(task_id, f"  ├─ 清空SKU: {result['sku_cleared']} 条", "info")
+                    if result.get("sku_generated"):
+                        task_manager.add_log(task_id, f"  ├─ 新SKU: {result['sku_generated']} 条", "info")
 
                     filter_stats = result.get("stats", {})
                     for reason, count in filter_stats.items():
@@ -551,14 +552,19 @@ def product_data_merge():
                 merged_df = pd.concat(all_dfs, ignore_index=True)
                 task_manager.add_log(task_id, f"合并后: {len(merged_df)} 行", "info")
 
-                # 按标题去重
-                if "标题" in merged_df.columns:
+                # 按名称去重（兼容 BB 新导出的 Name 列与历史导出的标题列）
+                dedup_col = None
+                for col in ("Name", "标题", "name", "title"):
+                    if col in merged_df.columns:
+                        dedup_col = col
+                        break
+                if dedup_col:
                     before_dedup = len(merged_df)
-                    merged_df = merged_df.drop_duplicates(subset=["标题"], keep="first")
+                    merged_df = merged_df.drop_duplicates(subset=[dedup_col], keep="first")
                     dedup_count = before_dedup - len(merged_df)
-                    task_manager.add_log(task_id, f"按标题去重: 移除 {dedup_count} 条重复，剩余 {len(merged_df)} 条", "info")
+                    task_manager.add_log(task_id, f"按{dedup_col}去重: 移除 {dedup_count} 条重复，剩余 {len(merged_df)} 条", "info")
                 else:
-                    task_manager.add_log(task_id, "未找到'标题'列，跳过去重", "warning")
+                    task_manager.add_log(task_id, "未找到名称列（Name/标题），跳过去重", "warning")
 
                 # 保存合并后的文件
                 output_filename = f"merged_{folder_safe}.xlsx"

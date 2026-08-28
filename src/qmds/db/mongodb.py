@@ -227,18 +227,23 @@ class MongoDBClient:
             upsert=True,
         )
 
-    def _inc_counter(self, collection_key: str, field: str, delta: int):
+    def _inc_counter(self, collection_key: str, field: str, delta: int,
+                     doc_delta: int = 0):
         """原子增减单个状态计数
 
         Args:
             collection_key: 集合名（如 "hardware"、"hardware__tools"、"filtered_failed"）
             field: 状态字段名（如 "unfiltered"、"crawled"、"pending"）
-            delta: 增减量（+1 或 -1）
+            delta: 状态计数增减量（+1 或 -1）
+            doc_delta: 集合文档总数增减量；纯状态迁移时保持为 0
         """
+        inc_doc = {f"counts.{field}": delta}
+        if doc_delta:
+            inc_doc["total"] = doc_delta
         self._counters_col().update_one(
             {"_id": collection_key},
             {
-                "$inc": {f"counts.{field}": delta, "total": delta},
+                "$inc": inc_doc,
                 "$set": {"updated_at": datetime.utcnow().isoformat()},
             },
             upsert=True,
@@ -501,7 +506,7 @@ class MongoDBClient:
                 count += 1
                 if result.upserted_id:
                     self._set_counter_type(category, "unfiltered", category)
-                    self._inc_counter(category, "unfiltered", 1)
+                    self._inc_counter(category, "unfiltered", 1, doc_delta=1)
         log.info(f"MongoDB 写入 {category} (unfiltered): {count}/{len(stores)} 条")
         return count
 
@@ -557,9 +562,9 @@ class MongoDBClient:
         # 计数器：unfiltered -1（仅真正删除时）, filtered(subcategory) +1（仅新插入时计文档数）
         self._set_counter_type(prefix, "filtered", category, normalize_subcategory(subcategory))
         if deleted > 0:
-            self._inc_counter(category, "unfiltered", -1)
-        self._inc_counters(prefix, {"filtered": 1, "uncrawled": 1},
-                           doc_delta=1 if result.upserted_id else 0)
+            self._inc_counter(category, "unfiltered", -1, doc_delta=-1)
+        if result.upserted_id:
+            self._inc_counters(prefix, {"filtered": 1, "uncrawled": 1}, doc_delta=1)
         log.info(f"已移动: {domain} -> {prefix}")
         return True
 
@@ -621,7 +626,14 @@ class MongoDBClient:
         ts = datetime.utcnow().isoformat()
 
         # 先查旧状态，仅在状态真正变化时迁移计数（避免重复/未匹配 URL 导致计数漂移）
-        all_urls = [item.get("url", "") for item in url_crawl_info_list if item.get("url")]
+        # 同一批次内 URL 重复时只保留最后一次结果，避免一次实际更新对应多次计数迁移。
+        deduped_items = {}
+        for item in url_crawl_info_list:
+            url = item.get("url", "")
+            if url:
+                deduped_items[url] = item
+        url_crawl_info_list = list(deduped_items.values())
+        all_urls = list(deduped_items)
         if not all_urls:
             return 0
         old_status_map = {
@@ -769,7 +781,7 @@ class MongoDBClient:
         # 计数器：unfiltered -1（仅真正删除时）, filtered_failed +1(按reason，仅新插入时)
         self._set_counter_type(FILTERED_FAILED_COLLECTION, "filtered_failed")
         if deleted > 0:
-            self._inc_counter(category, "unfiltered", -1)
+            self._inc_counter(category, "unfiltered", -1, doc_delta=-1)
         if result.upserted_id:
             self._inc_counters(FILTERED_FAILED_COLLECTION,
                                {"filter_failed": 1, reason: 1}, doc_delta=1)
@@ -840,7 +852,7 @@ class MongoDBClient:
         prefix = make_collection_prefix(category, subcategory_norm)
         self._set_counter_type(prefix, "filtered", category, subcategory_norm)
         if deleted > 0:
-            self._inc_counter(uf_category, "unfiltered", -1)
+            self._inc_counter(uf_category, "unfiltered", -1, doc_delta=-1)
         if result.upserted_id:
             self._inc_counters(prefix, {"filtered": 1, "uncrawled": 1}, doc_delta=1)
         if from_category and from_category != category:
@@ -1301,7 +1313,7 @@ class MongoDBClient:
         )
         if result.upserted_id:
             self._set_counter_type(category, "unfiltered", category)
-            self._inc_counter(category, "unfiltered", 1)
+            self._inc_counter(category, "unfiltered", 1, doc_delta=1)
         return result.upserted_id is not None or result.modified_count > 0
 
     def update_unfiltered(self, category: str, domain: str, update_data: dict) -> bool:
@@ -1326,7 +1338,7 @@ class MongoDBClient:
         col = self.unfiltered_col(category)
         result = col.delete_one({"domain": domain})
         if result.deleted_count > 0:
-            self._inc_counter(category, "unfiltered", -1)
+            self._inc_counter(category, "unfiltered", -1, doc_delta=-1)
         return result.deleted_count > 0
 
     def delete_unfiltered_many(self, category: str, domains: list[str]) -> int:
@@ -1335,7 +1347,7 @@ class MongoDBClient:
         result = col.delete_many({"domain": {"$in": domains}})
         count = result.deleted_count
         if count > 0:
-            self._inc_counter(category, "unfiltered", -count)
+            self._inc_counter(category, "unfiltered", -count, doc_delta=-count)
         return count
 
     def _sync_unfiltered_status_counters(self, category: str):
@@ -1368,7 +1380,7 @@ class MongoDBClient:
         return list(docs)
 
     def get_filtered_count(self, category: str, subcategory: str = "") -> int:
-        """获取指定分类的 filtered 数据总数（未爬取的，从 _counters 读取，O(1)）"""
+        """获取指定分类未爬取的 filtered 数据数量（从 _counters 读取，O(1)）。"""
         prefix = make_collection_prefix(category, subcategory)
         doc = self._counters_col().find_one({"_id": prefix}, {"counts.uncrawled": 1, "_id": 0})
         return (doc.get("counts", {}) or {}).get("uncrawled", 0) if doc else 0

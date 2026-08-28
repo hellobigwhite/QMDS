@@ -155,6 +155,43 @@ SHOPIFY_TO_GOOGLE_CATEGORY = {
 }
 
 
+# ── 简化名称 -> 中文一级分类名（用于导出 BB 兼容的"自定义分类"列） ──
+SHOPIFY_TO_CN_CATEGORY = {
+    "animals_pet_supplies": "动物",
+    "apparel_accessories": "服饰与配饰",
+    "arts_entertainment": "艺术与娱乐",
+    "baby_toddler": "婴幼儿用品",
+    "business_industrial": "商业",
+    "cameras_optics": "相机与光学器件",
+    "electronics": "电子产品",
+    "food_beverages_tobacco": "饮食",
+    "furniture": "家具",
+    "hardware": "五金",
+    "health_beauty": "保健",
+    "home_garden": "家居与园艺",
+    "luggage_bags": "箱包",
+    "mature": "成人",
+    "media": "媒体",
+    "office_supplies": "办公用品",
+    "religious_ceremonial": "宗教",
+    "software": "软件",
+    "sporting_goods": "体育用品",
+    "toys_games": "玩具",
+    "vehicles_parts": "交通工具",
+}
+
+
+def get_cn_category_name(shopify_category: str) -> str:
+    """将简化分类名转换为中文一级分类名，未知分类返回原值
+
+    示例:
+        get_cn_category_name("hardware") -> "五金"
+        get_cn_category_name("electronics") -> "电子产品"
+        未知分类返回传入值原样
+    """
+    return SHOPIFY_TO_CN_CATEGORY.get(shopify_category, shopify_category)
+
+
 def get_google_category_name(shopify_category: str) -> str:
     """将 Shopify 简化分类名转换为 Google Taxonomy 一级分类名
 

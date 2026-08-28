@@ -27,7 +27,7 @@
                 <input type="checkbox" name="force" value="1"> 强制清洗所有数据（包括已清洗的）
             </label>
             <label style="margin-left: 20px;">
-                <input type="checkbox" name="clear_sku" value="1" checked> 清空 SKU 字段内容（默认开启，不需要请取消勾选）
+                <input type="checkbox" name="regenerate_sku" value="1" checked> 重新生成所有 SKU 编号（默认开启，不需要请取消勾选）
             </label>
         </div>
         <button type="submit" class="btn btn-warning" onclick="return confirm('确定要执行数据清洗吗？');">执行数据清洗</button>
@@ -84,11 +84,11 @@
         </div>
         <div class="detail-item">
             <div class="k">清洗规则</div>
-            <div class="v">过滤无效数据、违禁词处理、数据标准化、去重处理</div>
+            <div class="v">过滤无效数据、违禁词与品牌黑名单、空描述；标准化并写回：标题净化/站点名域名移除/描述HTML白名单/图片取首图/价格规范化/分类分隔符统一与单数化/source_category下划线处理；通过商品 SKU 全部重新生成</div>
         </div>
         <div class="detail-item">
             <div class="k">存储位置</div>
-            <div class="v">同一集合 <code>{category}__{subcategory}</code>，更新 clean_status 字段为 cleaned/failed</div>
+            <div class="v">同一集合 <code>{category}__{subcategory}</code>，更新 clean_status 字段为 cleaned/failed，SKU 重新编号</div>
         </div>
         <div class="detail-item">
             <div class="k">清洗效果</div>
