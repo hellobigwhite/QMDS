@@ -1,6 +1,7 @@
 """产品数据管理路由"""
 
 import os
+import re
 import time
 
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
@@ -593,3 +594,137 @@ def product_data_merge():
         log.error(f"合并请求处理失败: {e}")
         flash(f"合并失败: {e}", "error")
         return redirect(url_for("product_data.product_data_export"))
+
+@bp.route("/product-data/category-process", methods=["POST"])
+def product_data_category_process():
+    """分类数据处理（数据库版）：处理已清洗未导出数据的分类字段。
+
+    低频分类合并：所选范围内所有集合同名分类计数合并后 < threshold 的，
+    确定性轮询归入公共类（同名分类统一分配同一公共类）。
+    （无效分类名清理：simple / undefined / 纯数字 已在数据清洗操作中处理）
+    仅修改"分类"字段，不改变 clean_status / export_status，不增删文档。
+    """
+    category = request.form.get("category", "").strip()
+    subcategory = request.form.get("subcategory", "__all__").strip() or "__all__"
+    threshold_raw = request.form.get("threshold", "").strip()
+    common_category_input = request.form.get("common_category", "Other").strip()
+
+    try:
+        threshold = int(threshold_raw) if threshold_raw else 10
+        if threshold < 1:
+            threshold = 1
+    except ValueError:
+        threshold = 10
+
+    common_categories = [c.strip() for c in re.split(r'[,;\n]+', common_category_input) if c.strip()]
+    if not common_categories:
+        common_categories = ["Other"]
+
+    if not category:
+        flash("请选择要处理的一级分类", "error")
+        return redirect(url_for("product_data.product_data_clean"))
+
+    sub_display = subcategory if subcategory != "__all__" else "all"
+    task_id = f"category_process_{category}_{sub_display}_{int(time.time())}"
+    task_manager.create(task_id, "category_process", f"{category}/{sub_display}")
+
+    def run_task():
+        product_db = None
+        try:
+            task_manager.update(task_id, status="running",
+                                message=f"开始分类数据处理: {category}/{sub_display}")
+            task_manager.add_log(task_id, f"任务启动: 分类数据处理 {category}/{sub_display}", "info")
+            task_manager.add_log(task_id, f"参数: 阈值={threshold}, 公共类={', '.join(common_categories)}", "info")
+
+            from qmds.db.product_db import ProductDBClient
+            product_db = ProductDBClient()
+            cat_list = _resolve_category_list(product_db, category, subcategory)
+            task_manager.add_log(task_id, f"获取到 {len(cat_list)} 个分类", "info")
+
+            if not cat_list:
+                task_manager.update(task_id, status="completed",
+                                    message="完成: 未找到任何分类数据", progress=100)
+                task_manager.add_log(task_id, "未找到任何分类数据，任务结束", "warning")
+                return
+
+            # 只处理"已清洗且未导出"数量 > 0 的集合（与前端下拉框口径一致）
+            exportable_cat_list = []
+            for item in cat_list:
+                stats = product_db.get_simple_category_stats(item["category"], item.get("subcategory", ""))
+                if stats.get("unexported_count", 0) > 0:
+                    exportable_cat_list.append(item)
+            if len(exportable_cat_list) != len(cat_list):
+                task_manager.add_log(
+                    task_id,
+                    f"过滤后剩余 {len(exportable_cat_list)} 个有已清洗未导出数据的分类"
+                    f"（跳过 {len(cat_list) - len(exportable_cat_list)} 个无数据分类）",
+                    "info"
+                )
+            cat_list = exportable_cat_list
+
+            if not cat_list:
+                task_manager.update(task_id, status="completed",
+                                    message="完成: 所选分类中没有已清洗未导出的数据", progress=100)
+                task_manager.add_log(task_id, "所选分类中没有已清洗未导出的数据，任务结束", "warning")
+                return
+
+            task_manager.update(task_id, message=f"正在跨集合统计分类（{len(cat_list)} 个集合）...")
+            task_manager.add_log(task_id, f"开始跨集合分类处理: {len(cat_list)} 个集合", "info")
+
+            result = product_db.process_category_data_global(
+                [(item["category"], item.get("subcategory", "")) for item in cat_list],
+                threshold=threshold,
+                common_categories=common_categories,
+                progress_callback=make_progress_callback(task_id),
+                stop_event=task_manager.get_stop_event(task_id),
+            )
+
+            total_processed = result.get("processed", 0)
+            total_modified = result.get("modified_rows", 0)
+            merged = result.get("merged", [])
+            before_c = result.get("category_count_before", 0)
+            after_c = result.get("category_count_after", 0)
+            collections = result.get("collections", [])
+
+            task_manager.add_log(
+                task_id,
+                f"总体: 已清洗未导出 {total_processed} 条, 合并 {len(merged)} 个低频分类, "
+                f"修改 {total_modified} 行, 全局分类数 {before_c} -> {after_c}",
+                "info"
+            )
+
+            # 每个集合的修改明细
+            for detail in collections:
+                sub_d = detail.get("subcategory") or "other"
+                task_manager.add_log(
+                    task_id,
+                    f"  集合 {detail.get('category')}/{sub_d}: 修改 {detail.get('modified_rows', 0)} 行",
+                    "info"
+                )
+
+            # 低频合并明细（全局计数）
+            for m_cat, m_cnt, new_cat in merged[:15]:
+                task_manager.add_log(task_id, f"  低频合并: {m_cat} (全局 {m_cnt} 条) -> {new_cat}", "info")
+            if len(merged) > 15:
+                task_manager.add_log(task_id, f"  ... 还有 {len(merged) - 15} 个低频分类", "info")
+
+            task_manager.update(task_id, status="completed",
+                                message=f"完成: 处理 {total_processed} 条, 修改 {total_modified} 行, "
+                                        f"合并 {len(merged)} 个低频分类",
+                                progress=100)
+            task_manager.add_log(task_id, "任务完成", "info")
+        except InterruptedError:
+            task_manager.update(task_id, status="stopped", message="任务已停止")
+            task_manager.add_log(task_id, "任务被用户停止", "warning")
+        except Exception as e:
+            import traceback
+            log.error(f"分类数据处理失败: {e}\n{traceback.format_exc()}")
+            task_manager.update(task_id, status="failed", message=f"失败: {e}")
+            task_manager.add_log(task_id, f"任务失败: {e}", "error")
+        finally:
+            if product_db:
+                product_db.close()
+
+    task_manager.start_task_thread(task_id, run_task)
+    flash(f"分类数据处理任务已启动: {category}/{sub_display}", "info")
+    return redirect(url_for("product_data.product_data_clean"))

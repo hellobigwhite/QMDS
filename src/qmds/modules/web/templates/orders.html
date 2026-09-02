@@ -108,6 +108,7 @@
       <button class="btn btn-sm" id="btnSyncServers" style="background:#4fc3f7;color:#1a1a2e" onclick="event.stopPropagation()">从上报平台同步</button>
       <button class="btn btn-sm btn-danger" id="btnDeleteAll" onclick="event.stopPropagation()">一键删除所有</button>
       <button class="btn btn-sm btn-primary" id="btnShowAdd" onclick="event.stopPropagation()">+ 添加</button>
+      <button class="btn btn-sm" id="btnShowImport" style="background:#ff9800;color:#fff" onclick="event.stopPropagation()">📥 批量导入</button>
       <span class="toggle-icon collapsed">▼</span>
     </div>
   </div>
@@ -119,6 +120,29 @@
         <input type="text" id="svrMainCat" placeholder="主类目" style="width:120px;padding:6px 10px;border:1px solid #d9d9d9;border-radius:4px">
         <button class="btn btn-primary btn-sm" id="btnSaveServer">保存</button>
         <button class="btn btn-sm" id="btnCancelAdd" style="background:#eee;color:#333">取消</button>
+      </div>
+    </div>
+    <div id="importForm" style="display:none;margin-bottom:12px;border:1px solid #eee;padding:12px;border-radius:6px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <strong style="font-size:14px">📥 批量导入服务器</strong>
+        <a href="#" id="btnDownloadTemplate" style="font-size:12px;color:#4fc3f7;text-decoration:none">⬇️ 下载导入模板</a>
+      </div>
+      <div class="flex-gap" style="margin-bottom:8px">
+        <select id="importMode" style="padding:6px 10px;border:1px solid #d9d9d9;border-radius:4px;font-size:13px">
+          <option value="skip">已存在的域名：跳过</option>
+          <option value="update">已存在的域名：更新</option>
+        </select>
+        <span style="font-size:13px;color:#666">或</span>
+        <input type="file" id="importFile" accept=".txt,.csv" style="padding:4px 8px;border:1px solid #d9d9d9;border-radius:4px;font-size:13px">
+      </div>
+      <textarea id="importText" rows="6" placeholder="每行一条: 域名,IP,主类目&#10;例: example.com,192.168.1.10,家居&#10;也支持 Tab 分隔，或直接粘贴 CSV 内容" style="width:100%;padding:8px 10px;border:1px solid #d9d9d9;border-radius:4px;font-size:13px;font-family:'Cascadia Code','Consolas',monospace;box-sizing:border-box"></textarea>
+      <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
+        <button class="btn btn-primary btn-sm" id="btnImportServers">开始导入</button>
+        <button class="btn btn-sm" id="btnCancelImport" style="background:#eee;color:#333">取消</button>
+        <span id="importResult" style="font-size:13px"></span>
+      </div>
+      <div style="margin-top:8px;padding:10px;background:#fff8e1;border-radius:6px;font-size:12px;color:#f57f17">
+        格式说明：每行一条记录，<strong>域名</strong>（必填）[, <strong>IP</strong>（可选）[, <strong>主类目</strong>（可选）]]，逗号或 Tab 分隔；以 # 开头的行将被忽略。
       </div>
     </div>
     <div style="overflow-x:auto;">
@@ -408,6 +432,63 @@ document.getElementById('btnShowAdd').addEventListener('click', function() {
 
 document.getElementById('btnCancelAdd').addEventListener('click', function() {
   document.getElementById('addForm').style.display = 'none';
+});
+
+// ── 批量导入服务器 ──
+document.getElementById('btnShowImport').addEventListener('click', function() {
+  document.getElementById('addForm').style.display = 'none';
+  document.getElementById('importForm').style.display = 'block';
+  document.getElementById('importResult').textContent = '';
+});
+
+document.getElementById('btnCancelImport').addEventListener('click', function() {
+  document.getElementById('importForm').style.display = 'none';
+});
+
+document.getElementById('btnDownloadTemplate').addEventListener('click', function(e) {
+  e.preventDefault();
+  var content = '域名,IP,主类目\nexample1.com,192.168.1.10,家居\nexample2.com,192.168.1.11,电子产品\n';
+  var blob = new Blob(['\ufeff' + content], {type: 'text/csv;charset=utf-8'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = '服务器批量导入模板.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+});
+
+document.getElementById('btnImportServers').addEventListener('click', function() {
+  var text = document.getElementById('importText').value.trim();
+  var fileInput = document.getElementById('importFile');
+  var hasFile = fileInput.files && fileInput.files.length > 0;
+  if (!text && !hasFile) { alert('请粘贴内容或选择文件'); return; }
+  var btn = this;
+  btn.disabled = true;
+  btn.textContent = '导入中...';
+  var fd = new FormData();
+  fd.append('mode', document.getElementById('importMode').value);
+  if (text) fd.append('text', text);
+  if (hasFile) fd.append('file', fileInput.files[0]);
+  fetch('/api/servers/import', {method:'POST', body: fd}).then(function(r){return r.json()}).then(function(d) {
+    btn.disabled = false;
+    btn.textContent = '开始导入';
+    if (d.error) { alert(d.error); return; }
+    var msg = '导入完成: 新增 ' + d.added + ' 个，更新 ' + d.updated + ' 个，跳过 ' + d.skipped + ' 个';
+    if (d.errors && d.errors.length) {
+      msg += '\n' + d.errors.slice(0, 10).join('\n');
+      if (d.errors.length > 10) msg += '\n... 共 ' + d.errors.length + ' 条错误';
+    }
+    document.getElementById('importResult').textContent = '✅ ' + msg.replace(/\n/g, ' ');
+    alert(msg);
+    document.getElementById('importText').value = '';
+    fileInput.value = '';
+    loadServers();
+  }).catch(function(e) {
+    btn.disabled = false;
+    btn.textContent = '开始导入';
+    alert('导入失败: ' + e);
+  });
 });
 
 document.getElementById('btnSaveServer').addEventListener('click', function() {

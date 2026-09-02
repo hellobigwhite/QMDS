@@ -33,6 +33,36 @@ def _derive_domain(domain):
     return d
 
 
+def _parse_server_import_text(text):
+    """解析批量导入文本: 每行格式 域名[,IP[,主类目]]
+
+    支持逗号或制表符分隔，也支持带引号的 CSV 字段；
+    以 # 开头的行和空行会被忽略。
+    """
+    import csv as csv_mod
+    import io as io_mod
+
+    items = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            row = next(csv_mod.reader(io_mod.StringIO(line)))
+        except Exception:
+            row = []
+        if not row:
+            continue
+        # 单列且含制表符时按制表符拆分
+        if len(row) == 1 and "\t" in line:
+            row = [p.strip() for p in line.split("\t")]
+        domain = row[0].strip()
+        ip = row[1].strip() if len(row) > 1 else ""
+        main_category = row[2].strip() if len(row) > 2 else ""
+        items.append({"domain": domain, "ip": ip, "main_category": main_category})
+    return items
+
+
 def _wp_login(session, domain, password, max_retries=3):
     from bs4 import BeautifulSoup
     site_url = f"https://{_derive_domain(domain)}"
@@ -952,6 +982,49 @@ def api_sync_servers():
         return jsonify({"ok": True, **result})
     except Exception as e:
         log.error(f"同步服务器数据失败: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@bp.route("/api/servers/import", methods=["POST"])
+def api_import_servers():
+    """批量导入服务器: 支持粘贴文本或上传 .txt/.csv 文件
+
+    每行格式: 域名[,IP[,主类目]]，逗号或制表符分隔。
+    表单字段:
+      text: 粘贴的文本内容（可选）
+      file: 上传的 .txt/.csv 文件（可选）
+      mode: skip(默认,跳过已存在) 或 update(更新已存在)
+    """
+    order_db = get_order_db()
+    if not order_db:
+        return jsonify({"error": "数据库连接失败"}), 500
+    mode = (request.form.get("mode") or "skip").strip()
+    if mode not in ("skip", "update"):
+        mode = "skip"
+
+    text = (request.form.get("text") or "").strip()
+    file = request.files.get("file")
+    if file and file.filename:
+        filename = file.filename.lower()
+        if not filename.endswith((".txt", ".csv")):
+            return jsonify({"error": "仅支持 .txt 或 .csv 文件"}), 400
+        raw = file.read().decode("utf-8-sig", errors="replace")
+        if raw.strip():
+            text = (text + "\n" + raw) if text else raw
+
+    if not text.strip():
+        return jsonify({"error": "请粘贴内容或选择文件"}), 400
+
+    items = _parse_server_import_text(text)
+    valid = [it for it in items if it.get("domain", "").strip()]
+    if not valid:
+        return jsonify({"error": "未解析到有效的服务器数据，格式: 域名,IP,主类目"}), 400
+
+    try:
+        result = order_db.import_servers(items, mode)
+        return jsonify({"ok": True, **result})
+    except Exception as e:
+        log.error(f"批量导入服务器失败: {e}")
         return jsonify({"error": str(e)}), 500
 
 

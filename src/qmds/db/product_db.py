@@ -21,6 +21,37 @@ def _clean_excel_illegal_chars(value):
     return value
 
 
+# 分类字段无效名判定用分隔符（与 data_cleaner._NUM_SEP_RE 一致）
+_INVALID_CAT_SEP_RE = re.compile(r'[\s\-_.,/\\|:;]+')
+# 分类多级分隔符（||| -> > , / : ： 等）
+_INVALID_CAT_LEVEL_RE = re.compile(r'\s*\|\|\|\s*|\s*->\s*|\s*>\s*|\s*,\s*|\s*/\s*|\s*[:：]\s*')
+# 无效分类名归入的公共类（清洗流程无公共类参数，使用默认）
+DEFAULT_INVALID_CATEGORY = "Other"
+
+
+def is_invalid_category_name(cat_name) -> bool:
+    """判定无效分类名：simple、含 undefined、整值为纯数字、或任一级为纯数字
+
+    返回 True 表示该分类名属于无效值，应由调用方清理（覆盖为有效分类）。
+    """
+    if not cat_name:
+        return False
+    cat_lower = str(cat_name).strip().lower()
+    if cat_lower == "simple":
+        return True
+    if "undefined" in cat_lower:
+        return True
+    cleaned = _INVALID_CAT_SEP_RE.sub('', str(cat_name).strip())
+    if cleaned.isdigit():
+        return True
+    parts = _INVALID_CAT_LEVEL_RE.split(str(cat_name).strip())
+    for part in parts:
+        part_cleaned = _INVALID_CAT_SEP_RE.sub('', part)
+        if part_cleaned and part_cleaned.isdigit():
+            return True
+    return False
+
+
 from pymongo import MongoClient, ASCENDING, UpdateOne
 from pymongo.errors import ConnectionFailure, BulkWriteError
 from pymongo.collection import Collection
@@ -557,6 +588,8 @@ class ProductDBClient:
         清洗过程中对通过的数据执行通用标准化并写回：
         标题净化与站点名/域名移除、描述 HTML 白名单清洗、图片取首图、价格规范化、
         分类标准化（分隔符统一|||/单数化/首字母大写/纯数字用 source_category 覆盖）、
+        无效分类名清理（simple / 含 undefined / 整值或任一级纯数字 ->
+        有 source_category 用它覆盖，否则归入 Other）、
         source_category 下划线转空格、变体截断前2段属性并规范化；
         标题/描述命中品牌黑名单、描述为空或非空变体格式非法的数据直接判为 failed。
         通过的商品 SKU 全部重新生成递增编号。
@@ -666,10 +699,16 @@ class ProductDBClient:
                 tags_str = sub_desc
 
             # 分类标准化：ASCII净化 -> 实体解码 -> 分隔符统一|||/单数化/首字母大写；纯数字分类用 source_category 覆盖
-            cat_value = normalize_categories(unescape(clean_text(str(p.get("分类") or "")))).strip()
+            raw_cat = str(p.get("分类") or "")
+            cat_value = normalize_categories(unescape(clean_text(raw_cat))).strip()
             source_cat = clean_text(str(p.get("source_category") or "")).replace("_", " ").strip()
             if cat_value and is_pure_numeric_category(cat_value) and source_cat:
                 cat_value = source_cat
+            # 无效分类名清理：simple / 含 undefined / 整值或任一级纯数字
+            # （用标准化前的原始值判定，避免单数化等转换破坏 undefined 等关键词的检测）
+            # -> 有 source_category 用它覆盖，否则归入公共类 Other
+            if raw_cat and is_invalid_category_name(raw_cat):
+                cat_value = source_cat if source_cat else DEFAULT_INVALID_CATEGORY
 
             # ── 品牌黑名单（检测范围与违禁词一致：标题+描述+子描述）──
             if hit_brand_blacklist(f"{title} {desc} {tags_str}"):
@@ -949,19 +988,26 @@ class ProductDBClient:
         # 优先从 _counters 读取 total 和 cleaned（O(1)）
         doc = self._counters_col().find_one(
             {"_id": prefix},
-            {"total": 1, "counts.cleaned": 1, "counts.unclean": 1, "_id": 0}
+            {"total": 1, "counts.cleaned": 1, "counts.unclean": 1,
+             "counts.exportable": 1, "counts.exported": 1, "_id": 0}
         )
         if doc:
             counts = doc.get("counts", {}) or {}
             total = doc.get("total", 0)
             clean_count = counts.get("cleaned", 0)
             unclean_count = counts.get("unclean", 0)
+            # exportable = 已清洗且未导出（导出流程 _inc_counters 维护）
+            unexported_count = counts.get("exportable", 0)
         else:
             # 回退：estimated_document_count + count_documents（计数器缺失时）
             col = self.collection(category, subcategory)
             total = col.estimated_document_count()
             clean_count = col.count_documents({"clean_status": CLEAN_STATUS_CLEANED})
             unclean_count = col.count_documents({"clean_status": CLEAN_STATUS_UNCLEAN})
+            unexported_count = col.count_documents({
+                "clean_status": CLEAN_STATUS_CLEANED,
+                "export_status": EXPORT_STATUS_UNEXPORTED,
+            })
         return {
             "category": category,
             "subcategory": normalize_subcategory(subcategory),
@@ -969,6 +1015,7 @@ class ProductDBClient:
             "raw_count": total,
             "clean_count": clean_count,
             "unclean_count": unclean_count,
+            "unexported_count": unexported_count,
         }
 
     def get_unclean_products(self, category: str, subcategory: str = "", limit: Optional[int] = None) -> List[Dict]:
@@ -1331,4 +1378,175 @@ class ProductDBClient:
             "dedup_count": dedup_count,
             "sub_count": sub_count,
             "marked_count": marked_count,
+        }
+    # ── 分类数据处理（已清洗未导出） ─────────────────────────
+
+    def process_category_data(self, category: str, subcategory: str = "",
+                              threshold: int = 10,
+                              common_categories: Optional[List[str]] = None,
+                              progress_callback=None,
+                              stop_event: Optional[threading.Event] = None) -> Dict[str, Any]:
+        """处理单个集合中"已清洗且未导出"数据的分类字段（跨集合全局处理的单集合特例）
+
+        见 process_category_data_global 的说明。本方法等价于以
+        [(category, subcategory)] 调用全局方法，供单集合场景及外部兼容使用。
+        """
+        return self.process_category_data_global(
+            [(category, subcategory)],
+            threshold=threshold,
+            common_categories=common_categories,
+            progress_callback=progress_callback,
+            stop_event=stop_event,
+        )
+
+    def process_category_data_global(self, cat_list: List[tuple],
+                                     threshold: int = 10,
+                                     common_categories: Optional[List[str]] = None,
+                                     progress_callback=None,
+                                     stop_event: Optional[threading.Event] = None) -> Dict[str, Any]:
+        """处理多个集合中"已清洗且未导出"数据的分类字段（跨集合全局统计）
+
+        低频分类合并：所选范围内所有集合**同名分类计数合并**后 < threshold 的，
+        确定性轮询归入公共类（同名分类在所有集合分配同一个公共类）。
+        （无效分类名清理：simple / undefined / 纯数字 已在数据清洗操作 clean_category
+        中处理，此处不再重复。）
+
+        仅更新"分类"字段，不改变 clean_status / export_status，不增删文档，
+        因此 _counters 无需同步（完成后 invalidate 统计缓存即可）。
+
+        Args:
+            cat_list: [(category, subcategory), ...] 待处理的集合列表
+            threshold: 低频阈值，全局分类计数小于该值的将被合并
+            common_categories: 公共类列表（空则默认 ["Other"]）
+            progress_callback: 进度回调（接收 dict 或 str）
+            stop_event: 停止事件（设置后抛 InterruptedError）
+
+        Returns:
+            {"processed": 全局遍历条数, "modified_rows": 全局修改行数,
+             "category_count_before": 全局修改前分类数, "category_count_after": 全局修改后分类数,
+             "merged": [(cat, global_count, new_cat), ...],
+             "collections": [{"category", "subcategory", "processed", "modified_rows"}, ...]}
+        """
+        from collections import Counter
+
+        if not common_categories:
+            common_categories = ["Other"]
+        common_categories = [c for c in common_categories if c] or ["Other"]
+
+        query = {
+            "clean_status": CLEAN_STATUS_CLEANED,
+            "export_status": EXPORT_STATUS_UNEXPORTED,
+        }
+        projection = {"分类": 1}
+
+        def _check_stopped():
+            if stop_event is not None and stop_event.is_set():
+                raise InterruptedError("任务被用户停止")
+
+        # 1) 全局统计分类计数（跨集合同名分类合并，流式游标避免 OOM）
+        counts = Counter()
+        total_processed = 0
+        for col_idx, (category, subcategory) in enumerate(cat_list):
+            prefix = make_collection_prefix(category, subcategory)
+            col = self.collection(category, subcategory)
+            cursor = col.find(query, projection).batch_size(2000)
+            for doc in cursor:
+                _check_stopped()
+                total_processed += 1
+                cat = doc.get("分类")
+                if cat:
+                    counts[str(cat)] += 1
+            if progress_callback:
+                progress_callback({
+                    "message": f"[{prefix}] 统计完成（{col_idx + 1}/{len(cat_list)}）",
+                    "progress": int((col_idx + 1) / len(cat_list) * 100),
+                })
+
+        if total_processed == 0:
+            self._stats_cache.invalidate()
+            return {"processed": 0, "modified_rows": 0,
+                    "category_count_before": 0, "category_count_after": 0,
+                    "merged": [], "collections": []}
+
+        # 2) 低频分类（基于全局计数，按 计数降序/名称 排序保证确定性轮询可复现）
+        low_freq = [(cat, cnt) for cat, cnt in counts.items() if cat and cnt < threshold]
+        low_freq.sort(key=lambda x: (-x[1], x[0]))
+
+        # 构建 旧分类 -> 新公共类 映射（全局同一轮询索引，同名分类分配同一公共类）
+        mapping: Dict[str, str] = {}
+        idx = 0
+        for cat, _cnt in low_freq:
+            mapping[cat] = common_categories[idx % len(common_categories)]
+            idx += 1
+
+        if not mapping:
+            self._stats_cache.invalidate()
+            return {"processed": total_processed, "modified_rows": 0,
+                    "category_count_before": len([c for c in counts if c]),
+                    "category_count_after": len([c for c in counts if c]),
+                    "merged": [],
+                    "collections": [{"category": c, "subcategory": s,
+                                     "processed": 0, "modified_rows": 0}
+                                    for c, s in cat_list]}
+
+        # 3) 逐集合分批写回"分类"字段（同时增量统计全局修改后的分类数）
+        total_modified = 0
+        after_counts = Counter()
+        collections_detail = []
+        for col_idx, (category, subcategory) in enumerate(cat_list):
+            prefix = make_collection_prefix(category, subcategory)
+            col = self.collection(category, subcategory)
+            pending = []
+            modified_rows = 0
+            cursor = col.find(query, projection).batch_size(2000)
+            for doc in cursor:
+                _check_stopped()
+                cat = doc.get("分类")
+                if not cat:
+                    continue
+                cat_str = str(cat)
+                new_cat = mapping.get(cat_str)
+                if new_cat is None or new_cat == cat_str:
+                    after_counts[cat_str] += 1
+                    continue
+                pending.append(UpdateOne({"_id": doc["_id"]}, {"$set": {"分类": new_cat}}))
+                after_counts[new_cat] += 1
+                if len(pending) >= DB_BATCH_SIZE:
+                    result = col.bulk_write(pending, ordered=False)
+                    modified_rows += result.modified_count
+                    pending = []
+                    if progress_callback:
+                        progress_callback({
+                            "message": f"[{prefix}] 已更新 {modified_rows} 条...",
+                            "progress": int((col_idx + 1) / len(cat_list) * 100),
+                        })
+            if pending:
+                result = col.bulk_write(pending, ordered=False)
+                modified_rows += result.modified_count
+            total_modified += modified_rows
+            collections_detail.append({
+                "category": category,
+                "subcategory": subcategory,
+                "modified_rows": modified_rows,
+            })
+            if progress_callback:
+                progress_callback({
+                    "message": f"[{prefix}] 写回完成（{col_idx + 1}/{len(cat_list)}）",
+                    "progress": int((col_idx + 1) / len(cat_list) * 100),
+                })
+
+        self._stats_cache.invalidate()
+
+        # 过滤映射到自身（如低频分类恰好等于公共类）的项：写回时被跳过，不计入实际合并
+        merged = [(cat, cnt, new_cat) for cat, cnt, new_cat in
+                  ((cat, cnt, mapping[cat]) for cat, cnt in low_freq)
+                  if new_cat != cat]
+
+        return {
+            "processed": total_processed,
+            "modified_rows": total_modified,
+            "category_count_before": len([c for c in counts if c]),
+            "category_count_after": len([c for c in after_counts if c]),
+            "merged": merged,
+            "collections": collections_detail,
         }

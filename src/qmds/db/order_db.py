@@ -435,6 +435,73 @@ class OrderDBClient:
 
         return {"added": added, "updated": updated, "total": len(domains_data)}
 
+    def import_servers(self, items: list, mode: str = "skip") -> dict:
+        """批量导入服务器
+
+        Args:
+            items: [{"domain": str, "ip": str, "main_category": str}, ...]
+            mode: "skip" 已存在的域名跳过；"update" 已存在的域名更新 IP/主类目
+
+        Returns:
+            {"added": 新增数, "updated": 更新数, "skipped": 跳过数,
+             "errors": [错误信息], "total": 输入总行数}
+        """
+        added = 0
+        updated = 0
+        skipped = 0
+        errors = []
+        ts = datetime.utcnow().isoformat()
+        seen_domains = set()
+
+        for i, item in enumerate(items, 1):
+            domain = str(item.get("domain") or "").strip().lower()
+            if not domain:
+                errors.append(f"第{i}行: 缺少域名")
+                continue
+            # 移除协议前缀与结尾斜杠
+            domain = domain.replace("https://", "").replace("http://", "").strip("/")
+
+            ip = str(item.get("ip") or "").strip()
+            main_category = str(item.get("main_category") or "").strip()
+
+            if domain in seen_domains:
+                errors.append(f"第{i}行: 域名 {domain} 在本次导入中重复")
+                continue
+            seen_domains.add(domain)
+
+            existing = self.servers_col.find_one({"domain": domain})
+            if existing:
+                if mode == "update":
+                    update_fields = {"updated_at": ts}
+                    if ip and ip != existing.get("ip"):
+                        update_fields["ip"] = ip
+                    if main_category and main_category != existing.get("main_category"):
+                        update_fields["main_category"] = main_category
+                    if len(update_fields) > 1:
+                        self.servers_col.update_one({"domain": domain}, {"$set": update_fields})
+                        updated += 1
+                    else:
+                        skipped += 1
+                else:
+                    skipped += 1
+            else:
+                name = domain.replace("www.", "").split(".")[0].strip()
+                server_id = self._next_server_id()
+                self.servers_col.insert_one({
+                    "id": server_id,
+                    "name": name,
+                    "domain": domain,
+                    "ip": ip,
+                    "main_category": main_category,
+                    "created_at": ts,
+                })
+                added += 1
+                if ip:
+                    self.ensure_orders_indexes(ip)
+
+        return {"added": added, "updated": updated, "skipped": skipped,
+                "errors": errors, "total": len(items)}
+
     # ── 订单详情操作 ──────────────────────────────────────
 
     def update_order_details(self, ip: str, domain: str, order_time: str,

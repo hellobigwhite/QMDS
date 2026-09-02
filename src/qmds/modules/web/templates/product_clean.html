@@ -35,6 +35,36 @@
 </div>
 
 <div class="card">
+    <h2>📊 分类数据处理（已清洗未导出）</h2>
+    <p class="text-muted mb-4">处理 <code>{category}__{subcategory}</code> 集合中 <code>clean_status=cleaned</code> 且 <code>export_status=unexported</code> 的数据：<b>低频分类合并</b>（所选范围内同名分类计数合并后小于阈值 → 确定性轮询归入公共类）。无效分类名（simple / undefined / 纯数字）已在<b>数据清洗</b>时清理。仅修改"分类"字段，不影响清洗/导出状态。</p>
+    <form method="POST" action="/product-data/category-process">
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+            <div>
+                <label for="cp_category">一级分类</label>
+                <select id="cp_category" name="category" style="width:100%;">
+                    <option value="__all__">全部一级分类</option>
+                </select>
+            </div>
+            <div>
+                <label for="cp_subcategory">二级分类</label>
+                <select id="cp_subcategory" name="subcategory" style="width:100%;">
+                    <option value="__all__">全部二级分类</option>
+                </select>
+            </div>
+            <div>
+                <label for="cp_threshold">合并阈值（分类条数 &lt; 此值）</label>
+                <input type="number" id="cp_threshold" name="threshold" value="10" min="1" style="width:100%;">
+            </div>
+            <div>
+                <label for="cp_common">公共类（逗号/分号分隔）</label>
+                <input type="text" id="cp_common" name="common_category" value="Other" style="width:100%;">
+            </div>
+        </div>
+        <button type="submit" class="btn btn-info" onclick="return confirm('确定要处理所选分类中已清洗未导出的数据吗？');">执行分类数据处理</button>
+    </form>
+</div>
+
+<div class="card">
     <h2>分类数据统计</h2>
     <div id="task-banner" style="display:none; padding:10px 14px; margin-bottom:12px; border-radius:8px; background:#e3f2fd; border-left:4px solid #2196f3;">
         <div style="display:flex; align-items:center; gap:10px;">
@@ -84,7 +114,7 @@
         </div>
         <div class="detail-item">
             <div class="k">清洗规则</div>
-            <div class="v">过滤无效数据、违禁词与品牌黑名单、空描述；标准化并写回：标题净化/站点名域名移除/描述HTML白名单/图片取首图/价格规范化/分类分隔符统一与单数化/source_category下划线处理；通过商品 SKU 全部重新生成</div>
+            <div class="v">过滤无效数据、违禁词与品牌黑名单、空描述；标准化并写回：标题净化/站点名域名移除/描述HTML白名单/图片取首图/价格规范化/分类分隔符统一与单数化/无效分类名清理（simple/undefined/纯数字→source_category或Other）/source_category下划线处理；通过商品 SKU 全部重新生成</div>
         </div>
         <div class="detail-item">
             <div class="k">存储位置</div>
@@ -165,7 +195,7 @@ function checkTasksAndRefresh() {
         .then(function(r) { return r.json(); })
         .then(function(tasks) {
             var cleanTasks = (tasks || []).filter(function(t) {
-                return t.action === 'clean_products' || t.action === 'delete_cleaned_raw';
+                return t.action === 'clean_products' || t.action === 'delete_cleaned_raw' || t.action === 'category_process';
             });
             var running = cleanTasks.filter(function(t) { return t.status === 'running'; });
             var stopping = cleanTasks.filter(function(t) { return t.status === 'stopping'; });
@@ -204,7 +234,7 @@ function showTaskBanner(task, isStopping) {
     var title = document.getElementById('task-banner-title');
     var detail = document.getElementById('task-banner-detail');
     var pollInfo = document.getElementById('task-banner-poll');
-    var actionLabel = task.action === 'delete_cleaned_raw' ? '删除已清洗' : '清洗';
+    var actionLabel = task.action === 'delete_cleaned_raw' ? '删除已清洗' : (task.action === 'category_process' ? '分类处理' : '清洗');
     title.textContent = isStopping ? '正在停止...' : ('正在' + actionLabel + '...');
     detail.textContent = (task.target || '') + (task.message ? ' · ' + task.message : '');
     pollInfo.textContent = '每 ' + (POLL_FAST / 1000) + 's 刷新';
@@ -249,12 +279,19 @@ function renderStats(stats) {
         return;
     }
 
-    // 更新一级分类选择下拉框
+    // 更新一级分类选择下拉框（清洗 + 分类处理 共用一套数据）
     var catSelect = document.getElementById('clean_category');
     var subSelect = document.getElementById('clean_subcategory');
+    var cpCatSelect = document.getElementById('cp_category');
+    var cpSubSelect = document.getElementById('cp_subcategory');
     // 保留 "全部一级分类" 选项
     while (catSelect.options.length > 1) {
         catSelect.remove(1);
+    }
+    if (cpCatSelect) {
+        while (cpCatSelect.options.length > 1) {
+            cpCatSelect.remove(1);
+        }
     }
 
     // 收集一级分类（去重）
@@ -270,22 +307,63 @@ function renderStats(stats) {
         catSelect.appendChild(option);
     });
 
-    // 一级分类变化时更新二级分类下拉框
-    catSelect.onchange = function() {
-        var selectedCat = this.value;
-        while (subSelect.options.length > 1) {
-            subSelect.remove(1);
+    // 一级分类变化时更新二级分类下拉框（清洗用：显示原始/未清洗数量）
+    var fillSubOptions = function(selectedCat, targetSelect, showCounts) {
+        while (targetSelect.options.length > 1) {
+            targetSelect.remove(1);
         }
         if (selectedCat === '__all__') return;
         categories.forEach(function(catStat) {
             if (catStat.category === selectedCat) {
                 var opt = document.createElement('option');
                 opt.value = catStat.subcategory;
-                opt.textContent = catStat.subcategory + ' (原始: ' + catStat.raw_count + ', 未清洗: ' + catStat.unclean_count + ')';
-                subSelect.appendChild(opt);
+                opt.textContent = showCounts
+                    ? (catStat.subcategory + ' (原始: ' + catStat.raw_count + ', 未清洗: ' + catStat.unclean_count + ')')
+                    : catStat.subcategory;
+                targetSelect.appendChild(opt);
             }
         });
     };
+    catSelect.onchange = function() {
+        fillSubOptions(this.value, subSelect, true);
+    };
+
+    // ── 分类处理下拉框：只显示有"已清洗未导出"数据的集合，并带上条数 ──
+    if (cpCatSelect) {
+        // 一级分类：汇总每个一级分类下所有二级集合的未导出条数，只保留 > 0 的
+        var cpCatSums = {};
+        categories.forEach(function(catStat) {
+            var n = catStat.unexported_count || 0;
+            if (n > 0) {
+                cpCatSums[catStat.category] = (cpCatSums[catStat.category] || 0) + n;
+            }
+        });
+        Object.keys(cpCatSums).sort().forEach(function(cat) {
+            var cpOption = document.createElement('option');
+            cpOption.value = cat;
+            cpOption.textContent = cat + ' (' + cpCatSums[cat] + ' 条)';
+            cpCatSelect.appendChild(cpOption);
+        });
+
+        // 二级分类：只显示该一级分类下未导出条数 > 0 的集合，带条数
+        var fillCpSubOptions = function(selectedCat) {
+            while (cpSubSelect.options.length > 1) {
+                cpSubSelect.remove(1);
+            }
+            if (selectedCat === '__all__') return;
+            categories.forEach(function(catStat) {
+                if (catStat.category === selectedCat && (catStat.unexported_count || 0) > 0) {
+                    var opt = document.createElement('option');
+                    opt.value = catStat.subcategory;
+                    opt.textContent = catStat.subcategory + ' (' + catStat.unexported_count + ' 条)';
+                    cpSubSelect.appendChild(opt);
+                }
+            });
+        };
+        cpCatSelect.onchange = function() {
+            fillCpSubOptions(this.value);
+        };
+    }
 
     // 渲染统计表格
     var tbody = document.getElementById('stats-tbody');
@@ -374,6 +452,49 @@ function renderStats(stats) {
         };
         deleteForm.appendChild(deleteBtn);
         actionDiv.appendChild(deleteForm);
+
+        // 分类处理按钮（低频合并，处理已清洗未导出数据）
+        var cpForm = document.createElement('form');
+        cpForm.method = 'POST';
+        cpForm.action = '/product-data/category-process';
+        cpForm.style.display = 'inline';
+        var cpInputCat = document.createElement('input');
+        cpInputCat.type = 'hidden';
+        cpInputCat.name = 'category';
+        cpInputCat.value = catStat.category;
+        cpForm.appendChild(cpInputCat);
+        var cpInputSub = document.createElement('input');
+        cpInputSub.type = 'hidden';
+        cpInputSub.name = 'subcategory';
+        cpInputSub.value = catStat.subcategory;
+        cpForm.appendChild(cpInputSub);
+        var cpBtn = document.createElement('button');
+        cpBtn.type = 'submit';
+        cpBtn.className = 'btn btn-sm btn-info';
+        cpBtn.textContent = '分类处理';
+        cpBtn.onclick = function() {
+            // 先移除上次点击可能追加的隐藏字段（避免取消后重复累积）
+            var oldTh = cpForm.querySelector('input[name="threshold"]');
+            if (oldTh) cpForm.removeChild(oldTh);
+            var oldCm = cpForm.querySelector('input[name="common_category"]');
+            if (oldCm) cpForm.removeChild(oldCm);
+            // 从上方"分类数据处理"卡片读取阈值与公共类（不存在时用默认值）
+            var th = document.getElementById('cp_threshold');
+            var cm = document.getElementById('cp_common');
+            var thresholdInput = document.createElement('input');
+            thresholdInput.type = 'hidden';
+            thresholdInput.name = 'threshold';
+            thresholdInput.value = th ? th.value : '10';
+            cpForm.appendChild(thresholdInput);
+            var commonInput = document.createElement('input');
+            commonInput.type = 'hidden';
+            commonInput.name = 'common_category';
+            commonInput.value = cm ? cm.value : 'Other';
+            cpForm.appendChild(commonInput);
+            return confirm('确定要处理 ' + catStat.category + '/' + catStat.subcategory + ' 中已清洗未导出的数据吗？');
+        };
+        cpForm.appendChild(cpBtn);
+        actionDiv.appendChild(cpForm);
 
         tdAction.appendChild(actionDiv);
         tr.appendChild(tdAction);
