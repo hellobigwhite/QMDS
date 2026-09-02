@@ -18,6 +18,9 @@ langdetect>=1.0.9
 # rapidfuzz>=3.0
 # sentence-transformers>=2.2
 
+# 域名上报平台验证码识别（必需，已解压于 .libs/ 目录）
+ddddocr>=1.5
+
 # 代理
 # dnspython>=2.0
 

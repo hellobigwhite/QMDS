@@ -1,0 +1,2 @@
+[console_scripts]
+ddddocr = ddddocr.__main__:main
