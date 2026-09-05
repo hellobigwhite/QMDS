@@ -30,6 +30,9 @@ class DomainStatusScheduler:
         self._last_result = None  # dict: {checked, updated, failed, ready_to_build, message}
         # 日志去重：状态无变化时不重复打印
         self._last_log = ""
+        # 复用 reporter（会话/索引缓存），凭据变化时重建
+        self._reporter = None
+        self._reporter_key = None
 
     def start(self):
         with self._lock:
@@ -103,7 +106,14 @@ class DomainStatusScheduler:
                 log.warning("域名状态自动更新: 未配置上报账号密码")
                 return
 
-            reporter = DomainReporter(REPORT_API_BASE_URL, username, password)
+            # 复用 reporter：跨 tick 保持登录会话与域名索引缓存，
+            # 避免每 10 分钟重复 OCR 登录 + 全量拉取（20+ 请求）。
+            # 会话过期由 DomainReporter._post_json 自动重登录兜底。
+            key = (username, password)
+            if self._reporter is None or self._reporter_key != key:
+                self._reporter = DomainReporter(REPORT_API_BASE_URL, username, password)
+                self._reporter_key = key
+            reporter = self._reporter
             updated = 0
             failed = 0
             for d in domains:

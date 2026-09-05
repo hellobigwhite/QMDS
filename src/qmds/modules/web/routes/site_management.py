@@ -12,7 +12,7 @@ from qmds.db.site_db import SiteDBClient
 from qmds.modules.web.db_helpers import get_site_db
 from qmds.modules.web.task_manager import task_manager, make_progress_callback
 from qmds.utils.logger import get_logger
-from qmds.utils.domain_reporter import DomainReporter, DOMAIN_STATUS_LABELS, REPORT_API_BASE_URL, REPORT_CATEGORY_ID_MAP
+from qmds.utils.domain_reporter import DomainReporter, DomainNotFoundError, DOMAIN_STATUS_LABELS, REPORT_API_BASE_URL, REPORT_CATEGORY_ID_MAP
 
 log = get_logger("web")
 
@@ -1010,10 +1010,16 @@ def site_reported():
                                     site_db_inner.update_site(domain, {"report_status": "未报"})
                                     not_found_count += 1
                                     task_manager.add_log(task_id, f"[{i+1}/{total}] △ {domain} - 平台不存在，已标记未报", "warning")
-                            except Exception:
+                            except DomainNotFoundError:
+                                # 平台确认无此记录 -> 可安全标记为未报
                                 site_db_inner.update_site(domain, {"report_status": "未报"})
+                                not_found_count += 1
+                                task_manager.add_log(task_id, f"[{i+1}/{total}] △ {domain} - 平台不存在，已标记未报", "warning")
+                            except Exception as e:
+                                # 网络/登录等临时故障 -> 保持原状态不变，仅记错误
                                 error_count += 1
-                                task_manager.add_log(task_id, f"[{i+1}/{total}] ✗ {domain} - 查询失败，已标记未报", "error")
+                                log.error(f"审查域名查询失败: {domain} - {e}")
+                                task_manager.add_log(task_id, f"[{i+1}/{total}] ✗ {domain} - 查询失败（状态未变更）: {e}", "error")
 
                             if (i + 1) % 10 == 0 or i + 1 == total:
                                 task_manager.update(task_id,

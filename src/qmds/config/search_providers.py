@@ -337,12 +337,24 @@ class ExaProvider(SearchProvider):
     适合搜索特定品类的 Shopify 店铺。
 
     Exa /search 不支持 offset 分页，但支持 excludeDomains 参数。
-    本 provider 利用该参数实现"翻页"：每次调用将之前已返回的域名
-    加入排除列表，使 Exa 返回不重复的新结果，与参考文件
-    shopify_ai搜索 2.py 中 single_api_search 的策略一致。
+    本 provider 利用该参数实现"翻页"：同一查询的后续调用将该查询
+    之前已返回的域名加入排除列表，使 Exa 返回不重复的新结果。
+
+    排除列表必须按查询独立维护，绝不能全局共享：曾用单个全局集合
+    实现，并发关键词互相污染、集合只增不减，累计约 1500 个域名后
+    Exa 对所有请求返回 400 Bad Request，此后每个关键词都搜到 0 个
+    URL（2026-09-05 实测：51 次调用累积 1474 个域名后开始全量 400）。
+    按查询隔离后，单个列表最多约 numResults × max_pages（30 × 15
+    = 450）个域名，稳定在 API 可接受范围内。
 
     传入的 query 若含 Google 运算符（inurl:/site:）会被自动清理。
     """
+
+    # 单个查询的排除域名上限：30 × 15 页 = 450，500 留余量；
+    # 超出时只发送最近的 500 个，防止 excludeDomains 过大被 400 拒绝
+    _MAX_EXCLUDE_PER_QUERY = 500
+    # 最多保留多少个查询的排除集合，防止长驻进程内存无限增长
+    _MAX_QUERY_CACHE = 64
 
     # Google 搜索运算符清理：Exa 是语义搜索，不识别 inurl: 等语法
     _GOOGLE_OPS = [
@@ -354,8 +366,8 @@ class ExaProvider(SearchProvider):
 
     def __init__(self, config: ProviderConfig, key_pool: KeyPool):
         super().__init__(config, key_pool)
-        # 跨页累积已返回的域名，用于 excludeDomains 实现去重翻页
-        self._seen_domains: set[str] = set()
+        # 按（清洗后的）查询独立累积已返回域名，用于 excludeDomains 去重翻页
+        self._seen_by_query: dict[str, set[str]] = {}
         self._lock = threading.Lock()
 
     def search(self, query: str, page: int = 1) -> list[str]:
@@ -365,9 +377,13 @@ class ExaProvider(SearchProvider):
 
         cleaned = self._clean_query(query)
 
-        # 取出当前已排除域名快照（线程安全）
+        # 只取该查询自己的已排除域名快照（线程安全），
+        # 不包含其他关键词/其他任务返回过的域名
         with self._lock:
-            exclude_domains = list(self._seen_domains)
+            seen_set = self._seen_by_query.setdefault(cleaned, set())
+            exclude_domains = list(seen_set)
+        if len(exclude_domains) > self._MAX_EXCLUDE_PER_QUERY:
+            exclude_domains = exclude_domains[-self._MAX_EXCLUDE_PER_QUERY:]
 
         headers = {
             "x-api-key": key,
@@ -386,18 +402,18 @@ class ExaProvider(SearchProvider):
             payload["excludeDomains"] = exclude_domains
 
         try:
-            resp = requests.post(
-                self.config.base_url, headers=headers, json=payload,
-                timeout=self.config.timeout,
-                proxies={"http": None, "https": None},
-            )
+            resp = self._post_search(headers, payload)
             if resp.status_code in (401, 402, 403):
                 self.key_pool.mark_exhausted(key)
                 raise ScrapeProviderError(f"{resp.status_code} key 无效或额度用完")
             if resp.status_code == 429:
                 time.sleep(3)
                 raise ScrapeProviderError("429 限速")
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                # 带上 Exa 返回的错误详情和排除列表大小，便于定位问题
+                raise ScrapeProviderError(
+                    f"{resp.status_code} 请求被拒（excludeDomains={len(exclude_domains)}）: {resp.text[:200]}"
+                )
             data = resp.json()
             urls = []
             new_domains = []
@@ -412,14 +428,36 @@ class ExaProvider(SearchProvider):
                     if domain:
                         new_domains.append(domain)
 
-            # 累积本页新域名到排除集合（线程安全）
+            # 累积本页新域名到该查询自己的排除集合（线程安全），
+            # 并淘汰过旧查询，防止长驻进程内存无限增长
             if new_domains:
                 with self._lock:
-                    self._seen_domains.update(new_domains)
+                    self._seen_by_query.setdefault(cleaned, set()).update(new_domains)
+                    if len(self._seen_by_query) > self._MAX_QUERY_CACHE:
+                        overflow = len(self._seen_by_query) - self._MAX_QUERY_CACHE
+                        # dict 保持插入顺序，淘汰最早使用的查询
+                        for old_query in list(self._seen_by_query.keys())[:overflow]:
+                            if old_query != cleaned:
+                                self._seen_by_query.pop(old_query, None)
 
             return urls
         except requests.exceptions.RequestException as e:
             raise ScrapeProviderError(f"请求失败: {e}")
+
+    def _post_search(self, headers: dict, payload: dict) -> "requests.Response":
+        """发起搜索请求；连接类错误（并发下偶发连接重置）重试一次"""
+        for attempt in range(2):
+            try:
+                return requests.post(
+                    self.config.base_url, headers=headers, json=payload,
+                    timeout=self.config.timeout,
+                    proxies={"http": None, "https": None},
+                )
+            except requests.exceptions.ConnectionError:
+                if attempt == 0:
+                    time.sleep(1)
+                    continue
+                raise
 
     @classmethod
     def _clean_query(cls, query: str) -> str:

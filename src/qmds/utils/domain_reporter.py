@@ -23,6 +23,16 @@ from qmds.utils.logger import get_logger
 
 log = get_logger("domain_reporter")
 
+
+class DomainNotFoundError(Exception):
+    """域名在上报平台中确实不存在（区别于网络/登录等临时故障）
+
+    审查类功能据此判断是否将站点标记为"未报"：
+    - DomainNotFoundError -> 平台确认无此记录，可安全标记
+    - 其他异常（requests.*、登录失败 RuntimeError 等）-> 临时故障，不应改变状态
+    """
+
+
 # ddddocr 本地依赖目录（项目根/.libs）
 _LIBS_DIR = Path(__file__).resolve().parents[3] / ".libs"
 if _LIBS_DIR.is_dir() and str(_LIBS_DIR) not in sys.path:
@@ -168,8 +178,9 @@ class DomainReporter:
         self._theme_map = None
         self._user_map = None
         self._category_map = None
-        # 域名记录索引缓存 {domain_name: record}
+        # 域名记录索引缓存 {domain_name: record} 及建立时间
         self._domain_index = None
+        self._index_built_at = 0.0
 
     # ── 内部工具 ────────────────────────────────────────────
 
@@ -392,7 +403,8 @@ class DomainReporter:
                 "、".join(str(y) for y in x) if isinstance(x, list) else str(x)
                 for x in msgs) if isinstance(msgs, list) else str(msgs)
             raise RuntimeError(f"上报失败: {msg}")
-        self._domain_index = None  # 新增后刷新索引
+        # 不清空索引：刚上报的域名由 fetch_domain_info 的
+        # 第一页轻量兜底查询覆盖（列表按新增倒序，最新在最前）
         return body
 
     def _fetch_list_page(self, page, limit):
@@ -404,25 +416,64 @@ class DomainReporter:
         total = body.get("count") or 0
         return data, int(total)
 
-    def _build_domain_index(self):
-        """拉全量域名列表建立索引（列表接口不支持按名过滤）"""
+    # 索引最大新鲜期（秒）：期内未命中的域名不再触发全量刷新
+    INDEX_MAX_AGE = 300
+
+    def _build_domain_index(self, force=True):
+        """拉全量域名列表建立索引（列表接口不支持按名过滤）
+
+        force=False 时索引仍在新鲜期内则跳过（供低频调用方复用缓存）。
+        """
+        if not force and self._domain_index is not None and (
+                time.time() - self._index_built_at < self.INDEX_MAX_AGE):
+            return
         self._ensure_login()
         all_records = self.fetch_all_domains()
         self._domain_index = {r.get("domain_name", ""): r for r in all_records}
+        self._index_built_at = time.time()
         log.info(f"上报平台域名索引已建立: {len(self._domain_index)} 条")
 
+    def _refresh_first_page_into_index(self):
+        """轻量兜底：拉列表第一页并入索引（1 个请求）。
+
+        平台列表按新增倒序，刚上报的域名必然出现在第一页，
+        避免为单个新域名触发 20+ 页的全量重建。
+        """
+        records, _total = self._fetch_list_page(1, 25)
+        changed = 0
+        for r in records:
+            key = r.get("domain_name", "")
+            if not key:
+                continue
+            old = self._domain_index.get(key)
+            if old is None or old.get("domain_id") != r.get("domain_id") \
+                    or old.get("status") != r.get("status"):
+                self._domain_index[key] = r
+                changed += 1
+        return changed
+
     def fetch_domain_info(self, name):
-        """按域名查询记录，返回 {id, status}"""
+        """按域名查询记录，返回 {id, status}。
+
+        查找顺序（由轻到重）：
+        1. 内存索引
+        2. 列表第一页轻量兜底（覆盖刚上报的新域名）
+        3. 索引已过期（>INDEX_MAX_AGE）时全量刷新一次
+        均未命中抛 DomainNotFoundError（平台确认无此记录）。
+        """
         self._ensure_login()
         if self._domain_index is None:
-            self._build_domain_index()
+            self._build_domain_index(force=True)
+
         record = self._domain_index.get(name)
         if record is None:
-            # 可能刚新增，刷新一次索引
-            self._build_domain_index()
+            self._refresh_first_page_into_index()
+            record = self._domain_index.get(name)
+        if record is None and time.time() - self._index_built_at >= self.INDEX_MAX_AGE:
+            self._build_domain_index(force=True)
             record = self._domain_index.get(name)
         if record is None:
-            raise RuntimeError("未找到域名记录")
+            raise DomainNotFoundError(f"未找到域名记录: {name}")
         return {"id": record.get("domain_id"), "status": record.get("status")}
 
     def fetch_domains_by_date(self, date_text):
@@ -461,6 +512,9 @@ class DomainReporter:
             r = dict(r)
             r.setdefault("name", r.get("domain_name", ""))
             r.setdefault("serverip", r.get("host_ip", "") or "")
+            # 旧版调用方（order_db.sync_from_reporter）读取 category 字段，
+            # 新平台记录只有 category_id，补充以保持兼容
+            r.setdefault("category", r.get("category_id", "") or "")
             normalized.append(r)
         return normalized
 

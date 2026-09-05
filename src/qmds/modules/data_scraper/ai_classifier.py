@@ -301,8 +301,13 @@ def extract_page_info(html: str) -> dict:
     clean = re.sub(r'<style[^>]*>.*?</style>', '', clean, flags=re.DOTALL)
     clean = re.sub(r'<link[^>]*>', '', clean, flags=re.DOTALL)
     clean = re.sub(r'<!--.*?-->', '', clean, flags=re.DOTALL)
+    # 防御 1：折叠连续空白。个别超大首页（如 broadwaylifestyle.com，约 7.8MB）清洗后仍残留
+    # 数万字符的连续空白段，会让下方 \s+ 的贪婪回溯呈 O(L^2) 膨胀；re 在 C 层执行期间不释放
+    # GIL，会以 100% 单核 CPU 卡死整个进程（Web 无响应、任务停摆、日志停止写入）。
+    clean = re.sub(r'\s{2,}', ' ', clean)
+    # 防御 2：属性值限定 300 字符内且引号成对，避免未闭合引号引发跨兆字节的回溯扫描
     clean = re.sub(
-        r'\s+(class|id|style|data-[\w.-]+|on\w+|itemprop|itemscope|itemtype|role|tabindex|aria-[\w-]+|datetime)=["\'][^"\']*["\']',
+        r'\s+(class|id|style|data-[\w.-]+|on\w+|itemprop|itemscope|itemtype|role|tabindex|aria-[\w-]+|datetime)=("[^"]{0,300}"|\'[^\']{0,300}\')',
         '', clean,
     )
 
