@@ -115,13 +115,58 @@ def data_clean():
         return render_template("data_clean.html", error=f"处理失败: {str(e)}")
 
 
+def _category_merge_database():
+    """分类数据处理（数据库模式）：直接处理数据库中已清洗未导出的数据
+
+    低频分类合并 + 状态标识（category_process_status=processed），
+    任务体与产品数据管理页 /product-data/category-process 共用。
+    """
+    category = request.form.get("category", "__all__").strip() or "__all__"
+    subcategory = request.form.get("subcategory", "__all__").strip() or "__all__"
+    threshold_raw = request.form.get("threshold", "").strip()
+    common_category_input = request.form.get("common_category", "Other").strip()
+
+    try:
+        threshold = int(threshold_raw) if threshold_raw else 10
+        if threshold < 1:
+            threshold = 1
+    except ValueError:
+        threshold = 10
+
+    common_categories = [c.strip() for c in re.split(r'[,;\n]+', common_category_input) if c.strip()]
+    if not common_categories:
+        common_categories = ["Other"]
+
+    sub_display = subcategory if subcategory != "__all__" else "all"
+    task_id = f"category_process_db_{category}_{sub_display}_{int(time.time())}"
+    task_manager.create(task_id, "category_process", f"{category}/{sub_display}")
+
+    from qmds.modules.web.services.category_tasks import run_category_process_task
+    task_manager.start_task_thread(
+        task_id,
+        lambda: run_category_process_task(task_id, category, subcategory,
+                                          threshold, common_categories))
+    flash(f"分类数据处理任务已启动（数据库已清洗未导出数据）: {category}/{sub_display}", "success")
+    return redirect(url_for("core.tasks"))
+
+
 @bp.route("/tools/category-merge", methods=["GET", "POST"])
 def category_merge():
-    """分类数据处理：将数量过少的分类合并为公共类"""
+    """分类数据处理：将数量过少的分类合并为公共类
+
+    支持两种数据来源：
+    - 表格文件（file）：读取 .xlsx/.csv，合并后写回文件
+    - 数据库（database）：直接处理已清洗未导出（clean_status=cleaned 且
+      export_status=unexported）的数据，写入状态标识
+    """
     if request.method == "GET":
         return render_template("category_merge.html")
 
     try:
+        data_source = request.form.get("data_source", "file").strip() or "file"
+        if data_source == "database":
+            return _category_merge_database()
+
         file_path = request.form.get("file_path", "").strip()
         threshold = int(request.form.get("threshold", 10))
         category_field = request.form.get("category_field", "分类").strip()
@@ -336,13 +381,43 @@ def category_merge():
         return render_template("category_merge.html", error=f"处理失败: {str(e)}")
 
 
+def _category_optimize_database():
+    """模型优化分类（数据库模式）：直接优化数据库中已清洗未导出数据的分类字段
+
+    LLM 同义合并 + 单级分类补全父级 + 状态标识（optimize_status=optimized）。
+    """
+    category = request.form.get("category", "__all__").strip() or "__all__"
+    subcategory = request.form.get("subcategory", "__all__").strip() or "__all__"
+
+    sub_display = subcategory if subcategory != "__all__" else "all"
+    task_id = f"category_optimize_db_{category}_{sub_display}_{int(time.time())}"
+    task_manager.create(task_id, "category_optimize_db", f"{category}/{sub_display}")
+
+    from qmds.modules.web.services.category_tasks import run_category_optimize_task
+    task_manager.start_task_thread(
+        task_id,
+        lambda: run_category_optimize_task(task_id, category, subcategory))
+    flash(f"模型优化分类任务已启动（数据库已清洗未导出数据）: {category}/{sub_display}", "success")
+    return redirect(url_for("core.tasks"))
+
+
 @bp.route("/tools/category-optimize", methods=["GET", "POST"])
 def category_optimize():
-    """模型优化分类结构：同义合并 + 单级分类补全父级"""
+    """模型优化分类结构：同义合并 + 单级分类补全父级
+
+    支持两种数据来源：
+    - 表格文件（file）：读取 .xlsx/.csv，优化结果另存 _optimized 文件
+    - 数据库（database）：直接优化已清洗未导出（clean_status=cleaned 且
+      export_status=unexported）数据的分类字段，写入状态标识
+    """
     if request.method == "GET":
         return render_template("category_optimize.html")
 
     try:
+        data_source = request.form.get("data_source", "file").strip() or "file"
+        if data_source == "database":
+            return _category_optimize_database()
+
         file_path = request.form.get("file_path", "").strip()
         category_field = request.form.get("category_field", "Categories").strip()
 

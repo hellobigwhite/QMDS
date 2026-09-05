@@ -116,6 +116,14 @@ CLEAN_STATUS_FAILED = "failed"        # 清洗失败
 EXPORT_STATUS_UNEXPORTED = "unexported"  # 未导出
 EXPORT_STATUS_EXPORTED = "exported"      # 已导出
 
+# 分类数据处理状态（低频合并等分类处理步骤，作用于已清洗未导出数据）
+CATEGORY_STATUS_UNPROCESSED = "unprocessed"  # 未处理
+CATEGORY_STATUS_PROCESSED = "processed"      # 已处理
+
+# 模型优化分类状态（LLM 同义合并/补全父级，作用于已清洗未导出数据）
+OPTIMIZE_STATUS_UNOPTIMIZED = "unoptimized"  # 未优化
+OPTIMIZE_STATUS_OPTIMIZED = "optimized"      # 已优化
+
 # 单次 $in / update_many 批量操作的最大文档数（过大的批量会使 mongod 内存剧烈尖峰，曾导致 OOM 崩溃）
 DB_BATCH_SIZE = 500
 
@@ -199,6 +207,9 @@ class ProductDBClient:
     - 文档通过 clean_status / export_status 字段区分状态：
         clean_status: unclean | cleaned | failed
         export_status: unexported | exported
+    - 分类处理/模型优化 状态标识（作用于"已清洗未导出"数据）：
+        category_process_status: unprocessed | processed（分类数据处理）
+        optimize_status: unoptimized | optimized（模型优化分类）
     - 无二级分类时使用 "other" 作为 subcategory
     """
 
@@ -282,6 +293,33 @@ class ProductDBClient:
             upsert=True,
         )
 
+    def _dec_pool_status_counters(self, prefix: str, category: str, subcategory: str,
+                                  cat_processed: int, optimized: int):
+        """文档离开"已清洗未导出"池（导出/删除/重置清洗状态）时，扣减状态标识计数
+
+        category_processed / optimized 计数口径为"已清洗未导出且已标记"的文档数。
+        计数器文档缺少对应字段时（旧计数器未含新口径），改为整集合重建，
+        避免 $inc 对缺失字段产生负数。
+        """
+        if cat_processed <= 0 and optimized <= 0:
+            return
+        doc = self._counters_col().find_one(
+            {"_id": prefix},
+            {"counts.category_processed": 1, "counts.optimized": 1, "_id": 0}
+        )
+        counts = (doc or {}).get("counts", {}) or {}
+        if (cat_processed > 0 and "category_processed" not in counts) or \
+                (optimized > 0 and "optimized" not in counts):
+            self._rebuild_single_product_counter(category, subcategory)
+            return
+        incs = {}
+        if cat_processed > 0:
+            incs["category_processed"] = -cat_processed
+        if optimized > 0:
+            incs["optimized"] = -optimized
+        self._set_counter_type(prefix, "product", category, normalize_subcategory(subcategory))
+        self._inc_counters(prefix, incs)
+
     def _rebuild_single_product_counter(self, category: str, subcategory: str = ""):
         """重建单个产品集合的计数器（用 aggregate $group 统计，覆盖写入 _counters）
 
@@ -305,6 +343,10 @@ class ProductDBClient:
             export_counts[status] = doc["count"]
 
         # 合并到 counts：clean_status 用原名，export 加前缀避免冲突
+        base_pool = {
+            "clean_status": CLEAN_STATUS_CLEANED,
+            "export_status": EXPORT_STATUS_UNEXPORTED,
+        }
         counts = {
             CLEAN_STATUS_UNCLEAN: clean_counts.get(CLEAN_STATUS_UNCLEAN, 0),
             CLEAN_STATUS_CLEANED: clean_counts.get(CLEAN_STATUS_CLEANED, 0),
@@ -312,10 +354,12 @@ class ProductDBClient:
             "exported": export_counts.get(EXPORT_STATUS_EXPORTED, 0),
             "unexported": export_counts.get(EXPORT_STATUS_UNEXPORTED, 0),
             # 页面“未导出”必须与实际导出查询完全一致，而不是所有状态的 unexported 总数。
-            "exportable": col.count_documents({
-                "clean_status": CLEAN_STATUS_CLEANED,
-                "export_status": EXPORT_STATUS_UNEXPORTED,
-            }),
+            "exportable": col.count_documents(base_pool),
+            # 分类数据处理 / 模型优化 状态标识：统计“已清洗未导出”池中已处理/已优化的数量
+            "category_processed": col.count_documents({**base_pool,
+                "category_process_status": CATEGORY_STATUS_PROCESSED}),
+            "optimized": col.count_documents({**base_pool,
+                "optimize_status": OPTIMIZE_STATUS_OPTIMIZED}),
         }
         total = sum(clean_counts.values()) if clean_counts else col.estimated_document_count()
 
@@ -460,6 +504,18 @@ class ProductDBClient:
         col.create_index(
             [("clean_status", ASCENDING), ("export_status", ASCENDING)],
             name="idx_clean_export_status",
+        )
+
+        # 分类数据处理 / 模型优化分类 状态标识索引（用于已清洗未导出数据的状态统计与查询）
+        col.create_index(
+            [("clean_status", ASCENDING), ("export_status", ASCENDING),
+             ("category_process_status", ASCENDING)],
+            name="idx_clean_export_category_status",
+        )
+        col.create_index(
+            [("clean_status", ASCENDING), ("export_status", ASCENDING),
+             ("optimize_status", ASCENDING)],
+            name="idx_clean_export_optimize_status",
         )
 
         # 标题索引（用于导出查询）
@@ -807,13 +863,18 @@ class ProductDBClient:
         if sku_generated_count:
             log.info(f"[{prefix}] 已生成 {sku_generated_count} 个新 SKU")
 
-        # 更新通过的为 cleaned
+        # 更新通过的为 cleaned（重新清洗会重写分类字段，状态标识同时重置为未处理/未优化）
         if passed_keys:
             for i in range(0, len(passed_keys), DB_BATCH_SIZE):
                 batch = passed_keys[i:i + DB_BATCH_SIZE]
                 col.update_many(
                     {"unique_key": {"$in": batch}},
-                    {"$set": {"clean_status": CLEAN_STATUS_CLEANED, "clean_time": clean_time}}
+                    {"$set": {
+                        "clean_status": CLEAN_STATUS_CLEANED,
+                        "clean_time": clean_time,
+                        "category_process_status": CATEGORY_STATUS_UNPROCESSED,
+                        "optimize_status": OPTIMIZE_STATUS_UNOPTIMIZED,
+                    }}
                 )
 
         # 更新未通过的为 failed
@@ -951,6 +1012,8 @@ class ProductDBClient:
                 "unclean_count": counts.get(CLEAN_STATUS_UNCLEAN, 0),
                 "cleaned_count": counts.get(CLEAN_STATUS_CLEANED, 0),
                 "failed_count": counts.get(CLEAN_STATUS_FAILED, 0),
+                "category_processed_count": counts.get("category_processed", 0),
+                "optimized_count": counts.get("optimized", 0),
             }
 
         # 回退：实时 aggregate（计数器缺失时）
@@ -962,6 +1025,10 @@ class ProductDBClient:
         export_pipeline = [{"$group": {"_id": "$export_status", "count": {"$sum": 1}}}]
         export_counts = {doc["_id"]: doc["count"] for doc in col.aggregate(export_pipeline)}
 
+        base_pool = {
+            "clean_status": CLEAN_STATUS_CLEANED,
+            "export_status": EXPORT_STATUS_UNEXPORTED,
+        }
         return {
             "category": category,
             "subcategory": normalize_subcategory(subcategory),
@@ -969,13 +1036,14 @@ class ProductDBClient:
             "raw_count": total_count,  # 集合总数
             "clean_count": status_counts.get(CLEAN_STATUS_CLEANED, 0),
             "exported_count": export_counts.get(EXPORT_STATUS_EXPORTED, 0),
-            "unexported_count": col.count_documents({
-                "clean_status": CLEAN_STATUS_CLEANED,
-                "export_status": EXPORT_STATUS_UNEXPORTED,
-            }),
+            "unexported_count": col.count_documents(base_pool),
             "unclean_count": status_counts.get(CLEAN_STATUS_UNCLEAN, 0),
             "cleaned_count": status_counts.get(CLEAN_STATUS_CLEANED, 0),
-            "failed_count": status_counts.get(CLEAN_STATUS_FAILED, 0)
+            "failed_count": status_counts.get(CLEAN_STATUS_FAILED, 0),
+            "category_processed_count": col.count_documents({**base_pool,
+                "category_process_status": CATEGORY_STATUS_PROCESSED}),
+            "optimized_count": col.count_documents({**base_pool,
+                "optimize_status": OPTIMIZE_STATUS_OPTIMIZED}),
         }
 
     def get_simple_category_stats(self, category: str, subcategory: str = "") -> Dict[str, int]:
@@ -989,7 +1057,8 @@ class ProductDBClient:
         doc = self._counters_col().find_one(
             {"_id": prefix},
             {"total": 1, "counts.cleaned": 1, "counts.unclean": 1,
-             "counts.exportable": 1, "counts.exported": 1, "_id": 0}
+             "counts.exportable": 1, "counts.exported": 1,
+             "counts.category_processed": 1, "counts.optimized": 1, "_id": 0}
         )
         if doc:
             counts = doc.get("counts", {}) or {}
@@ -998,16 +1067,23 @@ class ProductDBClient:
             unclean_count = counts.get("unclean", 0)
             # exportable = 已清洗且未导出（导出流程 _inc_counters 维护）
             unexported_count = counts.get("exportable", 0)
+            category_processed_count = counts.get("category_processed", 0)
+            optimized_count = counts.get("optimized", 0)
         else:
             # 回退：estimated_document_count + count_documents（计数器缺失时）
             col = self.collection(category, subcategory)
             total = col.estimated_document_count()
             clean_count = col.count_documents({"clean_status": CLEAN_STATUS_CLEANED})
             unclean_count = col.count_documents({"clean_status": CLEAN_STATUS_UNCLEAN})
-            unexported_count = col.count_documents({
+            base_pool = {
                 "clean_status": CLEAN_STATUS_CLEANED,
                 "export_status": EXPORT_STATUS_UNEXPORTED,
-            })
+            }
+            unexported_count = col.count_documents(base_pool)
+            category_processed_count = col.count_documents({**base_pool,
+                "category_process_status": CATEGORY_STATUS_PROCESSED})
+            optimized_count = col.count_documents({**base_pool,
+                "optimize_status": OPTIMIZE_STATUS_OPTIMIZED})
         return {
             "category": category,
             "subcategory": normalize_subcategory(subcategory),
@@ -1016,6 +1092,8 @@ class ProductDBClient:
             "clean_count": clean_count,
             "unclean_count": unclean_count,
             "unexported_count": unexported_count,
+            "category_processed_count": category_processed_count,
+            "optimized_count": optimized_count,
         }
 
     def get_unclean_products(self, category: str, subcategory: str = "", limit: Optional[int] = None) -> List[Dict]:
@@ -1067,6 +1145,16 @@ class ProductDBClient:
             "clean_status": CLEAN_STATUS_CLEANED,
             "export_status": EXPORT_STATUS_UNEXPORTED,
         })
+        reset_cat_processed = col.count_documents({
+            "clean_status": CLEAN_STATUS_CLEANED,
+            "export_status": EXPORT_STATUS_UNEXPORTED,
+            "category_process_status": CATEGORY_STATUS_PROCESSED,
+        })
+        reset_optimized = col.count_documents({
+            "clean_status": CLEAN_STATUS_CLEANED,
+            "export_status": EXPORT_STATUS_UNEXPORTED,
+            "optimize_status": OPTIMIZE_STATUS_OPTIMIZED,
+        })
         result = col.update_many(
             {"clean_status": {"$ne": CLEAN_STATUS_UNCLEAN}},
             {"$set": {"clean_status": CLEAN_STATUS_UNCLEAN, "clean_time": None}}
@@ -1080,6 +1168,9 @@ class ProductDBClient:
                     "exportable": -reset_exportable}
             self._set_counter_type(prefix, "product", category, normalize_subcategory(subcategory))
             self._inc_counters(prefix, incs)
+            # 重置后文档离开"已清洗未导出"池，同步扣减状态标识计数
+            self._dec_pool_status_counters(prefix, category, subcategory,
+                                           reset_cat_processed, reset_optimized)
         self._stats_cache.invalidate()
         return modified
 
@@ -1100,6 +1191,16 @@ class ProductDBClient:
             "clean_status": CLEAN_STATUS_CLEANED,
             "export_status": EXPORT_STATUS_UNEXPORTED,
         })
+        del_cat_processed = col.count_documents({
+            "clean_status": CLEAN_STATUS_CLEANED,
+            "export_status": EXPORT_STATUS_UNEXPORTED,
+            "category_process_status": CATEGORY_STATUS_PROCESSED,
+        })
+        del_optimized = col.count_documents({
+            "clean_status": CLEAN_STATUS_CLEANED,
+            "export_status": EXPORT_STATUS_UNEXPORTED,
+            "optimize_status": OPTIMIZE_STATUS_OPTIMIZED,
+        })
         result = col.delete_many({"clean_status": {"$in": [CLEAN_STATUS_CLEANED, CLEAN_STATUS_FAILED]}})
         deleted = result.deleted_count
         # 同步 _counters：各状态减少对应数量，total 减少实际删除数
@@ -1111,6 +1212,9 @@ class ProductDBClient:
                     "exportable": -del_exportable}
             self._set_counter_type(prefix, "product", category, normalize_subcategory(subcategory))
             self._inc_counters(prefix, incs, doc_delta=-deleted)
+            # 删除后文档离开"已清洗未导出"池，同步扣减状态标识计数
+            self._dec_pool_status_counters(prefix, category, subcategory,
+                                           del_cat_processed, del_optimized)
         self._stats_cache.invalidate()
         return deleted
 
@@ -1130,6 +1234,8 @@ class ProductDBClient:
         total_unclean = 0
         total_cleaned = 0
         total_failed = 0
+        total_category_processed = 0
+        total_optimized = 0
         category_stats = []
 
         for item in cat_list:
@@ -1141,6 +1247,8 @@ class ProductDBClient:
             total_unclean += stats.get("unclean_count", 0)
             total_cleaned += stats.get("cleaned_count", 0)
             total_failed += stats.get("failed_count", 0)
+            total_category_processed += stats.get("category_processed_count", 0)
+            total_optimized += stats.get("optimized_count", 0)
 
         result = {
             "total_categories": len(cat_list),
@@ -1150,6 +1258,8 @@ class ProductDBClient:
             "total_unclean": total_unclean,
             "total_cleaned": total_cleaned,
             "total_failed": total_failed,
+            "total_category_processed": total_category_processed,
+            "total_optimized": total_optimized,
             "categories": category_stats
         }
 
@@ -1213,9 +1323,15 @@ class ProductDBClient:
         # 只保留指定的导出字段（BB 兼容列映射）
         rows = []
         exported_ids = []
+        exported_cat_processed = 0
+        exported_optimized = 0
         for doc in products:
             row = _sanitize_export_row(_build_export_row(doc))
             rows.append(row)
+            if doc.get("category_process_status") == CATEGORY_STATUS_PROCESSED:
+                exported_cat_processed += 1
+            if doc.get("optimize_status") == OPTIMIZE_STATUS_OPTIMIZED:
+                exported_optimized += 1
             if doc.get("_id"):
                 exported_ids.append(doc["_id"])
 
@@ -1252,6 +1368,9 @@ class ProductDBClient:
             self._set_counter_type(prefix, "product", category, normalize_subcategory(subcategory))
             self._inc_counters(prefix, {"unexported": -marked, "exported": marked,
                                          "exportable": -marked})
+            # 已导出文档离开"已清洗未导出"池，同步扣减状态标识计数
+            self._dec_pool_status_counters(prefix, category, subcategory,
+                                           exported_cat_processed, exported_optimized)
 
         self._stats_cache.invalidate()
         log.info(f"导出Excel: {filepath} ({len(rows)} 条)，已标记为已导出")
@@ -1291,6 +1410,8 @@ class ProductDBClient:
         # 记录每个二级分类参与导出的文档 _id，用于后续标记
         # 结构: {prefix: [_id, _id, ...]}
         exported_ids_by_prefix: Dict[str, list] = {}
+        # 记录每个二级分类参与导出文档中已标记状态的数量，用于同步计数器
+        exported_status_counts: Dict[str, Dict[str, int]] = {}
 
         for idx, item in enumerate(sub_items):
             sub = item["subcategory"]
@@ -1311,13 +1432,23 @@ class ProductDBClient:
 
             sub_count += 1
             ids = []
+            cat_processed_cnt = 0
+            optimized_cnt = 0
             for doc in docs:
                 row = _sanitize_export_row(_build_export_row(doc))
                 all_rows.append(row)
+                if doc.get("category_process_status") == CATEGORY_STATUS_PROCESSED:
+                    cat_processed_cnt += 1
+                if doc.get("optimize_status") == OPTIMIZE_STATUS_OPTIMIZED:
+                    optimized_cnt += 1
                 if doc.get("_id"):
                     ids.append(doc["_id"])
             if ids:
                 exported_ids_by_prefix[prefix] = ids
+                exported_status_counts[prefix] = {
+                    "category_processed": cat_processed_cnt,
+                    "optimized": optimized_cnt,
+                }
 
             if progress_callback:
                 progress_callback(idx + 1, len(sub_items))
@@ -1368,6 +1499,12 @@ class ProductDBClient:
                 self._set_counter_type(prefix, "product", cat, normalize_subcategory(sub))
                 self._inc_counters(prefix, {"unexported": -prefix_marked, "exported": prefix_marked,
                                              "exportable": -prefix_marked})
+                # 已导出文档离开"已清洗未导出"池，同步扣减状态标识计数
+                status_cnt = exported_status_counts.get(prefix, {})
+                self._dec_pool_status_counters(
+                    prefix, cat, sub,
+                    status_cnt.get("category_processed", 0),
+                    status_cnt.get("optimized", 0))
 
         self._stats_cache.invalidate()
         log.info(f"合并导出Excel: {filepath} ({len(df)} 条，去重 {dedup_count} 条，"
@@ -1411,8 +1548,9 @@ class ProductDBClient:
         （无效分类名清理：simple / undefined / 纯数字 已在数据清洗操作 clean_category
         中处理，此处不再重复。）
 
-        仅更新"分类"字段，不改变 clean_status / export_status，不增删文档，
-        因此 _counters 无需同步（完成后 invalidate 统计缓存即可）。
+        状态标识：范围内所有"已清洗未导出"文档写入 category_process_status=processed
+        （含本次未发生合并的文档，表示已纳入本次分类数据处理），同步 _counters 的
+        category_processed 计数；不改变 clean_status / export_status，不增删文档。
 
         Args:
             cat_list: [(category, subcategory), ...] 待处理的集合列表
@@ -1423,9 +1561,10 @@ class ProductDBClient:
 
         Returns:
             {"processed": 全局遍历条数, "modified_rows": 全局修改行数,
+             "status_marked": 全局新标记 processed 的行数,
              "category_count_before": 全局修改前分类数, "category_count_after": 全局修改后分类数,
              "merged": [(cat, global_count, new_cat), ...],
-             "collections": [{"category", "subcategory", "processed", "modified_rows"}, ...]}
+             "collections": [{"category", "subcategory", "modified_rows", "status_marked"}, ...]}
         """
         from collections import Counter
 
@@ -1437,7 +1576,7 @@ class ProductDBClient:
             "clean_status": CLEAN_STATUS_CLEANED,
             "export_status": EXPORT_STATUS_UNEXPORTED,
         }
-        projection = {"分类": 1}
+        projection = {"分类": 1, "category_process_status": 1}
 
         def _check_stopped():
             if stop_event is not None and stop_event.is_set():
@@ -1464,7 +1603,7 @@ class ProductDBClient:
 
         if total_processed == 0:
             self._stats_cache.invalidate()
-            return {"processed": 0, "modified_rows": 0,
+            return {"processed": 0, "modified_rows": 0, "status_marked": 0,
                     "category_count_before": 0, "category_count_after": 0,
                     "merged": [], "collections": []}
 
@@ -1480,17 +1619,13 @@ class ProductDBClient:
             idx += 1
 
         if not mapping:
-            self._stats_cache.invalidate()
-            return {"processed": total_processed, "modified_rows": 0,
-                    "category_count_before": len([c for c in counts if c]),
-                    "category_count_after": len([c for c in counts if c]),
-                    "merged": [],
-                    "collections": [{"category": c, "subcategory": s,
-                                     "processed": 0, "modified_rows": 0}
-                                    for c, s in cat_list]}
+            # 无需合并，但仍继续走写回流程：为范围内未标记的文档补状态标识
+            pass
 
-        # 3) 逐集合分批写回"分类"字段（同时增量统计全局修改后的分类数）
+        # 3) 逐集合分批写回"分类"字段 + 状态标识（同时增量统计全局修改后的分类数）
+        now = datetime.utcnow().isoformat()
         total_modified = 0
+        total_marked = 0
         after_counts = Counter()
         collections_detail = []
         for col_idx, (category, subcategory) in enumerate(cat_list):
@@ -1498,22 +1633,35 @@ class ProductDBClient:
             col = self.collection(category, subcategory)
             pending = []
             modified_rows = 0
+            status_marked = 0
             cursor = col.find(query, projection).batch_size(2000)
             for doc in cursor:
                 _check_stopped()
                 cat = doc.get("分类")
-                if not cat:
-                    continue
-                cat_str = str(cat)
-                new_cat = mapping.get(cat_str)
-                if new_cat is None or new_cat == cat_str:
-                    after_counts[cat_str] += 1
-                    continue
-                pending.append(UpdateOne({"_id": doc["_id"]}, {"$set": {"分类": new_cat}}))
-                after_counts[new_cat] += 1
+                cat_str = str(cat) if cat else ""
+                new_cat = mapping.get(cat_str) if cat_str else None
+                need_mark = doc.get("category_process_status") != CATEGORY_STATUS_PROCESSED
+                if new_cat is not None and new_cat != cat_str:
+                    # 低频合并：改写分类并标记状态
+                    set_doc = {"分类": new_cat,
+                               "category_process_status": CATEGORY_STATUS_PROCESSED,
+                               "category_process_time": now}
+                    pending.append(UpdateOne({"_id": doc["_id"]}, {"$set": set_doc}))
+                    modified_rows += 1
+                    if need_mark:
+                        status_marked += 1
+                    after_counts[new_cat] += 1
+                else:
+                    # 分类不变：仅补状态标识（已标记过的跳过，避免重复写）
+                    if cat_str:
+                        after_counts[cat_str] += 1
+                    if need_mark:
+                        set_doc = {"category_process_status": CATEGORY_STATUS_PROCESSED,
+                                   "category_process_time": now}
+                        pending.append(UpdateOne({"_id": doc["_id"]}, {"$set": set_doc}))
+                        status_marked += 1
                 if len(pending) >= DB_BATCH_SIZE:
-                    result = col.bulk_write(pending, ordered=False)
-                    modified_rows += result.modified_count
+                    col.bulk_write(pending, ordered=False)
                     pending = []
                     if progress_callback:
                         progress_callback({
@@ -1521,14 +1669,19 @@ class ProductDBClient:
                             "progress": int((col_idx + 1) / len(cat_list) * 100),
                         })
             if pending:
-                result = col.bulk_write(pending, ordered=False)
-                modified_rows += result.modified_count
+                col.bulk_write(pending, ordered=False)
+                pending = []
             total_modified += modified_rows
+            total_marked += status_marked
             collections_detail.append({
                 "category": category,
                 "subcategory": subcategory,
                 "modified_rows": modified_rows,
+                "status_marked": status_marked,
             })
+            # 有写入则重建该集合计数器（含 category_processed 口径，避免增量漂移）
+            if modified_rows or status_marked:
+                self._rebuild_single_product_counter(category, subcategory)
             if progress_callback:
                 progress_callback({
                     "message": f"[{prefix}] 写回完成（{col_idx + 1}/{len(cat_list)}）",
@@ -1545,8 +1698,160 @@ class ProductDBClient:
         return {
             "processed": total_processed,
             "modified_rows": total_modified,
+            "status_marked": total_marked,
             "category_count_before": len([c for c in counts if c]),
             "category_count_after": len([c for c in after_counts if c]),
             "merged": merged,
+            "collections": collections_detail,
+        }
+
+    # ── 模型优化分类（已清洗未导出） ─────────────────────────
+
+    def optimize_category_data_global(self, cat_list: List[tuple],
+                                       log_callback=None,
+                                       progress_callback=None,
+                                       stop_event: Optional[threading.Event] = None,
+                                       site_db=None) -> Dict[str, Any]:
+        """模型优化分类（数据库版）：对多个集合中"已清洗且未导出"数据的分类字段调用 LLM 优化
+
+        规则与表格版（tools/category-optimize 文件模式）一致：同义分类统一为单一标准
+        表达、单级分类补全直接父级（||| 分隔、最多两级），21个一级大类保持不变。
+
+        状态标识：范围内所有"已清洗未导出"文档写入 optimize_status=optimized
+        （含映射未命中的文档，表示已纳入本次模型优化），同步 _counters 的 optimized
+        计数；不改变 clean_status / export_status，不增删文档。
+
+        Args:
+            cat_list: [(category, subcategory), ...] 待处理的集合列表
+            log_callback: 日志回调 fn(message, level)
+            progress_callback: 进度回调（接收 dict 或 str）
+            stop_event: 停止事件（设置后抛 InterruptedError）
+            site_db: SiteDBClient，用于读取 LLM 模型配置（可选）
+
+        Returns:
+            {"processed": 全局遍历条数, "unique_categories": 唯一分类数,
+             "mappings_count": 有效映射数, "modified_rows": 全局修改行数,
+             "status_marked": 全局新标记 optimized 的行数,
+             "mappings": {原分类: 新分类},
+             "collections": [{"category", "subcategory", "modified_rows", "status_marked"}, ...]}
+        """
+        def _log(msg, level="info"):
+            if log_callback:
+                log_callback(msg, level)
+
+        def _check_stopped():
+            if stop_event is not None and stop_event.is_set():
+                raise InterruptedError("任务被用户停止")
+
+        query = {
+            "clean_status": CLEAN_STATUS_CLEANED,
+            "export_status": EXPORT_STATUS_UNEXPORTED,
+        }
+
+        # 1) 跨集合收集唯一分类（流式游标避免 OOM）
+        unique_cats = set()
+        total_processed = 0
+        for col_idx, (category, subcategory) in enumerate(cat_list):
+            prefix = make_collection_prefix(category, subcategory)
+            col = self.collection(category, subcategory)
+            cursor = col.find(query, {"分类": 1}).batch_size(2000)
+            for doc in cursor:
+                _check_stopped()
+                total_processed += 1
+                cat = doc.get("分类")
+                if cat:
+                    unique_cats.add(str(cat))
+            if progress_callback:
+                progress_callback({
+                    "message": f"[{prefix}] 分类收集完成（{col_idx + 1}/{len(cat_list)}）",
+                    "progress": int((col_idx + 1) / len(cat_list) * 50),
+                })
+
+        if total_processed == 0:
+            self._stats_cache.invalidate()
+            return {"processed": 0, "unique_categories": 0, "mappings_count": 0,
+                    "modified_rows": 0, "status_marked": 0, "mappings": {},
+                    "collections": []}
+
+        # 2) 调用 LLM 构建优化映射（预过滤/参考路径/分批/校验与文件模式共用）
+        _log(f"已清洗未导出 {total_processed} 条，唯一分类 {len(unique_cats)} 个")
+        if progress_callback:
+            progress_callback({"message": "正在调用模型构建分类优化映射...", "progress": 50})
+
+        from qmds.utils.category_optimizer import build_optimize_mappings
+        valid_mappings = build_optimize_mappings(sorted(unique_cats), log_callback, site_db=site_db)
+        _check_stopped()
+        _log(f"模型返回有效映射 {len(valid_mappings)} 个")
+
+        # 3) 逐集合分批写回优化后分类 + 状态标识
+        now = datetime.utcnow().isoformat()
+        total_modified = 0
+        total_marked = 0
+        collections_detail = []
+        for col_idx, (category, subcategory) in enumerate(cat_list):
+            prefix = make_collection_prefix(category, subcategory)
+            col = self.collection(category, subcategory)
+            pending = []
+            modified_rows = 0
+            status_marked = 0
+            cursor = col.find(query, {"分类": 1, "optimize_status": 1}).batch_size(2000)
+            for doc in cursor:
+                _check_stopped()
+                cat = doc.get("分类")
+                cat_str = str(cat) if cat else ""
+                new_cat = valid_mappings.get(cat_str) if cat_str else None
+                need_mark = doc.get("optimize_status") != OPTIMIZE_STATUS_OPTIMIZED
+                if new_cat is not None and new_cat != cat_str:
+                    # 命中映射：改写分类并标记状态
+                    set_doc = {"分类": new_cat,
+                               "optimize_status": OPTIMIZE_STATUS_OPTIMIZED,
+                               "optimize_time": now}
+                    pending.append(UpdateOne({"_id": doc["_id"]}, {"$set": set_doc}))
+                    modified_rows += 1
+                    if need_mark:
+                        status_marked += 1
+                elif need_mark:
+                    # 映射未命中：仅补状态标识（已标记过的跳过，避免重复写）
+                    set_doc = {"optimize_status": OPTIMIZE_STATUS_OPTIMIZED,
+                               "optimize_time": now}
+                    pending.append(UpdateOne({"_id": doc["_id"]}, {"$set": set_doc}))
+                    status_marked += 1
+                if len(pending) >= DB_BATCH_SIZE:
+                    col.bulk_write(pending, ordered=False)
+                    pending = []
+                    if progress_callback:
+                        progress_callback({
+                            "message": f"[{prefix}] 已更新 {modified_rows} 条...",
+                            "progress": 50 + int((col_idx + 1) / len(cat_list) * 50),
+                        })
+            if pending:
+                col.bulk_write(pending, ordered=False)
+                pending = []
+            total_modified += modified_rows
+            total_marked += status_marked
+            collections_detail.append({
+                "category": category,
+                "subcategory": subcategory,
+                "modified_rows": modified_rows,
+                "status_marked": status_marked,
+            })
+            # 有写入则重建该集合计数器（含 optimized 口径，避免增量漂移）
+            if modified_rows or status_marked:
+                self._rebuild_single_product_counter(category, subcategory)
+            if progress_callback:
+                progress_callback({
+                    "message": f"[{prefix}] 写回完成（{col_idx + 1}/{len(cat_list)}）",
+                    "progress": 50 + int((col_idx + 1) / len(cat_list) * 50),
+                })
+
+        self._stats_cache.invalidate()
+
+        return {
+            "processed": total_processed,
+            "unique_categories": len(unique_cats),
+            "mappings_count": len(valid_mappings),
+            "modified_rows": total_modified,
+            "status_marked": total_marked,
+            "mappings": valid_mappings,
             "collections": collections_detail,
         }

@@ -372,6 +372,76 @@ def _validate_mappings(mappings: dict, log_callback=None) -> tuple[dict, list]:
 
 # ── 核心优化函数 ─────────────────────────────────────
 
+def build_optimize_mappings(
+    unique_cats: list[str],
+    log_callback=None,
+    site_db=None,
+) -> dict:
+    """对给定唯一分类列表构建 LLM 优化映射（表格文件与数据库两种入口共用）
+
+    流程：本地预过滤排除21个一级大类 -> 构建 Google 参考路径 -> 分批调用 LLM
+    （跨批保持同义统一表达）-> 校验/归一化映射。
+
+    Args:
+        unique_cats: 唯一分类字符串列表
+        log_callback: 日志回调函数 (message, level)
+        site_db: SiteDBClient，用于读取 LLM 模型配置（可选）
+
+    Returns:
+        有效映射字典 {原分类: 优化后分类}；无需优化时返回空字典
+    """
+    def _log(msg, level="info"):
+        log.info(msg) if level == "info" else log.warning(msg)
+        if log_callback:
+            log_callback(msg, level)
+
+    # 本地预过滤：排除21个一级分类
+    to_optimize = [c for c in unique_cats if str(c).strip() not in _TOP_CATEGORIES]
+    skipped_top = len(unique_cats) - len(to_optimize)
+    _log(f"本地预过滤: 排除 {skipped_top} 个一级大类，待优化 {len(to_optimize)} 个")
+
+    if not to_optimize:
+        _log("无需优化，所有分类均为一级大类")
+        return {}
+
+    # 构建参考路径
+    reference_paths = build_reference_paths()
+    _log(f"参考路径: {len(reference_paths)} 条")
+
+    # 分批调用
+    all_mappings = {}
+    confirmed_expressions = {}
+
+    if len(to_optimize) <= BATCH_SIZE:
+        _log(f"一次性调用模型，共 {len(to_optimize)} 个分类")
+        mappings = _call_llm_optimize(to_optimize, reference_paths, log_callback=log_callback, site_db=site_db)
+        all_mappings.update(mappings)
+        # 收集单级分类的统一表达，用于跨批一致性
+        for orig, optimized in mappings.items():
+            if "|||" not in orig and "|||" not in optimized:
+                confirmed_expressions[orig] = optimized
+    else:
+        batches = [to_optimize[i:i + BATCH_SIZE] for i in range(0, len(to_optimize), BATCH_SIZE)]
+        _log(f"分批调用，共 {len(batches)} 批，每批最多 {BATCH_SIZE} 个")
+        for idx, batch in enumerate(batches):
+            _log(f"批次 {idx+1}/{len(batches)}: {len(batch)} 个分类")
+            mappings = _call_llm_optimize(
+                batch, reference_paths,
+                confirmed_expressions=confirmed_expressions if confirmed_expressions else None,
+                log_callback=log_callback,
+                site_db=site_db,
+            )
+            all_mappings.update(mappings)
+            for orig, optimized in mappings.items():
+                if "|||" not in orig and "|||" not in optimized:
+                    confirmed_expressions[orig] = optimized
+            _log(f"批次 {idx+1} 完成，累计映射 {len(all_mappings)} 个")
+
+    # 校验映射
+    valid_mappings, skipped = _validate_mappings(all_mappings, log_callback)
+    return valid_mappings
+
+
 def optimize_dataframe(
     df: pd.DataFrame,
     category_col: Optional[str] = None,
@@ -409,50 +479,11 @@ def optimize_dataframe(
     unique_cats = df[category_col].dropna().astype(str).unique().tolist()
     _log(f"唯一分类数: {len(unique_cats)}")
 
-    # 本地预过滤：排除21个一级分类
-    to_optimize = [c for c in unique_cats if c.strip() not in _TOP_CATEGORIES]
-    skipped_top = len(unique_cats) - len(to_optimize)
-    _log(f"本地预过滤: 排除 {skipped_top} 个一级大类，待优化 {len(to_optimize)} 个")
+    # 构建优化映射（预过滤/参考路径/分批调用/校验 与数据库入口共用）
+    valid_mappings = build_optimize_mappings(unique_cats, log_callback, site_db=site_db)
 
-    if not to_optimize:
-        _log("无需优化，所有分类均为一级大类")
+    if not valid_mappings:
         return df, {}
-
-    # 构建参考路径
-    reference_paths = build_reference_paths()
-    _log(f"参考路径: {len(reference_paths)} 条")
-
-    # 分批调用
-    all_mappings = {}
-    confirmed_expressions = {}
-
-    if len(to_optimize) <= BATCH_SIZE:
-        _log(f"一次性调用模型，共 {len(to_optimize)} 个分类")
-        mappings = _call_llm_optimize(to_optimize, reference_paths, log_callback=log_callback, site_db=site_db)
-        all_mappings.update(mappings)
-        # 收集单级分类的统一表达，用于跨批一致性
-        for orig, optimized in mappings.items():
-            if "|||" not in orig and "|||" not in optimized:
-                confirmed_expressions[orig] = optimized
-    else:
-        batches = [to_optimize[i:i + BATCH_SIZE] for i in range(0, len(to_optimize), BATCH_SIZE)]
-        _log(f"分批调用，共 {len(batches)} 批，每批最多 {BATCH_SIZE} 个")
-        for idx, batch in enumerate(batches):
-            _log(f"批次 {idx+1}/{len(batches)}: {len(batch)} 个分类")
-            mappings = _call_llm_optimize(
-                batch, reference_paths,
-                confirmed_expressions=confirmed_expressions if confirmed_expressions else None,
-                log_callback=log_callback,
-                site_db=site_db,
-            )
-            all_mappings.update(mappings)
-            for orig, optimized in mappings.items():
-                if "|||" not in orig and "|||" not in optimized:
-                    confirmed_expressions[orig] = optimized
-            _log(f"批次 {idx+1} 完成，累计映射 {len(all_mappings)} 个")
-
-    # 校验映射
-    valid_mappings, skipped = _validate_mappings(all_mappings, log_callback)
 
     # 应用映射
     def apply_mapping(x):

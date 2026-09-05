@@ -2,24 +2,69 @@
 {% block content %}
 <div class="card">
     <h2>🔧 模型优化分类</h2>
-    <p class="text-muted">调用AI模型优化分类结构：同义分类统一表达、单级分类补全直接父级。提交后可在任务页面查看进度和日志。</p>
+    <p class="text-muted">调用AI模型优化分类结构：同义分类统一表达、单级分类补全直接父级。支持两种数据来源：<b>表格文件</b>（优化结果保存为 _optimized 后缀文件）和<b>数据库</b>（直接优化已清洗未导出数据的分类字段，并写入 optimize_status 状态标识）。提交后可在任务页面查看进度和日志。</p>
 </div>
 
 <div class="card">
     <h3>📋 优化参数</h3>
-    <form method="POST" action="/tools/category-optimize">
+    <form method="POST" action="/tools/category-optimize" onsubmit="return confirmSubmit();">
         <div class="grid-2">
             <div>
-                <label for="file_path">表格文件路径</label>
-                <input type="text" id="file_path" name="file_path" placeholder="例如: F:\data\products.xlsx" required>
-                <small class="text-muted">支持 .xlsx / .xls / .csv 文件</small>
+                <label>数据来源</label>
+                <div style="padding: 6px 0;">
+                    <label style="margin-right: 18px; cursor: pointer;">
+                        <input type="radio" name="data_source" value="file" checked onchange="toggleSource()"> 📁 表格文件
+                    </label>
+                    <label style="cursor: pointer;">
+                        <input type="radio" name="data_source" value="database" onchange="toggleSource()"> 🗄️ 数据库（已清洗未导出）
+                    </label>
+                </div>
+                <small class="text-muted">数据库模式优化 clean_status=cleaned 且 export_status=unexported 的数据，不导出文件</small>
             </div>
-            <div>
+            <div id="file-field-box">
                 <label for="category_field">分类字段名</label>
                 <input type="text" id="category_field" name="category_field" value="Categories" required>
-                <small class="text-muted">表格中分类列的名称</small>
+                <small class="text-muted">表格中分类列的名称（仅文件模式使用）</small>
             </div>
         </div>
+
+        <div id="file-source-box">
+            <div class="grid-2">
+                <div>
+                    <label for="file_path">表格文件路径</label>
+                    <input type="text" id="file_path" name="file_path" placeholder="例如: F:\data\products.xlsx" required>
+                    <small class="text-muted">支持 .xlsx / .xls / .csv 文件</small>
+                </div>
+                <div>
+                    <label>输出说明</label>
+                    <div style="padding: 8px 0; color: #666;">
+                        <div>✓ 优化结果保存为 _optimized 后缀文件</div>
+                        <div>✓ 参考Google Product Taxonomy标准</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="db-source-box" style="display:none;">
+            <div class="grid-2">
+                <div>
+                    <label for="db_category">一级分类</label>
+                    <select id="db_category" name="category" style="width:100%;">
+                        <option value="__all__">全部一级分类</option>
+                    </select>
+                    <small class="text-muted">仅显示有已清洗未导出数据的分类（括号内为条数）</small>
+                </div>
+                <div>
+                    <label for="db_subcategory">二级分类</label>
+                    <select id="db_subcategory" name="subcategory" style="width:100%;">
+                        <option value="__all__">全部二级分类</option>
+                    </select>
+                    <small class="text-muted">优化后数据将标记为"已优化分类"（optimize_status=optimized）</small>
+                </div>
+            </div>
+            <div id="db-status-hint" class="text-muted" style="font-size: 13px; padding: 4px 0;"></div>
+        </div>
+
         <div class="grid-2">
             <div>
                 <label>优化规则</label>
@@ -28,13 +73,6 @@
                     <div>✓ 单级分类补全直接上一级作为父级</div>
                     <div>✓ 一级大类（21个）保持不变</div>
                     <div>✓ 多级分类只做同义合并</div>
-                </div>
-            </div>
-            <div>
-                <label>输出说明</label>
-                <div style="padding: 8px 0; color: #666;">
-                    <div>✓ 优化结果保存为 _optimized 后缀文件</div>
-                    <div>✓ 参考Google Product Taxonomy标准</div>
                 </div>
             </div>
         </div>
@@ -54,4 +92,123 @@
     </div>
 </div>
 {% endif %}
+
+<script>
+var dbCategories = [];
+
+function selectedSource() {
+    var radios = document.getElementsByName('data_source');
+    for (var i = 0; i < radios.length; i++) {
+        if (radios[i].checked) return radios[i].value;
+    }
+    return 'file';
+}
+
+function toggleSource() {
+    var isDb = selectedSource() === 'database';
+    document.getElementById('file-source-box').style.display = isDb ? 'none' : 'block';
+    document.getElementById('file-field-box').style.display = isDb ? 'none' : 'block';
+    document.getElementById('db-source-box').style.display = isDb ? 'block' : 'none';
+    // 文件路径仅在文件模式下必填，避免数据库模式被 required 拦截
+    document.getElementById('file_path').required = !isDb;
+    document.getElementById('category_field').required = !isDb;
+    updateDbHint();
+}
+
+function confirmSubmit() {
+    if (selectedSource() === 'database') {
+        return confirm('确定要用AI模型优化数据库中所选分类的已清洗未导出数据吗？');
+    }
+    return true;
+}
+
+function fillDbSelects() {
+    var catSelect = document.getElementById('db_category');
+    var subSelect = document.getElementById('db_subcategory');
+    while (catSelect.options.length > 1) catSelect.remove(1);
+    while (subSelect.options.length > 1) subSelect.remove(1);
+
+    // 汇总每个一级分类的已清洗未导出条数与优化状态数量
+    var catAgg = {};
+    dbCategories.forEach(function(s) {
+        var n = s.unexported_count || 0;
+        if (n > 0) {
+            if (!catAgg[s.category]) {
+                catAgg[s.category] = { unexported: 0, optimized: 0 };
+            }
+            catAgg[s.category].unexported += n;
+            catAgg[s.category].optimized += (s.optimized_count || 0);
+        }
+    });
+
+    Object.keys(catAgg).sort().forEach(function(cat) {
+        var a = catAgg[cat];
+        var opt = document.createElement('option');
+        opt.value = cat;
+        opt.textContent = cat + ' (' + a.unexported + ' 条 · 优化 ' + a.optimized + '/' + a.unexported + ')';
+        catSelect.appendChild(opt);
+    });
+
+    catSelect.onchange = function() { fillSubOptions(this.value); };
+    updateDbHint();
+}
+
+function fillSubOptions(selectedCat) {
+    var subSelect = document.getElementById('db_subcategory');
+    while (subSelect.options.length > 1) subSelect.remove(1);
+    if (selectedCat === '__all__') { updateDbHint(); return; }
+    dbCategories.forEach(function(s) {
+        if (s.category === selectedCat && (s.unexported_count || 0) > 0) {
+            var opt = document.createElement('option');
+            opt.value = s.subcategory;
+            opt.textContent = s.subcategory + ' (' + s.unexported_count + ' 条 · 优化 ' +
+                (s.optimized_count || 0) + '/' + s.unexported_count + ')';
+            subSelect.appendChild(opt);
+        }
+    });
+    updateDbHint();
+}
+
+function updateDbHint() {
+    var hint = document.getElementById('db-status-hint');
+    if (!hint) return;
+    var cat = document.getElementById('db_category').value;
+    var sub = document.getElementById('db_subcategory').value;
+    var total = 0, optimized = 0;
+    dbCategories.forEach(function(s) {
+        var match = (cat === '__all__' || s.category === cat) &&
+                    (sub === '__all__' || s.subcategory === sub);
+        if (match) {
+            total += (s.unexported_count || 0);
+            optimized += (s.optimized_count || 0);
+        }
+    });
+    if (total === 0) {
+        hint.textContent = '所选范围内暂无已清洗未导出的数据。';
+    } else {
+        hint.textContent = '所选范围: 已清洗未导出 ' + total + ' 条，其中已优化分类 ' + optimized + ' 条' +
+            (optimized < total ? '（未优化 ' + (total - optimized) + ' 条）' : '（全部已优化）') + '。';
+    }
+}
+
+function loadDbStats() {
+    fetch('/api/product-data/simple-stats')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.ok && data.data && data.data.categories) {
+                dbCategories = data.data.categories;
+                fillDbSelects();
+            }
+        })
+        .catch(function(e) {
+            console.error('加载产品数据统计失败:', e);
+        });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    toggleSource();
+    loadDbStats();
+    document.getElementById('db_subcategory').addEventListener('change', updateDbHint);
+});
+</script>
 {% endblock %}
