@@ -52,7 +52,7 @@ def is_invalid_category_name(cat_name) -> bool:
     return False
 
 
-from pymongo import MongoClient, ASCENDING, UpdateOne
+from pymongo import MongoClient, ASCENDING, UpdateOne, InsertOne
 from pymongo.errors import ConnectionFailure, BulkWriteError
 from pymongo.collection import Collection
 
@@ -61,6 +61,7 @@ from qmds.config.categories import (
     make_collection_prefix,
     parse_collection_prefix,
     normalize_subcategory,
+    SHOPIFY_TO_GOOGLE_CATEGORY,
     DEFAULT_SUBCATEGORY,
 )
 from qmds.utils.logger import get_logger
@@ -1717,9 +1718,14 @@ class ProductDBClient:
         规则与表格版（tools/category-optimize 文件模式）一致：同义分类统一为单一标准
         表达、单级分类补全直接父级（||| 分隔、最多两级），21个一级大类保持不变。
 
+        跨大类转移：映射带有效 top（所属一级大类）且与当前集合的大类不一致时，
+        该文档转移到对应大类的 other 集合（保留 _id/清洗/导出状态，写
+        optimize_moved_from 审计字段）。目标集合已存在同 unique_key 商品时跳过
+        转移（仅原地标记），避免重复商品。
+
         状态标识：范围内所有"已清洗未导出"文档写入 optimize_status=optimized
         （含映射未命中的文档，表示已纳入本次模型优化），同步 _counters 的 optimized
-        计数；不改变 clean_status / export_status，不增删文档。
+        计数；不改变 clean_status / export_status。
 
         Args:
             cat_list: [(category, subcategory), ...] 待处理的集合列表
@@ -1732,8 +1738,11 @@ class ProductDBClient:
             {"processed": 全局遍历条数, "unique_categories": 唯一分类数,
              "mappings_count": 有效映射数, "modified_rows": 全局修改行数,
              "status_marked": 全局新标记 optimized 的行数,
-             "mappings": {原分类: 新分类},
-             "collections": [{"category", "subcategory", "modified_rows", "status_marked"}, ...]}
+             "moved": 跨大类转移条数, "moved_skipped": 因目标重复跳过转移条数,
+             "moved_targets": {目标集合前缀: 转移条数},
+             "mappings": {原分类: {"optimized": 新分类, "top": 所属一级大类|None}},
+             "collections": [{"category", "subcategory", "modified_rows",
+                              "status_marked", "moved_out"}, ...]}
         """
         def _log(msg, level="info"):
             if log_callback:
@@ -1773,35 +1782,148 @@ class ProductDBClient:
                     "modified_rows": 0, "status_marked": 0, "mappings": {},
                     "collections": []}
 
-        # 2) 调用 LLM 构建优化映射（预过滤/参考路径/分批/校验与文件模式共用）
+        # 2) 调用 LLM 构建优化映射（预过滤/参考路径/分批/校验/模糊二次判定与文件模式共用）
         _log(f"已清洗未导出 {total_processed} 条，唯一分类 {len(unique_cats)} 个")
         if progress_callback:
             progress_callback({"message": "正在调用模型构建分类优化映射...", "progress": 50})
 
         from qmds.utils.category_optimizer import build_optimize_mappings
-        valid_mappings = build_optimize_mappings(sorted(unique_cats), log_callback, site_db=site_db)
+
+        def _sample_fetcher(cat: str, n: int) -> List[str]:
+            """模糊分类二次判定用：取该分类下 n 个已清洗未导出商品的文本样本
+
+            同一分类名可能出现在多个集合，按顺序从第一个能取到样本的集合采样。
+            返回 ["标题 | 描述前80字符", ...]（截断到 160 字符）
+            """
+            for category, subcategory in cat_list:
+                col = self.collection(category, subcategory)
+                cursor = col.find(
+                    {**query, "分类": cat},
+                    {"标题": 1, "描述": 1},
+                ).limit(n)
+                samples = []
+                for doc in cursor:
+                    _check_stopped()
+                    title = str(doc.get("标题") or "").strip()
+                    desc = str(doc.get("描述") or "").strip()
+                    if not title and not desc:
+                        continue
+                    frag = (title + " | " + desc[:80]) if (title and desc) else (title or desc)
+                    samples.append(frag[:160])
+                if samples:
+                    return samples
+            return []
+
+        valid_mappings = build_optimize_mappings(
+            sorted(unique_cats), log_callback, site_db=site_db,
+            sample_fetcher=_sample_fetcher)
         _check_stopped()
         _log(f"模型返回有效映射 {len(valid_mappings)} 个")
 
-        # 3) 逐集合分批写回优化后分类 + 状态标识
+        # 3) 逐集合分批写回优化后分类 + 状态标识；跨大类商品转移到对应大类集合
         now = datetime.utcnow().isoformat()
+        google_to_shopify = {v: k for k, v in SHOPIFY_TO_GOOGLE_CATEGORY.items()}
         total_modified = 0
         total_marked = 0
+        total_moved = 0
+        total_moved_skipped = 0
+        moved_targets: Dict[str, int] = {}
         collections_detail = []
+
+        def _flush_moves(moves, source_col):
+            """执行跨大类转移：按目标集合分组，目标已有同款（unique_key）则跳过。
+
+            先插入目标集合、成功后再删除源文档，保证不丢数据。
+            返回 (实际转移数, 因目标重复跳过数)。
+            """
+            moved = 0
+            skipped = 0
+            by_target: Dict[str, list] = {}
+            for doc in moves:
+                by_target.setdefault(doc.pop("_move_target"), []).append(doc)
+            for target_cat, docs in by_target.items():
+                target_col = self.collection(target_cat, "other")
+                self.ensure_product_indexes(target_cat, "other")
+                # 目标集合已存在的 unique_key（分批 $in 查询）
+                existing_keys = set()
+                keys = [d.get("unique_key") for d in docs if d.get("unique_key")]
+                for i in range(0, len(keys), DB_BATCH_SIZE):
+                    batch = keys[i:i + DB_BATCH_SIZE]
+                    for item in target_col.find(
+                            {"unique_key": {"$in": batch}}, {"unique_key": 1}):
+                        existing_keys.add(item["unique_key"])
+                insert_ops = []
+                delete_ids = []
+                for d in docs:
+                    uk = d.get("unique_key")
+                    if uk and uk in existing_keys:
+                        # 目标已有同款商品：不转移，原地写优化结果（保持数据一致）
+                        skipped += 1
+                        source_col.update_one(
+                            {"_id": d["_id"]},
+                            {"$set": {"分类": d["分类"],
+                                      "optimize_status": OPTIMIZE_STATUS_OPTIMIZED,
+                                      "optimize_time": now}},
+                        )
+                        continue
+                    insert_ops.append(InsertOne(d))
+                    delete_ids.append(d["_id"])
+                if not insert_ops:
+                    continue
+                inserted = len(insert_ops)
+                try:
+                    target_col.bulk_write(insert_ops, ordered=False)
+                except BulkWriteError as exc:
+                    # 部分插入失败：只删除成功插入的源文档，失败的保留待下次重试
+                    write_errors = exc.details.get("writeErrors", []) if exc.details else []
+                    failed_ids = set()
+                    for we in write_errors:
+                        op = we.get("op")
+                        if isinstance(op, dict) and "_id" in op:
+                            failed_ids.add(op["_id"])
+                    inserted = len(insert_ops) - len(failed_ids)
+                    _log(f"跨大类转移部分失败: 目标 {target_cat}__other "
+                         f"插入 {inserted} 条, 失败 {len(failed_ids)} 条（失败项源数据保留）",
+                         "warning")
+                    delete_ids = [i for i in delete_ids if i not in failed_ids]
+                if inserted > 0:
+                    moved += inserted
+                    moved_targets[make_collection_prefix(target_cat, "other")] = \
+                        moved_targets.get(make_collection_prefix(target_cat, "other"), 0) + inserted
+                for i in range(0, len(delete_ids), DB_BATCH_SIZE):
+                    source_col.delete_many(
+                        {"_id": {"$in": delete_ids[i:i + DB_BATCH_SIZE]}})
+            return moved, skipped
+
         for col_idx, (category, subcategory) in enumerate(cat_list):
             prefix = make_collection_prefix(category, subcategory)
             col = self.collection(category, subcategory)
             pending = []
+            pending_moves = []
             modified_rows = 0
             status_marked = 0
-            cursor = col.find(query, {"分类": 1, "optimize_status": 1}).batch_size(2000)
+            moved_out = 0
+            moved_skipped = 0
+            # 全量字段读取：跨大类转移需要完整文档
+            cursor = col.find(query).batch_size(2000)
             for doc in cursor:
                 _check_stopped()
                 cat = doc.get("分类")
                 cat_str = str(cat) if cat else ""
-                new_cat = valid_mappings.get(cat_str) if cat_str else None
+                entry = valid_mappings.get(cat_str) if cat_str else None
+                new_cat = entry["optimized"] if entry else None
+                top_google = entry.get("top") if entry else None
+                target_shopify = google_to_shopify.get(top_google) if top_google else None
                 need_mark = doc.get("optimize_status") != OPTIMIZE_STATUS_OPTIMIZED
-                if new_cat is not None and new_cat != cat_str:
+                if entry is not None and target_shopify and target_shopify != category:
+                    # 模型判定不属于当前大类：转移到对应大类的 other 集合
+                    doc["分类"] = new_cat
+                    doc["optimize_status"] = OPTIMIZE_STATUS_OPTIMIZED
+                    doc["optimize_time"] = now
+                    doc["optimize_moved_from"] = prefix
+                    doc["_move_target"] = target_shopify
+                    pending_moves.append(doc)
+                elif new_cat is not None and new_cat != cat_str:
                     # 命中映射：改写分类并标记状态
                     set_doc = {"分类": new_cat,
                                "optimize_status": OPTIMIZE_STATUS_OPTIMIZED,
@@ -1824,25 +1946,43 @@ class ProductDBClient:
                             "message": f"[{prefix}] 已更新 {modified_rows} 条...",
                             "progress": 50 + int((col_idx + 1) / len(cat_list) * 50),
                         })
+                if len(pending_moves) >= DB_BATCH_SIZE:
+                    m, s = _flush_moves(pending_moves, col)
+                    moved_out += m
+                    moved_skipped += s
+                    pending_moves = []
             if pending:
                 col.bulk_write(pending, ordered=False)
                 pending = []
+            if pending_moves:
+                m, s = _flush_moves(pending_moves, col)
+                moved_out += m
+                moved_skipped += s
+                pending_moves = []
             total_modified += modified_rows
             total_marked += status_marked
+            total_moved += moved_out
+            total_moved_skipped += moved_skipped
             collections_detail.append({
                 "category": category,
                 "subcategory": subcategory,
                 "modified_rows": modified_rows,
                 "status_marked": status_marked,
+                "moved_out": moved_out,
             })
             # 有写入则重建该集合计数器（含 optimized 口径，避免增量漂移）
-            if modified_rows or status_marked:
+            if modified_rows or status_marked or moved_out:
                 self._rebuild_single_product_counter(category, subcategory)
             if progress_callback:
                 progress_callback({
                     "message": f"[{prefix}] 写回完成（{col_idx + 1}/{len(cat_list)}）",
                     "progress": 50 + int((col_idx + 1) / len(cat_list) * 50),
                 })
+
+        # 转移目标集合的计数器重建（源集合在上面循环内已重建）
+        for target_prefix in moved_targets:
+            t_cat, t_sub = parse_collection_prefix(target_prefix)
+            self._rebuild_single_product_counter(t_cat, t_sub)
 
         self._stats_cache.invalidate()
 
@@ -1852,6 +1992,9 @@ class ProductDBClient:
             "mappings_count": len(valid_mappings),
             "modified_rows": total_modified,
             "status_marked": total_marked,
+            "moved": total_moved,
+            "moved_skipped": total_moved_skipped,
+            "moved_targets": moved_targets,
             "mappings": valid_mappings,
             "collections": collections_detail,
         }

@@ -36,19 +36,13 @@
 
 <div class="card">
     <h2>📊 分类数据处理（已清洗未导出）</h2>
-    <p class="text-muted mb-4">处理 <code>{category}__{subcategory}</code> 集合中 <code>clean_status=cleaned</code> 且 <code>export_status=unexported</code> 的数据：<b>低频分类合并</b>（所选范围内同名分类计数合并后小于阈值 → 确定性轮询归入公共类）。无效分类名（simple / undefined / 纯数字）已在<b>数据清洗</b>时清理。仅修改"分类"字段并写入状态标识 <code>category_process_status=processed</code>，不影响清洗/导出状态；各集合处理进度见下方统计的"分类处理"列。模型优化分类可在<b>工具箱 → 模型优化分类（数据库模式）</b>执行，进度见"模型优化"列。</p>
+    <p class="text-muted mb-4">处理 <code>{category}__{subcategory}</code> 集合中 <code>clean_status=cleaned</code> 且 <code>export_status=unexported</code> 的数据：<b>低频分类合并</b>（所选范围内同名分类计数合并后小于阈值 → 确定性轮询归入公共类；二级分类支持多选，所选集合作为一个整体统一统计）。无效分类名（simple / undefined / 纯数字）已在<b>数据清洗</b>时清理。仅修改"分类"字段并写入状态标识 <code>category_process_status=processed</code>，不影响清洗/导出状态；各集合处理进度见下方统计的"分类处理"列。模型优化分类可在下方<b>模型优化分类</b>卡片或<b>工具箱 → 模型优化分类（数据库模式）</b>执行，进度见"模型优化"列。</p>
     <form method="POST" action="/product-data/category-process">
-        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px;">
             <div>
                 <label for="cp_category">一级分类</label>
                 <select id="cp_category" name="category" style="width:100%;">
                     <option value="__all__">全部一级分类</option>
-                </select>
-            </div>
-            <div>
-                <label for="cp_subcategory">二级分类</label>
-                <select id="cp_subcategory" name="subcategory" style="width:100%;">
-                    <option value="__all__">全部二级分类</option>
                 </select>
             </div>
             <div>
@@ -57,10 +51,48 @@
             </div>
             <div>
                 <label for="cp_common">公共类（逗号/分号分隔）</label>
-                <input type="text" id="cp_common" name="common_category" value="Other" style="width:100%;">
+                <input type="text" id="cp_common" name="common_category" value="Hot Sale, New Arrival, Best Seller, Limited Offer, Trending, Featured, Premium, Popular, Recommended" style="width:100%;">
             </div>
         </div>
+        <div style="margin-bottom: 12px;">
+            <label for="cp_subcategory">二级分类（可多选，所选集合作为一个整体统一统计与合并）</label>
+            <select id="cp_subcategory" name="subcategory" multiple size="6" style="width:100%;">
+                <option value="__all__" selected>全部二级分类</option>
+            </select>
+            <small class="text-muted">按住 Ctrl 点击可选多个二级分类；不选具体分类时等同于"全部"</small>
+        </div>
         <button type="submit" class="btn btn-info" onclick="return confirm('确定要处理所选分类中已清洗未导出的数据吗？');">执行分类数据处理</button>
+    </form>
+</div>
+
+<div class="card">
+    <h2>🤖 模型优化分类（已清洗未导出）</h2>
+    <p class="text-muted mb-4">调用AI模型优化 <code>{category}__{subcategory}</code> 集合中 <code>clean_status=cleaned</code> 且 <code>export_status=unexported</code> 数据的分类字段（二级分类支持多选，所选集合作为一个整体统一优化）：<b>同义分类统一表达、单级分类补全直接父级</b>（一级大类保持不变，多级分类只做同义合并，参考 Google Product Taxonomy 标准）。与<b>工具箱 → 模型优化分类（数据库模式）</b>共用同一任务。<b>跨大类转移</b>：模型判定商品不属于当前一级大类时，会自动转移到对应大类的 <code>other</code> 集合并写入审计字段 <code>optimize_moved_from</code>（目标已有同款商品时跳过转移、原地优化）。分类名过于宽泛无法判断归属时（如 Accessories/Other 等泛称），自动采样该分类下 5 个商品的标题与描述送模型二次判定。仅修改"分类"字段并写入状态标识 <code>optimize_status=optimized</code>，不影响清洗/导出状态；各集合优化进度见下方统计的"模型优化"列。</p>
+    <form method="POST" action="/product-data/category-optimize">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+            <div>
+                <label for="co_category">一级分类</label>
+                <select id="co_category" name="category" style="width:100%;">
+                    <option value="__all__">全部一级分类</option>
+                </select>
+                <small class="text-muted">仅显示有已清洗未导出数据的分类（括号内为条数）</small>
+            </div>
+            <div>
+                <label>说明</label>
+                <div class="text-muted" style="font-size: 13px; padding: 6px 0;">
+                    优化后数据将标记为"已优化分类"（optimize_status=optimized）；多个集合一起优化时作为一个整体统一处理
+                </div>
+            </div>
+        </div>
+        <div style="margin-bottom: 12px;">
+            <label for="co_subcategory">二级分类（可多选，所选集合作为一个整体统一优化）</label>
+            <select id="co_subcategory" name="subcategory" multiple size="6" style="width:100%;">
+                <option value="__all__" selected>全部二级分类</option>
+            </select>
+            <small class="text-muted">按住 Ctrl 点击可选多个二级分类；不选具体分类时等同于"全部"</small>
+        </div>
+        <div id="co-status-hint" class="text-muted" style="font-size: 13px; margin-bottom: 12px;"></div>
+        <button type="submit" class="btn btn-primary" onclick="return confirm('确定要用AI模型优化所选分类中已清洗未导出的数据吗？');">执行模型优化分类</button>
     </form>
 </div>
 
@@ -158,7 +190,51 @@ document.addEventListener('DOMContentLoaded', function() {
     loadStats();
     // 启动轮询：检测任务状态并刷新统计
     startPolling();
+    // 二级分类多选下拉框（分类数据处理 / 模型优化分类）交互守卫
+    ['cp_subcategory', 'co_subcategory'].forEach(function(id) {
+        var sel = document.getElementById(id);
+        if (sel) attachMultiSelectGuard(sel);
+    });
 });
+
+// ── 二级分类多选下拉框公共逻辑 ──
+// 读取当前多选值列表
+function getMultiSelection(sel) {
+    return Array.prototype.map.call(sel.selectedOptions || [], function(o) { return o.value; });
+}
+
+// 恢复多选（只恢复仍存在的选项；一个都不在时回到"全部"）
+function setMultiSelection(sel, vals) {
+    var kept = vals || [];
+    Array.prototype.forEach.call(sel.options, function(o) {
+        o.selected = kept.indexOf(o.value) >= 0;
+    });
+    if (getMultiSelection(sel).length === 0) {
+        sel.options[0].selected = true;
+    }
+    sel._prevVals = getMultiSelection(sel);
+}
+
+// 多选守卫：新点"全部"时只保留"全部"；已选"全部"时点具体项则取消"全部"；
+// 全部取消后自动回到"全部"，保证提交时始终有有效选择
+function attachMultiSelectGuard(sel) {
+    sel._prevVals = getMultiSelection(sel);
+    sel.addEventListener('change', function() {
+        var vals = getMultiSelection(sel);
+        var hadAll = (sel._prevVals || []).indexOf('__all__') >= 0;
+        var hasAll = vals.indexOf('__all__') >= 0;
+        if (vals.length === 0) {
+            sel.options[0].selected = true;
+        } else if (!hadAll && hasAll) {
+            Array.prototype.forEach.call(sel.options, function(o) {
+                o.selected = (o.value === '__all__');
+            });
+        } else if (hadAll && hasAll && vals.length > 1) {
+            sel.options[0].selected = false;
+        }
+        sel._prevVals = getMultiSelection(sel);
+    });
+}
 
 var POLL_FAST = 3000;   // 有运行中清洗任务时的轮询间隔
 var POLL_SLOW = 15000;  // 空闲时的轮询间隔
@@ -289,6 +365,15 @@ function renderStats(stats) {
     var subSelect = document.getElementById('clean_subcategory');
     var cpCatSelect = document.getElementById('cp_category');
     var cpSubSelect = document.getElementById('cp_subcategory');
+
+    // 轮询刷新前保存当前选择，重建选项后恢复：
+    // 否则一级分类会被重置回"全部"，而二级分类下拉框不重建会保留旧值，
+    // 提交时就变成 __all__ + 旧二级分类 的错误组合（后端会当作处理全部数据）
+    var prevCat = catSelect.value;
+    var prevSub = subSelect.value;
+    var cpPrevCat = cpCatSelect ? cpCatSelect.value : '';
+    var cpPrevSubs = cpSubSelect ? getMultiSelection(cpSubSelect) : [];
+
     // 保留 "全部一级分类" 选项
     while (catSelect.options.length > 1) {
         catSelect.remove(1);
@@ -333,6 +418,27 @@ function renderStats(stats) {
         fillSubOptions(this.value, subSelect, true);
     };
 
+    // 恢复清洗表单的选择：一级分类选项仍在时恢复，否则回到"全部"；
+    // 再按（恢复后的）一级分类重建二级分类选项并尝试恢复二级选择，
+    // 保证两个下拉框始终联动一致，不会出现"全部一级 + 具体二级"的组合
+    if (prevCat && prevCat !== '__all__') {
+        for (var cleanCatIdx = 0; cleanCatIdx < catSelect.options.length; cleanCatIdx++) {
+            if (catSelect.options[cleanCatIdx].value === prevCat) {
+                catSelect.value = prevCat;
+                break;
+            }
+        }
+    }
+    fillSubOptions(catSelect.value, subSelect, true);
+    if (prevSub && prevSub !== '__all__') {
+        for (var cleanSubIdx = 0; cleanSubIdx < subSelect.options.length; cleanSubIdx++) {
+            if (subSelect.options[cleanSubIdx].value === prevSub) {
+                subSelect.value = prevSub;
+                break;
+            }
+        }
+    }
+
     // ── 分类处理下拉框：只显示有"已清洗未导出"数据的集合，并带上条数 ──
     if (cpCatSelect) {
         // 一级分类：汇总每个一级分类下所有二级集合的未导出条数，只保留 > 0 的
@@ -350,11 +456,14 @@ function renderStats(stats) {
             cpCatSelect.appendChild(cpOption);
         });
 
-        // 二级分类：只显示该一级分类下未导出条数 > 0 的集合，带条数
+        // 二级分类（多选）：只显示该一级分类下未导出条数 > 0 的集合，带条数
         var fillCpSubOptions = function(selectedCat) {
             while (cpSubSelect.options.length > 1) {
                 cpSubSelect.remove(1);
             }
+            // 重建后默认选中"全部"（多选）
+            cpSubSelect.options[0].selected = true;
+            cpSubSelect._prevVals = ['__all__'];
             if (selectedCat === '__all__') return;
             categories.forEach(function(catStat) {
                 if (catStat.category === selectedCat && (catStat.unexported_count || 0) > 0) {
@@ -368,6 +477,125 @@ function renderStats(stats) {
         cpCatSelect.onchange = function() {
             fillCpSubOptions(this.value);
         };
+
+        // 恢复分类处理表单的选择（与上方清洗表单同样的联动逻辑）：
+        // 一级分类选项仍在时恢复并重建二级选项，否则整体回到"全部"
+        if (cpPrevCat && cpPrevCat !== '__all__') {
+            for (var cpCatIdx = 0; cpCatIdx < cpCatSelect.options.length; cpCatIdx++) {
+                if (cpCatSelect.options[cpCatIdx].value === cpPrevCat) {
+                    cpCatSelect.value = cpPrevCat;
+                    break;
+                }
+            }
+        }
+        fillCpSubOptions(cpCatSelect.value);
+        // 恢复二级分类多选（仅恢复仍存在的选项，否则回到"全部"）
+        if (cpPrevSubs.length) {
+            setMultiSelection(cpSubSelect, cpPrevSubs);
+        }
+    }
+
+    // ── 模型优化下拉框：只显示有"已清洗未导出"数据的集合，带上条数与优化进度 ──
+    var coCatSelect = document.getElementById('co_category');
+    var coSubSelect = document.getElementById('co_subcategory');
+    if (coCatSelect && coSubSelect) {
+        // 保留用户当前选择（轮询刷新时不重置；二级分类为多选）
+        var coPrevCat = coCatSelect.value;
+        var coPrevSubs = getMultiSelection(coSubSelect);
+
+        while (coCatSelect.options.length > 1) {
+            coCatSelect.remove(1);
+        }
+
+        // 一级分类：汇总每个一级分类下所有二级集合的未导出条数与已优化数量，只保留 > 0 的
+        var coCatAgg = {};
+        categories.forEach(function(catStat) {
+            var n = catStat.unexported_count || 0;
+            if (n > 0) {
+                if (!coCatAgg[catStat.category]) {
+                    coCatAgg[catStat.category] = { unexported: 0, optimized: 0 };
+                }
+                coCatAgg[catStat.category].unexported += n;
+                coCatAgg[catStat.category].optimized += (catStat.optimized_count || 0);
+            }
+        });
+        Object.keys(coCatAgg).sort().forEach(function(cat) {
+            var a = coCatAgg[cat];
+            var coOption = document.createElement('option');
+            coOption.value = cat;
+            coOption.textContent = cat + ' (' + a.unexported + ' 条 · 优化 ' + a.optimized + '/' + a.unexported + ')';
+            coCatSelect.appendChild(coOption);
+        });
+
+        // 恢复一级分类选择（选项仍在时）
+        if (coPrevCat && coPrevCat !== '__all__') {
+            for (var ci = 0; ci < coCatSelect.options.length; ci++) {
+                if (coCatSelect.options[ci].value === coPrevCat) {
+                    coCatSelect.value = coPrevCat;
+                    break;
+                }
+            }
+        }
+
+        // 二级分类（多选）：只显示该一级分类下未导出条数 > 0 的集合，带条数与优化进度
+        var fillCoSubOptions = function(selectedCat) {
+            while (coSubSelect.options.length > 1) {
+                coSubSelect.remove(1);
+            }
+            // 重建后默认选中"全部"（多选）
+            coSubSelect.options[0].selected = true;
+            coSubSelect._prevVals = ['__all__'];
+            if (selectedCat === '__all__') return;
+            categories.forEach(function(catStat) {
+                if (catStat.category === selectedCat && (catStat.unexported_count || 0) > 0) {
+                    var opt = document.createElement('option');
+                    opt.value = catStat.subcategory;
+                    opt.textContent = catStat.subcategory + ' (' + catStat.unexported_count + ' 条 · 优化 ' +
+                        (catStat.optimized_count || 0) + '/' + catStat.unexported_count + ')';
+                    coSubSelect.appendChild(opt);
+                }
+            });
+        };
+        fillCoSubOptions(coCatSelect.value);
+        // 恢复二级分类多选（仅恢复仍存在的选项，否则回到"全部"）
+        if (coPrevSubs.length) {
+            setMultiSelection(coSubSelect, coPrevSubs);
+        }
+
+        coCatSelect.onchange = function() {
+            fillCoSubOptions(this.value);
+            updateCoHint();
+        };
+        coSubSelect.onchange = function() {
+            updateCoHint();
+        };
+        updateCoHint();
+    }
+
+    function updateCoHint() {
+        var hint = document.getElementById('co-status-hint');
+        if (!hint) return;
+        var catSel = document.getElementById('co_category');
+        var subSel = document.getElementById('co_subcategory');
+        if (!catSel || !subSel) return;
+        var cat = catSel.value;
+        var subVals = getMultiSelection(subSel);
+        var allSubs = subVals.length === 0 || subVals.indexOf('__all__') >= 0;
+        var total = 0, optimized = 0;
+        categories.forEach(function(catStat) {
+            var match = (cat === '__all__' || catStat.category === cat) &&
+                        (allSubs || subVals.indexOf(catStat.subcategory) >= 0);
+            if (match) {
+                total += (catStat.unexported_count || 0);
+                optimized += (catStat.optimized_count || 0);
+            }
+        });
+        if (total === 0) {
+            hint.textContent = '所选范围内暂无已清洗未导出的数据。';
+        } else {
+            hint.textContent = '所选范围: 已清洗未导出 ' + total + ' 条，其中已优化分类 ' + optimized + ' 条' +
+                (optimized < total ? '（未优化 ' + (total - optimized) + ' 条）' : '（全部已优化）') + '。';
+        }
     }
 
     // 渲染统计表格
@@ -536,6 +764,31 @@ function renderStats(stats) {
         };
         cpForm.appendChild(cpBtn);
         actionDiv.appendChild(cpForm);
+
+        // 模型优化按钮（LLM 同义合并/补全父级，优化已清洗未导出数据）
+        var coForm = document.createElement('form');
+        coForm.method = 'POST';
+        coForm.action = '/product-data/category-optimize';
+        coForm.style.display = 'inline';
+        var coInputCat = document.createElement('input');
+        coInputCat.type = 'hidden';
+        coInputCat.name = 'category';
+        coInputCat.value = catStat.category;
+        coForm.appendChild(coInputCat);
+        var coInputSub = document.createElement('input');
+        coInputSub.type = 'hidden';
+        coInputSub.name = 'subcategory';
+        coInputSub.value = catStat.subcategory;
+        coForm.appendChild(coInputSub);
+        var coBtn = document.createElement('button');
+        coBtn.type = 'submit';
+        coBtn.className = 'btn btn-sm btn-primary';
+        coBtn.textContent = '模型优化';
+        coBtn.onclick = function() {
+            return confirm('确定要用AI模型优化 ' + catStat.category + '/' + catStat.subcategory + ' 中已清洗未导出的数据吗？');
+        };
+        coForm.appendChild(coBtn);
+        actionDiv.appendChild(coForm);
 
         tdAction.appendChild(actionDiv);
         tr.appendChild(tdAction);

@@ -14,12 +14,47 @@ from qmds.utils.logger import get_logger
 log = get_logger("web.category_tasks")
 
 
-def resolve_category_list(product_db, category: str, subcategory: str):
+def _normalize_subcategory_param(subcategory):
+    """把 subcategory 参数（str 或 list[str]）规范化为 (是否全部, [具体二级分类...])
+
+    - "__all__"、空串、None、空列表 → (True, [])
+    - 具体值（str）或值列表（list[str]）→ (False, [去重后的具体值...])
+    - 混合列表（具体值 + "__all__"）保守处理：忽略 "__all__"，仅保留具体值
+    """
+    if isinstance(subcategory, (list, tuple, set)):
+        subs = []
+        for s in subcategory:
+            s = str(s).strip()
+            if s and s != "__all__" and s not in subs:
+                subs.append(s)
+        return (False, subs) if subs else (True, [])
+    s = str(subcategory or "").strip()
+    if not s or s == "__all__":
+        return True, []
+    return False, [s]
+
+
+def parse_subcategory_form(form):
+    """从表单读取二级分类（支持多选，字段名 subcategory 可重复出现）
+
+    返回 "__all__"（表示全部）或去重后的具体二级分类值列表。
+    """
+    return _normalize_subcategory_param(form.getlist("subcategory"))[1] or "__all__"
+
+
+def subcategory_display(subcategory) -> str:
+    """把 subcategory 参数（str 或 list[str]）转为展示/任务ID用字符串"""
+    is_all, subs = _normalize_subcategory_param(subcategory)
+    return "all" if is_all else ",".join(subs)
+
+
+def resolve_category_list(product_db, category: str, subcategory):
     """根据 category / subcategory 解析要操作的分类列表
 
-    - category == "__all__" 或两者都是 "__all__" → 所有分类
-    - category 指定 + subcategory == "__all__" → 该一级分类下所有二级集合（含 other）
-    - 两者都指定 → 仅该分类
+    - category == "__all__" → 所有分类
+    - category 指定 + subcategory 为 "__all__"/空 → 该一级分类下所有二级集合（含 other）
+    - subcategory 为具体二级分类（str 或 list[str]，支持多选）→ 所选的集合
+      （按实际存在的集合过滤，不存在的二级分类名会被忽略）
     """
     if category == "__all__":
         return product_db.list_categories_with_sub()
@@ -27,10 +62,12 @@ def resolve_category_list(product_db, category: str, subcategory: str):
     all_cats = product_db.list_categories_with_sub()
     cat_filtered = [item for item in all_cats if item["category"] == category]
 
-    if subcategory == "__all__":
+    is_all, subs = _normalize_subcategory_param(subcategory)
+    if is_all:
         return cat_filtered
 
-    return [{"category": category, "subcategory": subcategory}]
+    sub_set = set(subs)
+    return [item for item in cat_filtered if item.get("subcategory", "") in sub_set]
 
 
 def _filter_exportable_collections(task_id, product_db, cat_list):
@@ -50,14 +87,14 @@ def _filter_exportable_collections(task_id, product_db, cat_list):
     return exportable_cat_list
 
 
-def run_category_process_task(task_id: str, category: str, subcategory: str,
+def run_category_process_task(task_id: str, category: str, subcategory,
                               threshold: int, common_categories):
     """分类数据处理（数据库版）任务体：低频分类合并 + 状态标识
 
     由 product_data 与 tools 两个路由共享；调用方负责创建任务并启动线程。
     """
     product_db = None
-    sub_display = subcategory if subcategory != "__all__" else "all"
+    sub_display = subcategory_display(subcategory)
     try:
         task_manager.update(task_id, status="running",
                             message=f"开始分类数据处理: {category}/{sub_display}")
@@ -144,7 +181,7 @@ def run_category_process_task(task_id: str, category: str, subcategory: str,
             product_db.close()
 
 
-def run_category_optimize_task(task_id: str, category: str, subcategory: str):
+def run_category_optimize_task(task_id: str, category: str, subcategory):
     """模型优化分类（数据库版）任务体：LLM 同义合并/补全父级 + 状态标识
 
     处理数据库中已清洗未导出数据的分类字段，规则与表格文件模式一致；
@@ -152,7 +189,7 @@ def run_category_optimize_task(task_id: str, category: str, subcategory: str):
     """
     product_db = None
     site_db = None
-    sub_display = subcategory if subcategory != "__all__" else "all"
+    sub_display = subcategory_display(subcategory)
     try:
         task_manager.update(task_id, status="running",
                             message=f"开始模型优化分类: {category}/{sub_display}")
@@ -199,15 +236,25 @@ def run_category_optimize_task(task_id: str, category: str, subcategory: str):
         mappings_count = result.get("mappings_count", 0)
         total_modified = result.get("modified_rows", 0)
         total_marked = result.get("status_marked", 0)
+        total_moved = result.get("moved", 0)
+        total_moved_skipped = result.get("moved_skipped", 0)
+        moved_targets = result.get("moved_targets", {}) or {}
         mappings = result.get("mappings", {})
         collections = result.get("collections", [])
 
         task_manager.add_log(
             task_id,
             f"总体: 已清洗未导出 {total_processed} 条, 唯一分类 {unique_cats} 个, "
-            f"有效映射 {mappings_count} 个, 修改 {total_modified} 行, 新标记已优化 {total_marked} 条",
+            f"有效映射 {mappings_count} 个, 修改 {total_modified} 行, 新标记已优化 {total_marked} 条, "
+            f"跨大类转移 {total_moved} 条"
+            + (f"（另 {total_moved_skipped} 条因目标已有同款跳过）" if total_moved_skipped else ""),
             "info"
         )
+
+        # 跨大类转移目标明细
+        if moved_targets:
+            for tp, cnt in sorted(moved_targets.items()):
+                task_manager.add_log(task_id, f"  转入 {tp}: {cnt} 条", "info")
 
         # 每个集合的修改明细
         for detail in collections:
@@ -215,20 +262,28 @@ def run_category_optimize_task(task_id: str, category: str, subcategory: str):
             task_manager.add_log(
                 task_id,
                 f"  集合 {detail.get('category')}/{sub_d}: 修改 {detail.get('modified_rows', 0)} 行, "
-                f"新标记已优化 {detail.get('status_marked', 0)} 条",
+                f"新标记已优化 {detail.get('status_marked', 0)} 条, "
+                f"转移出 {detail.get('moved_out', 0)} 条",
                 "info"
             )
 
-        # 映射明细（前20个）
-        for i, (orig, optimized) in enumerate(mappings.items()):
+        # 映射明细（前20个，含模型判定的一级大类）
+        for i, (orig, entry) in enumerate(mappings.items()):
             if i >= 20:
                 task_manager.add_log(task_id, f"  ... 还有 {len(mappings) - 20} 个映射", "info")
                 break
-            task_manager.add_log(task_id, f"  映射: {orig} -> {optimized}", "info")
+            if isinstance(entry, dict):
+                optimized = entry.get("optimized")
+                top = entry.get("top")
+            else:
+                optimized, top = entry, None
+            top_suffix = f" [大类: {top}]" if top else ""
+            task_manager.add_log(task_id, f"  映射: {orig} -> {optimized}{top_suffix}", "info")
 
         task_manager.update(task_id, status="completed",
                             message=f"完成: 处理 {total_processed} 条, 映射 {mappings_count} 个, "
-                                    f"修改 {total_modified} 行, 标记已优化 {total_marked} 条",
+                                    f"修改 {total_modified} 行, 标记已优化 {total_marked} 条, "
+                                    f"转移 {total_moved} 条",
                             progress=100)
         task_manager.add_log(task_id, "任务完成", "info")
     except InterruptedError:

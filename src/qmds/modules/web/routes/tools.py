@@ -121,8 +121,16 @@ def _category_merge_database():
     低频分类合并 + 状态标识（category_process_status=processed），
     任务体与产品数据管理页 /product-data/category-process 共用。
     """
+    from qmds.modules.web.services.category_tasks import parse_subcategory_form, subcategory_display
     category = request.form.get("category", "__all__").strip() or "__all__"
-    subcategory = request.form.get("subcategory", "__all__").strip() or "__all__"
+    subcategory = parse_subcategory_form(request.form)
+
+    # 防护：一级分类为 __all__ 时二级分类必须也是 __all__，
+    # 否则 resolve_category_list 会忽略 subcategory 而处理全部数据
+    if category == "__all__" and subcategory != "__all__":
+        flash("选择范围无效：一级分类为“全部”时，二级分类必须也为“全部”。请重新选择后再提交", "error")
+        return redirect(url_for("tools.category_merge"))
+
     threshold_raw = request.form.get("threshold", "").strip()
     common_category_input = request.form.get("common_category", "Other").strip()
 
@@ -137,7 +145,7 @@ def _category_merge_database():
     if not common_categories:
         common_categories = ["Other"]
 
-    sub_display = subcategory if subcategory != "__all__" else "all"
+    sub_display = subcategory_display(subcategory)
     task_id = f"category_process_db_{category}_{sub_display}_{int(time.time())}"
     task_manager.create(task_id, "category_process", f"{category}/{sub_display}")
 
@@ -386,10 +394,16 @@ def _category_optimize_database():
 
     LLM 同义合并 + 单级分类补全父级 + 状态标识（optimize_status=optimized）。
     """
+    from qmds.modules.web.services.category_tasks import parse_subcategory_form, subcategory_display
     category = request.form.get("category", "__all__").strip() or "__all__"
-    subcategory = request.form.get("subcategory", "__all__").strip() or "__all__"
+    subcategory = parse_subcategory_form(request.form)
 
-    sub_display = subcategory if subcategory != "__all__" else "all"
+    # 防护：一级分类为 __all__ 时二级分类必须也是 __all__（同 category-merge 数据库模式）
+    if category == "__all__" and subcategory != "__all__":
+        flash("选择范围无效：一级分类为“全部”时，二级分类必须也为“全部”。请重新选择后再提交", "error")
+        return redirect(url_for("tools.category_optimize"))
+
+    sub_display = subcategory_display(subcategory)
     task_id = f"category_optimize_db_{category}_{sub_display}_{int(time.time())}"
     task_manager.create(task_id, "category_optimize_db", f"{category}/{sub_display}")
 

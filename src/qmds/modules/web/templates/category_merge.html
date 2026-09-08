@@ -51,12 +51,18 @@
                     <small class="text-muted">仅显示有已清洗未导出数据的分类（括号内为条数）</small>
                 </div>
                 <div>
-                    <label for="db_subcategory">二级分类</label>
-                    <select id="db_subcategory" name="subcategory" style="width:100%;">
-                        <option value="__all__">全部二级分类</option>
-                    </select>
-                    <small class="text-muted">处理后数据将标记为"已处理分类数据"（category_process_status=processed）</small>
+                    <label>说明</label>
+                    <div class="text-muted" style="font-size: 13px; padding: 6px 0;">
+                        处理后数据将标记为"已处理分类数据"（category_process_status=processed）；多个集合一起处理时作为一个整体统一统计
+                    </div>
                 </div>
+            </div>
+            <div style="margin-bottom: 12px;">
+                <label for="db_subcategory">二级分类（可多选，所选集合作为一个整体统一统计与合并）</label>
+                <select id="db_subcategory" name="subcategory" multiple size="6" style="width:100%;">
+                    <option value="__all__" selected>全部二级分类</option>
+                </select>
+                <small class="text-muted">按住 Ctrl 点击可选多个二级分类；不选具体分类时等同于"全部"</small>
             </div>
             <div id="db-status-hint" class="text-muted" style="font-size: 13px; padding: 4px 0;"></div>
         </div>
@@ -245,6 +251,9 @@ function fillDbSelects() {
 function fillSubOptions(selectedCat) {
     var subSelect = document.getElementById('db_subcategory');
     while (subSelect.options.length > 1) subSelect.remove(1);
+    // 重建后默认选中"全部"（多选）
+    subSelect.options[0].selected = true;
+    subSelect._prevVals = ['__all__'];
     if (selectedCat === '__all__') { updateDbHint(); return; }
     dbCategories.forEach(function(s) {
         if (s.category === selectedCat && (s.unexported_count || 0) > 0) {
@@ -262,11 +271,13 @@ function updateDbHint() {
     var hint = document.getElementById('db-status-hint');
     if (!hint) return;
     var cat = document.getElementById('db_category').value;
-    var sub = document.getElementById('db_subcategory').value;
+    var subSel = document.getElementById('db_subcategory');
+    var subVals = getMultiSelection(subSel);
+    var allSubs = subVals.length === 0 || subVals.indexOf('__all__') >= 0;
     var total = 0, processed = 0;
     dbCategories.forEach(function(s) {
         var match = (cat === '__all__' || s.category === cat) &&
-                    (sub === '__all__' || s.subcategory === sub);
+                    (allSubs || subVals.indexOf(s.subcategory) >= 0);
         if (match) {
             total += (s.unexported_count || 0);
             processed += (s.category_processed_count || 0);
@@ -294,10 +305,38 @@ function loadDbStats() {
         });
 }
 
+// ── 二级分类多选下拉框公共逻辑 ──
+function getMultiSelection(sel) {
+    return Array.prototype.map.call(sel.selectedOptions || [], function(o) { return o.value; });
+}
+
+// 多选守卫：新点"全部"时只保留"全部"；已选"全部"时点具体项则取消"全部"；
+// 全部取消后自动回到"全部"，保证提交时始终有有效选择
+function attachMultiSelectGuard(sel) {
+    sel._prevVals = getMultiSelection(sel);
+    sel.addEventListener('change', function() {
+        var vals = getMultiSelection(sel);
+        var hadAll = (sel._prevVals || []).indexOf('__all__') >= 0;
+        var hasAll = vals.indexOf('__all__') >= 0;
+        if (vals.length === 0) {
+            sel.options[0].selected = true;
+        } else if (!hadAll && hasAll) {
+            Array.prototype.forEach.call(sel.options, function(o) {
+                o.selected = (o.value === '__all__');
+            });
+        } else if (hadAll && hasAll && vals.length > 1) {
+            sel.options[0].selected = false;
+        }
+        sel._prevVals = getMultiSelection(sel);
+    });
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     toggleSource();
     loadDbStats();
-    document.getElementById('db_subcategory').addEventListener('change', updateDbHint);
+    var dbSub = document.getElementById('db_subcategory');
+    attachMultiSelectGuard(dbSub);
+    dbSub.addEventListener('change', updateDbHint);
 });
 </script>
 {% endblock %}

@@ -47,8 +47,16 @@ LLM_MODELS = [
         "provider": "ark",
         "model_id": "ep-20260822151623-pqkd4",
         "base_url": "https://ark.cn-beijing.volces.com/api/v3",
-        "label": "火山方舟 EP 模型",
-        "desc": "火山方舟文本模型，需配置 ARK API Key",
+        "label": "火山方舟 DeepSeek-V4-Flash 正式版",
+        "desc": "火山方舟 DeepSeek-V4-Flash 文本模型，需配置 ARK API Key",
+    },
+    {
+        "value": "ark-ep-20260822151540",
+        "provider": "ark",
+        "model_id": "ep-20260822151540-9zcdd",
+        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        "label": "火山方舟 DeepSeek-V4-Pro 正式版",
+        "desc": "火山方舟 DeepSeek-V4-Pro 文本模型，需配置 ARK API Key",
     },
 ]
 

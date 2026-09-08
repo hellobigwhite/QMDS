@@ -48,11 +48,25 @@ except ImportError:
     log.warning("openai 未安装，模型优化分类功能不可用")
 
 # ── LLM Configuration (统一配置，从 llm_models.py 读取) ──
-_LLM_MAX_TOKENS = 8000
-_LLM_TIMEOUT = 30
+# 输出含 optimized + top 两个字段，每条映射约 20~25 token，
+# 200 条/批约 4000~5000 token，10000 上限留足余量防截断
+_LLM_MAX_TOKENS = 10000
+# 批次生成实测 60~120 秒（300 个分类），推理型模型（DeepSeek 等）可能更久；
+# 30s 会稳定超时，故取 300s 留足余量
+_LLM_TIMEOUT = 300
+# 重试时追加的格式警告（原 _build_prompt 的 attempt 逻辑移到通用调用层）
+RETRY_HINT = "\n\n⚠️ 上次返回格式有误，请务必返回纯JSON，无markdown围栏，无额外文字。"
 
 # ── 分批阈值 ──
-BATCH_SIZE = 300
+# 300 -> 200：映射值新增 top（所属一级大类）字段后单条输出变长，
+# 减小批量保证输出 token 不超上限
+BATCH_SIZE = 200
+
+# ── 模糊分类二次判定 ──
+# 分类名过于宽泛（如 Accessories/Other/Parts）无法仅凭名称判断归属时，
+# 模型标记 ambiguous；此时取该分类下 N 个商品样本送模型二次判定
+_DISAMBIGUATE_SAMPLE_COUNT = 5   # 每个模糊分类采样的商品数
+_DISAMBIGUATE_BATCH_SIZE = 20    # 二次判定每批处理的模糊分类数
 
 # ── 21个一级大类（Google 可读名，本地预过滤用） ──
 _TOP_CATEGORIES = set(SHOPIFY_TO_GOOGLE_CATEGORY.values())
@@ -122,7 +136,6 @@ def _build_prompt(
     categories: list[str],
     reference_paths: list[str],
     confirmed_expressions: Optional[dict] = None,
-    attempt: int = 0,
 ) -> str:
     ref_text = "\n".join(reference_paths)
     cats_text = "\n".join(f"{i+1}. {c}" for i, c in enumerate(categories))
@@ -158,17 +171,21 @@ def _build_prompt(
 3. 本身是一级分类则不处理
 4. 多级分类（已有 |||）只做同义合并，不补全父级
 5. 输出统一使用 ||| 作为分隔符（不要用 > 或 ->），首字母大写
+6. top 字段：按商品语义判断每个分类真正所属的一级大类（从上方21个一级大类中
+   原样选用名称，一字不差）。判断依据是商品本身属于什么，而不是它当前被放在哪里；
+   即使分类当前归属于某个大类，若语义上属于其它大类，top 也要如实填写
+7. ambiguous 字段：分类名过于宽泛或语义不明、仅凭名称无法可靠判断商品归属时
+   设为 true（如 "Accessories" 可能是手机配件/眼镜配件/乐器配件，"Parts"、"Other"、
+   "Sets"、"Misc" 等泛称，或无法从名称判断品类的品牌名/专有名词）。
+   此时仍需给出暂定的 optimized 与 top；后续会提供该分类下的实际商品样本供二次判定
 
 ## 返回格式（仅JSON，无markdown）
 注意：分类层级必须使用 ||| 作为分隔符，不要使用 > 或 ->
-{{"mappings": {{"原分类1": "优化后分类1", "原分类2": "优化后分类2", ...}}}}"""
+{{"mappings": {{"原分类1": {{"optimized": "优化后分类1", "top": "所属一级大类", "ambiguous": false}}, "原分类2": {{"optimized": "优化后分类2", "top": "所属一级大类", "ambiguous": true}}, ...}}}}"""
 
     if confirmed_expressions:
         hint = "\n".join([f'  "{k}" -> "{v}"' for k, v in confirmed_expressions.items()])
         prompt += f"\n\n## 已确定的统一表达（必须遵循）\n{hint}"
-
-    if attempt > 0:
-        prompt += "\n\n⚠️ 上次返回格式有误，请务必返回纯JSON，无markdown围栏，无额外文字。"
 
     return prompt
 
@@ -206,14 +223,25 @@ def _parse_llm_response(content: str) -> dict:
     if not isinstance(mappings, dict):
         raise ValueError("返回缺少 mappings 字段或格式错误")
 
-    # 第5层：过滤非法映射
+    # 第5层：过滤非法映射，统一值结构为 {"optimized": str, "top": str|None, "ambiguous": bool}
+    # 兼容两种返回：旧格式值为纯字符串（无 top）；新格式值为 dict（含 optimized/top/ambiguous）
     cleaned = {}
     for k, v in mappings.items():
-        if not isinstance(k, str) or not isinstance(v, str):
+        if not isinstance(k, str) or not k.strip():
             continue
-        if not v.strip():
-            continue
-        cleaned[k] = v
+        if isinstance(v, str):
+            if v.strip():
+                cleaned[k] = {"optimized": v, "top": None, "ambiguous": False}
+        elif isinstance(v, dict):
+            opt = v.get("optimized")
+            top = v.get("top")
+            ambiguous = v.get("ambiguous")
+            if isinstance(opt, str) and opt.strip():
+                cleaned[k] = {
+                    "optimized": opt,
+                    "top": top.strip() if isinstance(top, str) and top.strip() else None,
+                    "ambiguous": bool(ambiguous),
+                }
 
     if not cleaned:
         raise ValueError("映射结果为空")
@@ -223,20 +251,12 @@ def _parse_llm_response(content: str) -> dict:
 
 # ── LLM 调用 ─────────────────────────────────────────
 
-def _call_llm_optimize(
-    categories: list[str],
-    reference_paths: list[str],
-    confirmed_expressions: Optional[dict] = None,
-    log_callback=None,
-    site_db=None,
-) -> dict:
-    """调用 LLM 优化分类，返回映射字典
+def _call_llm_core(prompt_base: str, log_callback=None, site_db=None,
+                   action_label: str = "AI优化分类") -> dict:
+    """通用 LLM 调用骨架：3 次重试 + 多 key 轮换 + 429 退避 + 温度递降
 
-    对策：
-    - 多 key 轮换 + key 失效跳过（MiMo provider）
-    - 429 指数退避
-    - 3 次重试 + 温度递降
-    - 返回解析多层容错
+    prompt_base 为完整提示词；重试时追加格式警告。
+    返回 _parse_llm_response 解析后的 mappings dict。
     """
     if not HAS_OPENAI:
         raise RuntimeError("openai 未安装")
@@ -254,8 +274,14 @@ def _call_llm_optimize(
         api_key = get_llm_api_key(config, site_db)
         attempted_keys += 1
         try:
-            prompt = _build_prompt(categories, reference_paths, confirmed_expressions, attempt)
-            client = OpenAI(base_url=config["base_url"], api_key=api_key)
+            prompt = prompt_base
+            if attempt > 0:
+                prompt += RETRY_HINT
+            # max_retries=0：禁用 SDK 内部重试。本函数外层已有 3 次重试
+            # （含多 key 轮换、429 退避、温度递降），SDK 默认的 max_retries=2
+            # 会对超时请求静默重试 2 次，把实际等待拉长到 3 倍超时（30s 配置
+            # 实测等 95s），且绕过外层的 key 轮换与日志
+            client = OpenAI(base_url=config["base_url"], api_key=api_key, max_retries=0)
             completion = chat_completion_with_fallback(
                 client,
                 config=config,
@@ -294,27 +320,98 @@ def _call_llm_optimize(
 
             if attempt < 2:
                 wait = 2 * (attempt + 1)
-                log.warning(f"AI优化分类第 {attempt+1}/3 次失败: {e}，{wait}s 后重试")
+                log.warning(f"{action_label}第 {attempt+1}/3 次失败: {e}，{wait}s 后重试")
                 if log_callback:
-                    log_callback(f"AI优化分类第 {attempt+1}/3 次失败: {e}，{wait}s 后重试", "warning")
+                    log_callback(f"{action_label}第 {attempt+1}/3 次失败: {e}，{wait}s 后重试", "warning")
                 time.sleep(wait)
 
-    raise RuntimeError(f"AI优化分类失败（3次重试）: {last_err}")
+    raise RuntimeError(f"{action_label}失败（3次重试）: {last_err}")
+
+
+def _call_llm_optimize(
+    categories: list[str],
+    reference_paths: list[str],
+    confirmed_expressions: Optional[dict] = None,
+    log_callback=None,
+    site_db=None,
+) -> dict:
+    """调用 LLM 优化分类，返回映射字典（主判定：仅凭分类名）"""
+    prompt = _build_prompt(categories, reference_paths, confirmed_expressions)
+    return _call_llm_core(prompt, log_callback=log_callback, site_db=site_db)
+
+
+def _build_disambiguation_prompt(
+    samples_by_category: dict,
+    reference_paths: list,
+) -> str:
+    """构建模糊分类二次判定提示词
+
+    Args:
+        samples_by_category: {模糊分类名: [商品样本文本, ...]}（标题 + 描述片段）
+        reference_paths: Google 参考路径（与主判定一致）
+    """
+    ref_text = "\n".join(reference_paths)
+    top_cats_text = ", ".join(sorted(_TOP_CATEGORIES))
+
+    blocks = []
+    for i, (cat, samples) in enumerate(samples_by_category.items(), 1):
+        sample_lines = "\n".join(f"   {j}. {s}" for j, s in enumerate(samples, 1))
+        blocks.append(f'### 分类 {i}: "{cat}"' + "\n商品样本:\n" + sample_lines)
+    cats_text = "\n\n".join(blocks)
+
+    return (
+        "你是电商商品分类专家。以下分类名称过于宽泛或语义不明，无法仅凭名称判断商品归属。\n"
+        "现已提供每个分类下的实际商品样本（标题 | 描述片段），请根据商品的实际内容进行判定。\n"
+        "\n"
+        "## Google Product Taxonomy 分类标准参考（完整路径示例，仅供理解层级思路）\n"
+        + ref_text + "\n\n"
+        "## 21个一级大类（top 从中选用，一字不差）\n"
+        + top_cats_text + "\n\n"
+        "## 待判定分类及商品样本\n"
+        + cats_text + "\n\n"
+        "## 判定规则\n"
+        "1. top：根据商品样本的实际内容判断该分类下商品主要属于哪个一级大类，\n"
+        "   按多数样本的语义判断（从21个一级大类中选用名称，一字不差）\n"
+        "2. optimized：参考样本语义给出标准表达（||| 分隔、最多两级、首字母大写），\n"
+        "   与样本商品的实际品类一致\n"
+        "3. 样本商品混杂多个大类时按多数判断；样本信息完全无法判断时 top 留空字符串\n"
+        "\n"
+        "## 返回格式（仅JSON，无markdown）\n"
+        '{"mappings": {"分类名1": {"optimized": "优化后分类", "top": "所属一级大类"}, '
+        '"分类名2": {"optimized": "优化后分类", "top": ""}, ...}}'
+    )
 
 
 # ── 映射校验 ─────────────────────────────────────────
 
+# top 大类大小写容错查找表（模型可能返回大小写/空格略有差异的名称）
+_TOP_CATEGORY_LOOKUP = {name.lower(): name for name in _TOP_CATEGORIES}
+
+
+def _normalize_top_category(raw_top):
+    """将模型返回的 top 大类名归一化为 21 个标准名称之一；无法识别返回 None"""
+    if not raw_top or not isinstance(raw_top, str):
+        return None
+    return _TOP_CATEGORY_LOOKUP.get(raw_top.strip().lower())
+
+
 def _validate_mappings(mappings: dict, log_callback=None) -> tuple[dict, list]:
     """校验映射结果，过滤无效映射
+
+    值结构统一为 {"optimized": str, "top": str|None}；
+    top 无法识别（不在21个一级大类内）时置 None（不影响优化本身）。
 
     返回 (valid_mappings, skipped_list)
     """
     valid_mappings = {}
     skipped = []
 
-    for orig, optimized in mappings.items():
-        if not optimized or not optimized.strip():
-            skipped.append((orig, optimized, "空值"))
+    for orig, entry in mappings.items():
+        raw_optimized = entry.get("optimized") if isinstance(entry, dict) else entry
+        raw_top = entry.get("top") if isinstance(entry, dict) else None
+        optimized = raw_optimized
+        if not optimized or not str(optimized).strip():
+            skipped.append((orig, raw_optimized, "空值"))
             continue
 
         # 归一化分隔符：模型可能返回 > 或 -> 而非 |||
@@ -357,7 +454,16 @@ def _validate_mappings(mappings: dict, log_callback=None) -> tuple[dict, list]:
             if log_callback:
                 log_callback(f"分类超过两级，已保留末两级: {orig} -> {optimized}", "warning")
 
-        valid_mappings[orig] = optimized
+        # top 校验：归一化到 21 个一级大类标准名，无法识别则置 None
+        top_normalized = _normalize_top_category(raw_top)
+        if raw_top and not top_normalized:
+            log.warning(f"映射 top 大类无法识别，已忽略: {orig} -> {raw_top}")
+            if log_callback:
+                log_callback(f"映射 top 大类无法识别，已忽略: {orig} -> {raw_top}", "warning")
+
+        ambiguous = bool(entry.get("ambiguous")) if isinstance(entry, dict) else False
+        valid_mappings[orig] = {"optimized": optimized, "top": top_normalized,
+                                "ambiguous": ambiguous}
 
     if skipped:
         msg = f"跳过 {len(skipped)} 个无效映射"
@@ -376,19 +482,26 @@ def build_optimize_mappings(
     unique_cats: list[str],
     log_callback=None,
     site_db=None,
+    sample_fetcher=None,
 ) -> dict:
     """对给定唯一分类列表构建 LLM 优化映射（表格文件与数据库两种入口共用）
 
     流程：本地预过滤排除21个一级大类 -> 构建 Google 参考路径 -> 分批调用 LLM
     （跨批保持同义统一表达）-> 校验/归一化映射。
+    模型标记为 ambiguous（分类名宽泛/语义不明）的分类，若提供了 sample_fetcher，
+    取该分类下的商品样本分批送模型二次判定，用样本判定结果覆盖主判定。
 
     Args:
         unique_cats: 唯一分类字符串列表
         log_callback: 日志回调函数 (message, level)
         site_db: SiteDBClient，用于读取 LLM 模型配置（可选）
+        sample_fetcher: 采样回调 fn(category, n) -> list[str]，返回该分类下
+                        n 个商品的文本样本（标题 + 描述片段）；None 时模糊分类
+                        仅优化不转移（保守处理）
 
     Returns:
-        有效映射字典 {原分类: 优化后分类}；无需优化时返回空字典
+        有效映射字典 {原分类: {"optimized", "top", "ambiguous"}}；
+        无需优化时返回空字典。返回时所有 ambiguous 均已处理完毕（置 False）
     """
     def _log(msg, level="info"):
         log.info(msg) if level == "info" else log.warning(msg)
@@ -417,8 +530,9 @@ def build_optimize_mappings(
         mappings = _call_llm_optimize(to_optimize, reference_paths, log_callback=log_callback, site_db=site_db)
         all_mappings.update(mappings)
         # 收集单级分类的统一表达，用于跨批一致性
-        for orig, optimized in mappings.items():
-            if "|||" not in orig and "|||" not in optimized:
+        for orig, entry in mappings.items():
+            optimized = entry.get("optimized") if isinstance(entry, dict) else entry
+            if "|||" not in orig and "|||" not in str(optimized):
                 confirmed_expressions[orig] = optimized
     else:
         batches = [to_optimize[i:i + BATCH_SIZE] for i in range(0, len(to_optimize), BATCH_SIZE)]
@@ -432,13 +546,83 @@ def build_optimize_mappings(
                 site_db=site_db,
             )
             all_mappings.update(mappings)
-            for orig, optimized in mappings.items():
-                if "|||" not in orig and "|||" not in optimized:
+            for orig, entry in mappings.items():
+                optimized = entry.get("optimized") if isinstance(entry, dict) else entry
+                if "|||" not in orig and "|||" not in str(optimized):
                     confirmed_expressions[orig] = optimized
             _log(f"批次 {idx+1} 完成，累计映射 {len(all_mappings)} 个")
 
     # 校验映射
     valid_mappings, skipped = _validate_mappings(all_mappings, log_callback)
+
+    # ── 模糊分类二次判定：取商品样本送模型，用样本判定覆盖主判定 ──
+    ambiguous_cats = [c for c, e in valid_mappings.items() if e.get("ambiguous")]
+    if not ambiguous_cats:
+        return valid_mappings
+
+    if not sample_fetcher:
+        # 无采样能力（调用方未提供）：保守处理——保留优化表达，但不转移
+        _log(f"发现 {len(ambiguous_cats)} 个模糊分类（无商品采样能力，仅优化不转移）", "warning")
+        for cat in ambiguous_cats:
+            valid_mappings[cat]["top"] = None
+            valid_mappings[cat]["ambiguous"] = False
+        return valid_mappings
+
+    _log(f"发现 {len(ambiguous_cats)} 个模糊分类，采样商品信息进行二次判定...")
+    amb_batches = [ambiguous_cats[i:i + _DISAMBIGUATE_BATCH_SIZE]
+                   for i in range(0, len(ambiguous_cats), _DISAMBIGUATE_BATCH_SIZE)]
+    for b_idx, amb_batch in enumerate(amb_batches):
+        # 采样：每个模糊分类取 N 个商品样本
+        samples_by_category = {}
+        for cat in amb_batch:
+            samples = []
+            try:
+                samples = sample_fetcher(cat, _DISAMBIGUATE_SAMPLE_COUNT) or []
+            except Exception as exc:
+                log.warning(f"采样失败: {cat}: {exc}")
+            if samples:
+                samples_by_category[cat] = samples[:_DISAMBIGUATE_SAMPLE_COUNT]
+            else:
+                # 无样本：保持优化表达，不转移
+                _log(f"  分类 {cat} 无商品样本，保持原判定且不转移", "warning")
+                valid_mappings[cat]["top"] = None
+                valid_mappings[cat]["ambiguous"] = False
+        if not samples_by_category:
+            continue
+
+        # 分批二次判定（批内多个分类一次调用，返回格式与主判定一致）
+        try:
+            prompt = _build_disambiguation_prompt(samples_by_category, reference_paths)
+            mappings2 = _call_llm_core(prompt, log_callback=log_callback, site_db=site_db,
+                                       action_label="模糊分类二次判定")
+            valid2, _ = _validate_mappings(mappings2, log_callback)
+        except Exception as exc:
+            # 二次判定失败：本批保守处理——保留优化表达，不转移
+            _log(f"  二次判定失败（{exc}），本批 {len(samples_by_category)} 个分类保持原判定且不转移",
+                 "warning")
+            for cat in samples_by_category:
+                valid_mappings[cat]["top"] = None
+                valid_mappings[cat]["ambiguous"] = False
+            continue
+
+        resolved = 0
+        for cat, entry in valid2.items():
+            if cat not in valid_mappings:
+                continue
+            valid_mappings[cat] = {"optimized": entry["optimized"],
+                                   "top": entry.get("top"),
+                                   "ambiguous": False}
+            resolved += 1
+            _log(f"  二次判定: {cat} -> {entry['optimized']}"
+                 + (f" [大类: {entry['top']}]" if entry.get("top") else " [大类: 未定，不转移]"))
+        # 模型漏判/未返回的模糊分类：保守处理
+        for cat in samples_by_category:
+            if valid_mappings[cat].get("ambiguous"):
+                _log(f"  二次判定未返回分类 {cat}，保持原判定且不转移", "warning")
+                valid_mappings[cat]["top"] = None
+                valid_mappings[cat]["ambiguous"] = False
+        _log(f"二次判定批次 {b_idx + 1}/{len(amb_batches)} 完成，判定 {resolved} 个分类")
+
     return valid_mappings
 
 
@@ -479,17 +663,39 @@ def optimize_dataframe(
     unique_cats = df[category_col].dropna().astype(str).unique().tolist()
     _log(f"唯一分类数: {len(unique_cats)}")
 
-    # 构建优化映射（预过滤/参考路径/分批调用/校验 与数据库入口共用）
-    valid_mappings = build_optimize_mappings(unique_cats, log_callback, site_db=site_db)
+    # 构建表格采样器：模糊分类二次判定时取同分类行的标题/描述样本
+    title_col = next((c for c in ("标题", "Name", "name", "Title", "title")
+                      if c in df.columns), None)
+    desc_col = next((c for c in ("描述", "Description", "description")
+                     if c in df.columns), None)
+
+    def _df_sample_fetcher(cat: str, n: int) -> list:
+        if not title_col and not desc_col:
+            return []
+        rows = df[df[category_col].astype(str) == cat].head(n)
+        samples = []
+        for _, row in rows.iterrows():
+            title = str(row.get(title_col, "")).strip() if title_col else ""
+            desc = str(row.get(desc_col, "")).strip()[:80] if desc_col else ""
+            frag = (title + " | " + desc) if title and desc else (title or desc)
+            if frag:
+                samples.append(frag[:160])
+        return samples
+
+    # 构建优化映射（预过滤/参考路径/分批调用/校验/模糊二次判定 与数据库入口共用）
+    valid_mappings = build_optimize_mappings(
+        unique_cats, log_callback, site_db=site_db,
+        sample_fetcher=_df_sample_fetcher if (title_col or desc_col) else None)
 
     if not valid_mappings:
         return df, {}
 
-    # 应用映射
+    # 应用映射（值结构 {"optimized": str, "top": str|None}，文件模式只取 optimized）
     def apply_mapping(x):
         if pd.isna(x):
             return x
-        return valid_mappings.get(x, x)
+        entry = valid_mappings.get(x)
+        return entry["optimized"] if entry else x
 
     original_values = df[category_col].copy()
     df[category_col] = df[category_col].map(apply_mapping)
@@ -503,7 +709,8 @@ def optimize_dataframe(
     if changed_count > 0:
         changed_examples = []
         for orig_val in original_values[changed_mask].unique()[:20]:
-            opt_val = valid_mappings.get(orig_val, orig_val)
+            entry = valid_mappings.get(orig_val)
+            opt_val = entry["optimized"] if entry else orig_val
             changed_examples.append((orig_val, opt_val))
         for orig_val, opt_val in changed_examples:
             _log(f"  变更: {orig_val} -> {opt_val}")

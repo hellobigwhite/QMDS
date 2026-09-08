@@ -11,7 +11,10 @@ from qmds.config.categories import parse_collection_prefix, normalize_subcategor
 from qmds.modules.web.db_helpers import get_mongo_db, get_product_db
 from qmds.modules.web.services.category_tasks import (
     resolve_category_list as _resolve_category_list,
+    run_category_optimize_task,
     run_category_process_task,
+    parse_subcategory_form,
+    subcategory_display,
 )
 from qmds.modules.web.task_manager import make_progress_callback, task_manager
 from qmds.utils.logger import get_logger
@@ -591,7 +594,7 @@ def product_data_category_process():
     不改变 clean_status / export_status，不增删文档。
     """
     category = request.form.get("category", "").strip()
-    subcategory = request.form.get("subcategory", "__all__").strip() or "__all__"
+    subcategory = parse_subcategory_form(request.form)
     threshold_raw = request.form.get("threshold", "").strip()
     common_category_input = request.form.get("common_category", "Other").strip()
 
@@ -610,7 +613,14 @@ def product_data_category_process():
         flash("请选择要处理的一级分类", "error")
         return redirect(url_for("product_data.product_data_clean"))
 
-    sub_display = subcategory if subcategory != "__all__" else "all"
+    # 防护：一级分类为 __all__ 时二级分类必须也是 __all__。
+    # 该组合历史上会被后端当作"处理全部数据"（subcategory 被忽略），
+    # 曾因前端轮询重置一级分类下拉框导致误提交，这里直接拦截。
+    if category == "__all__" and subcategory != "__all__":
+        flash("选择范围无效：一级分类为“全部”时，二级分类必须也为“全部”。请重新选择后再提交", "error")
+        return redirect(url_for("product_data.product_data_clean"))
+
+    sub_display = subcategory_display(subcategory)
     task_id = f"category_process_{category}_{sub_display}_{int(time.time())}"
     task_manager.create(task_id, "category_process", f"{category}/{sub_display}")
 
@@ -619,4 +629,32 @@ def product_data_category_process():
         lambda: run_category_process_task(task_id, category, subcategory,
                                           threshold, common_categories))
     flash(f"分类数据处理任务已启动: {category}/{sub_display}", "info")
+    return redirect(url_for("product_data.product_data_clean"))
+
+
+@bp.route("/product-data/category-optimize", methods=["POST"])
+def product_data_category_optimize():
+    """模型优化分类（数据库版）：优化已清洗未导出数据的分类字段。
+
+    LLM 同义合并 + 单级分类补全父级，与工具箱 → 模型优化分类（数据库模式）
+    共用同一任务体（category_optimize_db）。
+    仅修改"分类"字段并写入 optimize_status=optimized 状态标识，
+    不改变 clean_status / export_status，不增删文档。
+    """
+    category = request.form.get("category", "__all__").strip() or "__all__"
+    subcategory = parse_subcategory_form(request.form)
+
+    # 防护：一级分类为 __all__ 时二级分类必须也是 __all__（同 category-process）
+    if category == "__all__" and subcategory != "__all__":
+        flash("选择范围无效：一级分类为“全部”时，二级分类必须也为“全部”。请重新选择后再提交", "error")
+        return redirect(url_for("product_data.product_data_clean"))
+
+    sub_display = subcategory_display(subcategory)
+    task_id = f"category_optimize_db_{category}_{sub_display}_{int(time.time())}"
+    task_manager.create(task_id, "category_optimize_db", f"{category}/{sub_display}")
+
+    task_manager.start_task_thread(
+        task_id,
+        lambda: run_category_optimize_task(task_id, category, subcategory))
+    flash(f"模型优化分类任务已启动: {category}/{sub_display}", "info")
     return redirect(url_for("product_data.product_data_clean"))

@@ -1293,7 +1293,7 @@ class SiteOperator:
                                     progress_callback("收到停止信号，中止图片处理")
                                 return {"success": False, "message": "用户停止", "success_count": success_count, "failure_count": failure_count, "final_cs": cs}
 
-                            dimg_url = f'{site}{update_img.replace("/plxztp.php?", "/dimg.php?")}'
+                            dimg_url = f'{site}{update_img.replace("/plxztp.php?", "/one_dimg.php?")}'
                             try:
                                 img_resp = session.get(dimg_url, headers=headers, timeout=120, verify=False)
                             except requests.exceptions.RequestException as exc:
