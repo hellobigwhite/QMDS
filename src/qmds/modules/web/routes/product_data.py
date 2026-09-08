@@ -16,6 +16,12 @@ from qmds.modules.web.services.category_tasks import (
     parse_subcategory_form,
     subcategory_display,
 )
+from qmds.modules.web.services.data_allocator import (
+    MAX_API_CATEGORIES,
+    count_excel_categories,
+    resolve_export_file,
+    run_allocation_task,
+)
 from qmds.modules.web.task_manager import make_progress_callback, task_manager
 from qmds.utils.logger import get_logger
 
@@ -434,7 +440,8 @@ def api_export_folders():
 
         folders = []
         for root, dirs, files in os.walk(str(export_dir)):
-            xlsx_files = [f for f in files if f.endswith('.xlsx') and not f.startswith('merged_')]
+            xlsx_files = [f for f in files if f.endswith('.xlsx')
+                          and not f.startswith('merged_') and not f.startswith('~$')]
             if xlsx_files:
                 rel_path = os.path.relpath(root, str(export_dir))
                 folders.append({
@@ -466,7 +473,8 @@ def api_export_files():
 
         files = []
         for f in sorted(folder_path.iterdir()):
-            if f.suffix == '.xlsx':
+            # 跳过 Excel 打开时产生的 ~$ 临时锁文件
+            if f.suffix == '.xlsx' and not f.name.startswith('~$'):
                 files.append({
                     "name": f.name,
                     "size": f.stat().st_size,
@@ -582,6 +590,84 @@ def product_data_merge():
         log.error(f"合并请求处理失败: {e}")
         flash(f"合并失败: {e}", "error")
         return redirect(url_for("product_data.product_data_export"))
+
+
+@bp.route("/api/product-data/file-categories")
+def api_product_data_file_categories():
+    """获取指定导出表格中的分类统计（用于数据分配）"""
+    folder = request.args.get("folder", "").strip()
+    filename = request.args.get("file", "").strip()
+    if not folder or not filename:
+        return jsonify({"ok": False, "error": "请指定文件夹和表格文件"}), 400
+    try:
+        file_path = resolve_export_file(folder, filename)
+        col, total, cats = count_excel_categories(file_path)
+        truncated = len(cats) > MAX_API_CATEGORIES
+        return jsonify({"ok": True, "data": {
+            "category_column": col,
+            "total_rows": total,
+            "truncated": truncated,
+            "categories": [
+                {"category": c, "count": n}
+                for c, n in (cats[:MAX_API_CATEGORIES] if truncated else cats)
+            ],
+        }})
+    except FileNotFoundError as e:
+        return jsonify({"ok": False, "error": str(e)}), 404
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:
+        log.error(f"获取表格分类统计失败: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+def _parse_portion_size(raw, default, min_value=1):
+    """解析数值参数（非法值回退默认值）"""
+    try:
+        value = int(str(raw).strip())
+        return value if value >= min_value else default
+    except (TypeError, ValueError):
+        return default
+
+
+@bp.route("/product-data/allocate", methods=["POST"])
+def product_data_allocate():
+    """数据分配：主分类单独成表 + 剩余数据按分类打包为补充表分配给各主分类"""
+    folder = request.form.get("folder", "").strip()
+    filename = request.form.get("file", "").strip()
+    main_categories = [c for c in request.form.getlist("main_categories") if c.strip()]
+    min_size = _parse_portion_size(request.form.get("min_size"), 40000)
+    max_size = _parse_portion_size(request.form.get("max_size"), 50000)
+    # 大分类拆分阈值：数量超过该值的分类将拆分后均匀分配到各补充表
+    split_threshold = _parse_portion_size(request.form.get("split_threshold"), 3000,
+                                          min_value=0)
+
+    if not folder or not filename:
+        flash("请选择文件夹和表格文件", "error")
+        return redirect(url_for("product_data.product_data_export"))
+    if not main_categories:
+        flash("请选择至少一个主分类", "error")
+        return redirect(url_for("product_data.product_data_export"))
+    if max_size <= min_size:
+        flash("每份条数范围无效：最多条数必须大于最少条数", "error")
+        return redirect(url_for("product_data.product_data_export"))
+
+    try:
+        file_path = resolve_export_file(folder, filename)
+    except FileNotFoundError as e:
+        flash(f"文件不存在或已移动: {e}", "error")
+        return redirect(url_for("product_data.product_data_export"))
+
+    task_id = f"allocate_{file_path.stem}_{int(time.time())}"
+    task_manager.create(task_id, "data_allocate", f"数据分配: {filename}")
+
+    task_manager.start_task_thread(
+        task_id,
+        lambda: run_allocation_task(task_id, file_path, main_categories,
+                                    min_size, max_size, split_threshold))
+    flash(f"数据分配任务已启动: {filename}（{len(main_categories)} 个主分类）", "info")
+    return redirect(url_for("product_data.product_data_export"))
+
 
 @bp.route("/product-data/category-process", methods=["POST"])
 def product_data_category_process():

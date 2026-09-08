@@ -73,6 +73,58 @@
 </div>
 
 <div class="card">
+    <h2>📊 数据分配</h2>
+    <p class="text-muted mb-4">选择导出后的表格，先获取表格中的分类及产品数量，勾选可作为主分类的类目：主分类数据将单独成表（以分类命名）。去除主分类后的剩余数据将打包成若干份补充表（每份约 4~5 万条），其中数量超过拆分阈值的大分类会拆分后均匀分配到每一份补充表（不会整类分给单一主分类），其余小分类整类分配，每个主分类获得一份补充表，全部输出到原表格同目录下的分配文件夹。</p>
+    <form id="allocForm" method="POST" action="/product-data/allocate">
+        <div style="display: grid; grid-template-columns: 2fr 2fr 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+            <div>
+                <label for="alloc_folder">选择文件夹</label>
+                <select id="alloc_folder" name="folder" style="width:100%;" required>
+                    <option value="">请选择文件夹</option>
+                </select>
+            </div>
+            <div>
+                <label for="alloc_file">选择表格文件</label>
+                <select id="alloc_file" name="file" style="width:100%;" required>
+                    <option value="">请先选择文件夹</option>
+                </select>
+            </div>
+            <div>
+                <label for="alloc_min">每份最少条数</label>
+                <input type="number" id="alloc_min" name="min_size" value="40000" min="1" style="width:100%;">
+            </div>
+            <div>
+                <label for="alloc_max">每份最多条数</label>
+                <input type="number" id="alloc_max" name="max_size" value="50000" min="1" style="width:100%;">
+            </div>
+            <div>
+                <label for="alloc_split">大分类拆分阈值</label>
+                <input type="number" id="alloc_split" name="split_threshold" value="3000" min="0" style="width:100%;" title="数量超过该值的分类将拆分后均匀分配到各补充表，不会整类分给单一主分类">
+            </div>
+        </div>
+        <div style="margin-bottom: 12px; display: flex; align-items: center; gap: 12px;">
+            <button type="button" class="btn" id="alloc-load-btn" disabled>获取分类统计</button>
+            <span id="alloc-loading" style="display:none;" class="text-muted">
+                <span class="loading-spinner" style="display:inline-block; width:16px; height:16px; border-width:2px; vertical-align:middle; margin-right:6px;"></span>
+                正在读取表格（大文件约需 1 分钟）...
+            </span>
+        </div>
+        <div id="alloc-cats-container" style="display:none;">
+            <label>勾选主分类（勾选的类目将单独成表，并获得一份补充数据）</label>
+            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                <input type="text" id="alloc-search" placeholder="搜索分类..." style="flex:1; padding:6px 10px; border:1px solid #e5e7eb; border-radius:6px;">
+                <button type="button" class="btn-sm" onclick="allocSelectFiltered(true)">选中筛选结果</button>
+                <button type="button" class="btn-sm" onclick="allocSelectFiltered(false)">取消筛选结果</button>
+            </div>
+            <div id="alloc-cats-list" style="max-height: 300px; overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px;">
+            </div>
+            <div id="alloc-summary" style="margin-top: 12px; padding: 10px 14px; background: #f9fafb; border-radius: 8px; font-size: 14px; line-height: 1.8;"></div>
+        </div>
+        <button type="submit" id="alloc-submit" class="btn btn-success" style="margin-top: 12px;" disabled>开始分配</button>
+    </form>
+</div>
+
+<div class="card">
     <h2>可导出分类</h2>
     <div id="table-loading" style="text-align:center; padding:20px;">
         <div class="loading-spinner"></div>
@@ -153,6 +205,18 @@
     width: 16px;
     height: 16px;
     cursor: pointer;
+}
+.alloc-cat-row {
+    padding: 1px 0;
+}
+.alloc-cat-count {
+    margin-left: auto;
+    flex-shrink: 0;
+    font-size: 12px;
+    color: #6b7280;
+    background: #e5e7eb;
+    border-radius: 10px;
+    padding: 1px 8px;
 }
 </style>
 
@@ -347,20 +411,35 @@ function loadExportFolders() {
         .then(function(response) { return response.json(); })
         .then(function(data) {
             if (data.ok && data.data) {
-                var select = document.getElementById('merge_folder');
-                data.data.forEach(function(folder) {
-                    var option = document.createElement('option');
-                    option.value = folder.path;
-                    option.textContent = folder.name + ' (' + folder.file_count + ' 个文件)';
-                    select.appendChild(option);
+                ['merge_folder', 'alloc_folder'].forEach(function(selectId) {
+                    var select = document.getElementById(selectId);
+                    data.data.forEach(function(folder) {
+                        var option = document.createElement('option');
+                        option.value = folder.path;
+                        option.textContent = folder.name + ' (' + folder.file_count + ' 个文件)';
+                        select.appendChild(option);
+                    });
                 });
 
-                select.onchange = function() {
+                var mergeSelect = document.getElementById('merge_folder');
+                mergeSelect.onchange = function() {
                     if (this.value) {
                         loadFolderFiles(this.value);
                     } else {
                         document.getElementById('merge-files-container').style.display = 'none';
                         document.getElementById('merge-submit').disabled = true;
+                    }
+                };
+
+                var allocSelect = document.getElementById('alloc_folder');
+                allocSelect.onchange = function() {
+                    document.getElementById('alloc-load-btn').disabled = true;
+                    allocResetCategories();
+                    if (this.value) {
+                        loadAllocFiles(this.value);
+                    } else {
+                        var fileSelect = document.getElementById('alloc_file');
+                        fileSelect.innerHTML = '<option value="">请先选择文件夹</option>';
                     }
                 };
             }
@@ -437,5 +516,245 @@ function updateMergeButton() {
     var checkboxes = document.querySelectorAll('.merge-file-checkbox:checked');
     document.getElementById('merge-submit').disabled = checkboxes.length < 2;
 }
+
+// ── 数据分配功能 ─────────────────────────────
+var allocTotalRows = 0;
+var allocCatsData = [];
+
+function allocResetCategories() {
+    allocTotalRows = 0;
+    allocCatsData = [];
+    document.getElementById('alloc-cats-container').style.display = 'none';
+    document.getElementById('alloc-cats-list').innerHTML = '';
+    document.getElementById('alloc-summary').innerHTML = '';
+    document.getElementById('alloc-submit').disabled = true;
+}
+
+function loadAllocFiles(folder) {
+    var fileSelect = document.getElementById('alloc_file');
+    fileSelect.innerHTML = '<option value="">加载中...</option>';
+
+    fetch('/api/product-data/export-files?folder=' + encodeURIComponent(folder))
+        .then(function(response) { return response.json(); })
+        .then(function(data) {
+            fileSelect.innerHTML = '';
+            if (!data.ok || !data.data) {
+                fileSelect.innerHTML = '<option value="">加载文件列表失败</option>';
+                return;
+            }
+            var files = data.data.filter(function(f) { return f.name.indexOf('~$') !== 0; });
+            if (files.length === 0) {
+                fileSelect.innerHTML = '<option value="">该文件夹没有Excel文件</option>';
+                return;
+            }
+            var placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = '请选择文件';
+            fileSelect.appendChild(placeholder);
+            files.forEach(function(f) {
+                var option = document.createElement('option');
+                option.value = f.name;
+                option.textContent = f.name + ' (' + f.size_mb + ' MB)';
+                fileSelect.appendChild(option);
+            });
+
+            fileSelect.onchange = function() {
+                allocResetCategories();
+                document.getElementById('alloc-load-btn').disabled = !this.value;
+            };
+        })
+        .catch(function(error) {
+            console.error('加载文件列表失败:', error);
+            fileSelect.innerHTML = '<option value="">加载文件列表失败</option>';
+        });
+}
+
+function allocLoadCategories() {
+    var folder = document.getElementById('alloc_folder').value;
+    var file = document.getElementById('alloc_file').value;
+    if (!folder || !file) return;
+
+    var btn = document.getElementById('alloc-load-btn');
+    btn.disabled = true;
+    document.getElementById('alloc-loading').style.display = '';
+    allocResetCategories();
+
+    fetch('/api/product-data/file-categories?folder=' + encodeURIComponent(folder) +
+          '&file=' + encodeURIComponent(file))
+        .then(function(response) { return response.json(); })
+        .then(function(data) {
+            document.getElementById('alloc-loading').style.display = 'none';
+            btn.disabled = false;
+            if (!data.ok) {
+                document.getElementById('alloc-cats-container').style.display = 'block';
+                document.getElementById('alloc-summary').innerHTML =
+                    '<span style="color:#ef4444;">获取分类统计失败: ' + (data.error || '未知错误') + '</span>';
+                return;
+            }
+            allocRenderCategories(data.data);
+        })
+        .catch(function(error) {
+            document.getElementById('alloc-loading').style.display = 'none';
+            btn.disabled = false;
+            document.getElementById('alloc-cats-container').style.display = 'block';
+            document.getElementById('alloc-summary').innerHTML =
+                '<span style="color:#ef4444;">获取分类统计失败: ' + error + '</span>';
+        });
+}
+
+function allocRenderCategories(data) {
+    allocTotalRows = data.total_rows || 0;
+    allocCatsData = data.categories || [];
+
+    var list = document.getElementById('alloc-cats-list');
+    list.innerHTML = '';
+
+    if (allocCatsData.length === 0) {
+        list.innerHTML = '<p class="text-muted">该表格没有分类数据</p>';
+        document.getElementById('alloc-cats-container').style.display = 'block';
+        updateAllocSummary();
+        return;
+    }
+
+    allocCatsData.forEach(function(cat) {
+        var div = document.createElement('div');
+        div.className = 'alloc-cat-row';
+        div.setAttribute('data-cat', cat.category);
+
+        var label = document.createElement('label');
+        label.style.cursor = 'pointer';
+        label.style.display = 'flex';
+        label.style.alignItems = 'center';
+        label.style.gap = '8px';
+        label.style.padding = '2px 0';
+
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.name = 'main_categories';
+        cb.value = cat.category;
+        cb.dataset.count = cat.count;
+        cb.className = 'alloc-cat-checkbox';
+        cb.style.width = '16px';
+        cb.style.height = '16px';
+        cb.style.flexShrink = '0';
+        cb.onchange = updateAllocSummary;
+
+        var nameSpan = document.createElement('span');
+        nameSpan.textContent = cat.category;
+        nameSpan.style.wordBreak = 'break-all';
+
+        var countSpan = document.createElement('span');
+        countSpan.textContent = cat.count.toLocaleString() + ' 条';
+        countSpan.className = 'alloc-cat-count';
+
+        label.appendChild(cb);
+        label.appendChild(nameSpan);
+        label.appendChild(countSpan);
+        div.appendChild(label);
+        list.appendChild(div);
+    });
+
+    if (data.truncated) {
+        var note = document.createElement('p');
+        note.className = 'text-muted';
+        note.style.margin = '8px 0 0 0';
+        note.textContent = '分类数量较多，仅显示数量最多的前 ' + allocCatsData.length +
+                           ' 个（更小的分类仍会参与补充数据分配）';
+        list.appendChild(note);
+    }
+
+    document.getElementById('alloc-cats-container').style.display = 'block';
+    updateAllocSummary();
+}
+
+function allocFilterList() {
+    var query = document.getElementById('alloc-search').value.trim().toLowerCase();
+    var rows = document.querySelectorAll('.alloc-cat-row');
+    rows.forEach(function(row) {
+        var cat = (row.getAttribute('data-cat') || '').toLowerCase();
+        row.style.display = (!query || cat.indexOf(query) !== -1) ? '' : 'none';
+    });
+}
+
+function allocSelectFiltered(check) {
+    var rows = document.querySelectorAll('.alloc-cat-row');
+    rows.forEach(function(row) {
+        if (row.style.display !== 'none') {
+            var cb = row.querySelector('.alloc-cat-checkbox');
+            if (cb) cb.checked = check;
+        }
+    });
+    updateAllocSummary();
+}
+
+function updateAllocSummary() {
+    var checked = document.querySelectorAll('.alloc-cat-checkbox:checked');
+    var minSize = parseInt(document.getElementById('alloc_min').value, 10) || 40000;
+    var maxSize = parseInt(document.getElementById('alloc_max').value, 10) || 50000;
+    var splitThreshold = parseInt(document.getElementById('alloc_split').value, 10);
+    if (isNaN(splitThreshold) || splitThreshold < 0) splitThreshold = 3000;
+    var n = checked.length;
+    var selRows = 0;
+    var selectedMains = {};
+    checked.forEach(function(cb) {
+        selRows += parseInt(cb.dataset.count, 10) || 0;
+        selectedMains[cb.value] = true;
+    });
+    var remaining = Math.max(0, allocTotalRows - selRows);
+    // 剩余数据中将被拆分的大分类数量（超过阈值且未选为主分类）
+    var splitCount = 0;
+    allocCatsData.forEach(function(cat) {
+        if (cat.count > splitThreshold && !selectedMains[cat.category]) splitCount++;
+    });
+
+    var html = '';
+    if (n === 0) {
+        html = '已选主分类: 0 个 &nbsp;|&nbsp; 表格总计: ' + allocTotalRows.toLocaleString() + ' 条';
+        document.getElementById('alloc-submit').disabled = true;
+    } else {
+        var portions = 0, extra = 0, target = 0;
+        if (remaining > 0) {
+            portions = Math.max(n, Math.ceil(remaining / maxSize));
+            target = Math.round(remaining / portions);
+            extra = Math.max(0, portions - n);
+        }
+        html = '已选主分类: <b>' + n + '</b> 个（共 ' + selRows.toLocaleString() + ' 条，每个主分类单独成表）<br>';
+        html += '剩余数据: <b>' + remaining.toLocaleString() + '</b> 条';
+        if (remaining > 0) {
+            html += '，将分为 <b>' + portions + '</b> 份补充表（每份约 ' + target.toLocaleString() + ' 条）';
+            if (extra > 0) html += '，其中 ' + extra + ' 份为额外补充（未绑定主分类）';
+            html += '<br>';
+            if (splitCount > 0 && portions > 1) {
+                html += '大分类拆分: <b>' + splitCount + '</b> 个（超过 ' + splitThreshold.toLocaleString() +
+                        ' 条的分类将均匀拆分到各补充表，不整类分给单一主分类）<br>';
+            }
+            if (target < minSize) {
+                html += '<span style="color:#f59e0b;">⚠ 剩余数据较少，每份补充低于最少目标 ' +
+                        minSize.toLocaleString() + ' 条</span>';
+            } else if (target > maxSize) {
+                html += '<span style="color:#f59e0b;">⚠ 每份补充超过最多目标 ' +
+                        maxSize.toLocaleString() + ' 条</span>';
+            } else {
+                html += '<span style="color:#10b981;">✓ 每份补充在 ' + minSize.toLocaleString() +
+                        ' ~ ' + maxSize.toLocaleString() + ' 条目标范围内</span>';
+            }
+        } else {
+            html += '<br><span style="color:#f59e0b;">⚠ 去除主分类后没有剩余数据，将只生成主分类表格</span>';
+        }
+        document.getElementById('alloc-submit').disabled = false;
+    }
+    document.getElementById('alloc-summary').innerHTML = html;
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    var loadBtn = document.getElementById('alloc-load-btn');
+    if (loadBtn) loadBtn.addEventListener('click', allocLoadCategories);
+    var searchInput = document.getElementById('alloc-search');
+    if (searchInput) searchInput.addEventListener('input', allocFilterList);
+    ['alloc_min', 'alloc_max', 'alloc_split'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.addEventListener('input', updateAllocSummary);
+    });
+});
 </script>
 {% endblock %}
