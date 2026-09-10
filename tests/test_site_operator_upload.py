@@ -15,11 +15,14 @@
 - 数据上传轮询达上限不再按成功返回且清除断点。
 """
 
+import json
+
 import requests
 
 import qmds.utils.site_operator as site_operator
 from qmds.utils.site_operator import (
     DATA_MAX_ROUNDS,
+    IMG_MAX_RETRIES,
     IMG_MAX_ROUNDS,
     IMG_STALL_ROUNDS,
     IMG_UNKNOWN_ROUNDS,
@@ -37,7 +40,8 @@ class FakeResponse:
 
 
 def json_resp(payload):
-    return FakeResponse(200, payload)
+    """把字典序列化为 JSON 文本（upload_data 解析 resp.text 字符串）"""
+    return FakeResponse(200, json.dumps(payload, ensure_ascii=False))
 
 
 class FakeSession:
