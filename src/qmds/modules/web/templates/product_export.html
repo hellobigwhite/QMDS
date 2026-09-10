@@ -74,7 +74,7 @@
 
 <div class="card">
     <h2>📊 数据分配</h2>
-    <p class="text-muted mb-4">选择导出后的表格，先获取表格中的分类及产品数量，勾选可作为主分类的类目：主分类数据将单独成表（以分类命名）。去除主分类后的剩余数据将打包成若干份补充表（每份约 4~5 万条），其中数量超过拆分阈值的大分类会拆分后均匀分配到每一份补充表（不会整类分给单一主分类），其余小分类整类分配，每个主分类获得一份补充表，全部输出到原表格同目录下的分配文件夹。</p>
+    <p class="text-muted mb-4">选择导出后的表格，先获取表格中的分类及产品数量，勾选可作为主分类的类目：主分类数据将单独成主数据表（main+分类名命名）。去除主分类后的剩余数据将打包成若干份补充表（每份约 4~5 万条），其中数量超过拆分阈值的大分类会拆分后均匀分配到每一份补充表（不会整类分给单一主分类），其余小分类整类分配，每个主分类获得一份补充表。每个主分类一个数据文件夹：主数据表（main 开头）与补充数据表（分类名_supp，不含中文）放在同一文件夹，额外补充放入 extra 文件夹，全部输出到原表格同目录下的分配文件夹。分配完成后自动统计每个网站（主分类文件夹）的分类结构，在该文件夹生成 <code>分类统计.xlsx</code>（供 AI 生成网站信息使用）。</p>
     <form id="allocForm" method="POST" action="/product-data/allocate">
         <div style="display: grid; grid-template-columns: 2fr 2fr 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px;">
             <div>
@@ -120,7 +120,147 @@
             </div>
             <div id="alloc-summary" style="margin-top: 12px; padding: 10px 14px; background: #f9fafb; border-radius: 8px; font-size: 14px; line-height: 1.8;"></div>
         </div>
+        <fieldset id="alloc-split-fieldset" style="margin-top: 12px; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px 14px;">
+            <legend style="font-size: 14px; font-weight: 600; padding: 0 8px;">
+                <label style="display:flex; align-items:center; gap:8px; cursor:pointer; margin:0;">
+                    <input type="checkbox" id="split_enabled" name="split_enabled" checked>
+                    分配后批量拆表（主数据不设上限，补充数据拆分为多份）
+                </label>
+            </legend>
+            <div style="display: grid; grid-template-columns: 1fr 1fr 2fr; gap: 12px; align-items: end;">
+                <div>
+                    <label for="supp_rows_per_file">补充数据每份行数</label>
+                    <input type="number" id="supp_rows_per_file" name="supp_rows_per_file" value="5000" min="1" style="width:100%;" title="补充数据表格拆分后的每份最大数据行数；主数据表格不设上限">
+                </div>
+                <div>
+                    <label for="split_suffix_mode">原站域名后缀</label>
+                    <select id="split_suffix_mode" name="split_suffix_mode" style="width:100%;">
+                        <option value="none">不处理</option>
+                        <option value="custom">自定义后缀（自动加下划线 _）</option>
+                        <option value="part">按分卷添加 _part1 _part2 ...</option>
+                    </select>
+                </div>
+                <div id="split-custom-suffix-box" style="display:none;">
+                    <label for="split_custom_suffix">自定义后缀内容</label>
+                    <input type="text" id="split_custom_suffix" name="split_custom_suffix" placeholder="例如: us-01" style="width:100%;">
+                </div>
+            </div>
+            <label style="display:flex; align-items:center; gap:8px; margin-top:10px; cursor:pointer; font-weight:400;">
+                <input type="checkbox" id="split_remove_source" name="split_remove_source" checked>
+                拆分完成后删除原表格（拆分结果保存在各主分类的数据文件夹内）
+            </label>
+        </fieldset>
         <button type="submit" id="alloc-submit" class="btn btn-success" style="margin-top: 12px;" disabled>开始分配</button>
+    </form>
+</div>
+
+<div class="card">
+    <h2>🤖 AI 批量生成网站信息</h2>
+    <p class="text-muted mb-4">批量生成多个网站的信息：选择一个数据文件夹（如数据分配输出的分配文件夹），将遍历其下所有「最后一层子文件夹」——每个里面放着一个网站的数据（数据分配后每个主分类一个文件夹；extra 前缀的额外补充文件夹自动跳过）。按顺序逐个网站处理：读取其 <code>分类统计.xlsx</code>（数据分配时已自动生成，缺失时自动补生成），每次只把当前网站的分类结构 + 主类目交给 LLM，生成英文网站的域名、标题、描述、地址与关键词（面向美国用户）。所有网站的信息汇总输出为所选文件夹下的 <code>网站信息.xlsx</code> 表格（每个网站一行，含主类目/域名/标题/描述/主题/地址/关键词/产品数等列），每完成一个网站就落盘一次；失败的网站在「备注」列记录原因并继续。模型列表从 AgentRouter（<a href="https://agentrouter.org/" target="_blank">agentrouter.org</a>，OpenAI 兼容网关）平台获取并缓存，需先在「配置」页填写 AgentRouter API Key。</p>
+    <form method="POST" action="/product-data/site-info">
+        <div style="display: grid; grid-template-columns: 2fr 1.5fr 1.5fr; gap: 12px; margin-bottom: 12px;">
+            <div>
+                <label for="info_folder">选择数据文件夹（其下最后一层子文件夹 = 各网站）</label>
+                <select id="info_folder" name="folder" style="width:100%;" required>
+                    <option value="">请选择文件夹</option>
+                </select>
+            </div>
+            <div>
+                <label for="info_model">模型平台</label>
+                <select id="info_model" name="model" style="width:100%;">
+                    {% for m in llm_models %}
+                    <option value="{{ m.value }}" {{ 'selected' if m.value == default_info_model else '' }}>{{ m.label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                {% set ar_models = agentrouter_models or [] %}
+                {% set ar_saved = agentrouter_saved_model or '' %}
+                {% set ar_options = ar_models if (not ar_saved or ar_saved in ar_models) else ([ar_saved] + ar_models) %}
+                {% set ar_preferred = ar_saved or (ar_options[0] if ar_options else '') %}
+                <label for="info_model_id">模型 ID <span class="text-muted" style="font-weight:400;">（AgentRouter 平台真实模型）</span></label>
+                <select id="info_model_id" name="model_id" style="width:100%;"
+                        title="选择「AgentRouter 平台模型」时必填：默认使用上次获取/保存的模型，点击下方按钮可更新列表">
+                    {% if ar_options %}
+                        {% for m in ar_options %}
+                        <option value="{{ m }}" {{ 'selected' if m == ar_preferred else '' }}>{{ m }}</option>
+                        {% endfor %}
+                    {% else %}
+                        <option value="" selected>（未获取模型列表，将使用已保存的默认模型）</option>
+                    {% endif %}
+                    <option value="__custom__">✏️ 手动输入其他模型 ID…</option>
+                </select>
+                <input type="text" id="info_model_manual" name="model_id_manual"
+                       placeholder="输入平台模型 ID，如 glm-5.3"
+                       style="display:none; width:100%; margin-top:8px;">
+            </div>
+        </div>
+        <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap;">
+            <button type="button" class="btn-sm" id="ar-fetch-btn">🔄 更新模型列表（重新连接 AgentRouter）</button>
+            <span id="ar-fetch-status" class="text-muted" style="font-size: 13px;">{% if ar_models %}已缓存 {{ ar_models|length }} 个模型{% if agentrouter_models_fetched_at %}（{{ agentrouter_models_fetched_at }} 获取）{% endif %}，点击按钮可更新{% else %}尚未获取模型列表，点击按钮连接平台获取并缓存{% endif %}</span>
+        </div>
+        <button type="submit" class="btn btn-success">批量生成所有网站信息</button>
+    </form>
+
+    <hr style="margin: 18px 0; border: none; border-top: 1px dashed #d1d5db;">
+
+    <h3 style="margin-bottom: 8px;">📋 网站信息审核</h3>
+    <p class="text-muted" style="margin-bottom: 10px;">生成后点击「查看网站信息表格」加载 <code>网站信息.xlsx</code>（切换上方文件夹也会自动加载）。表格可一键复制粘贴到 Excel 中审核；修改域名后勾选「通过」，点击「应用审核」——系统将用<b>通过后的域名</b>修改对应网站的数据表：① 每个表<b>前五条数据</b>的「原站域名」列改为域名标记：主数据 <code>域名_main_partN</code>、补充数据 <code>域名_partN</code>（每个表格互不相同）；② 数据表名最前面加 <code>data_</code> 前缀，用于后续上传数据时识别（只上传网站数据表）；③ <b>网站文件夹改名为该域名</b>（如 Toilet_Tank_Lid → tanklidpro.com）。重复应用时只更新标记，不重复加前缀。</p>
+    <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap;">
+        <button type="button" class="btn-sm" id="info-table-load-btn">🔄 查看/刷新网站信息表格</button>
+        <button type="button" class="btn-sm" id="info-table-copy-btn">📋 复制表格（可粘贴到 Excel）</button>
+        <button type="button" class="btn btn-success" id="info-apply-btn">✅ 应用审核（修改数据表）</button>
+        <span id="info-table-status" class="text-muted" style="font-size: 13px;">选择文件夹后加载</span>
+    </div>
+    <div id="info-table-wrap" style="display:none; overflow-x: auto; max-height: 480px; overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 8px;">
+        <table id="info-table" style="width:100%; border-collapse: collapse; font-size: 13px; white-space: nowrap;">
+            <thead id="info-table-head" style="position: sticky; top: 0; background: #f9fafb;"></thead>
+            <tbody id="info-table-body"></tbody>
+        </table>
+    </div>
+</div>
+
+<div class="card">
+    <h2>📤 数据表上传站群系统（惠升版）</h2>
+    <p class="text-muted mb-4">登录站群系统并按网站批量上传数据表：选择文件夹后自动列出其中<b>所有以域名命名的网站文件夹</b>（网站信息审核应用后生成的 tanklidpro.com 等），勾选要上传的网站（可多选/全选），系统按顺序一个网站一个网站地上传其文件夹内 <code>data_</code> 开头的数据表。任务完成后在任务日志中<b>按网站分组输出全部上传返回的数据 ID</b>，并写入各网站文件夹的 数据ID.txt（主数据 ID 在最前）。以下载入 BB 工具的惠升版上传逻辑。</p>
+    <form method="POST" action="/product-data/site-upload/config" style="border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px 14px; margin-bottom: 14px;">
+        <div style="display: grid; grid-template-columns: 2fr 2fr 1fr 1fr; gap: 12px; margin-bottom: 8px;">
+            <div>
+                <label for="su_login_url">登录地址</label>
+                <input type="text" id="su_login_url" name="login_url" style="width:100%;" placeholder="https://erp.xxx.com/index.php?main_page=login&dongzuo=denglu">
+            </div>
+            <div>
+                <label for="su_upload_url">上传地址</label>
+                <input type="text" id="su_upload_url" name="upload_page_url" style="width:100%;" placeholder="https://erp.xxx.com/index.php?main_page=erp_products&dongzuo=add_cp_pl">
+            </div>
+            <div>
+                <label for="su_username">账号</label>
+                <input type="text" id="su_username" name="username" style="width:100%;">
+            </div>
+            <div>
+                <label for="su_password">密码 <span id="su-password-tip" style="display:none; color:#f59e0b; font-size:12px;">尚未设置，请填写</span></label>
+                <input type="password" id="su_password" name="password" placeholder="留空表示不修改" style="width:100%;">
+            </div>
+        </div>
+        <button type="submit" class="btn-sm">保存上传配置</button>
+    </form>
+    <form method="POST" action="/product-data/site-upload/domain" id="su-domain-form">
+        <div style="margin-bottom: 12px;">
+            <label for="upload_folder">选择文件夹（网站文件夹的任意上级目录均可）</label>
+            <select id="upload_folder" name="upload_folder" style="width:100%;" required>
+                <option value="">请选择文件夹</option>
+            </select>
+        </div>
+        <div id="su-sites-wrap" style="display:none; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; max-height: 320px; overflow-y: auto;">
+            <label style="display: flex; align-items: center; gap: 8px; font-weight: 600; border-bottom: 1px solid #e5e7eb; padding-bottom: 8px; margin-bottom: 6px;">
+                <input type="checkbox" id="su-site-all"> 全选网站（<span id="su-site-count">0</span> 个域名文件夹）
+            </label>
+            <div id="su-sites-list"></div>
+        </div>
+        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+            <button type="button" class="btn btn-success" id="su-upload-btn">🚀 开始上传选中网站</button>
+            <span id="su-site-status" class="text-muted" style="font-size: 13px;">选择文件夹后加载网站列表</span>
+        </div>
     </form>
 </div>
 
@@ -411,7 +551,7 @@ function loadExportFolders() {
         .then(function(response) { return response.json(); })
         .then(function(data) {
             if (data.ok && data.data) {
-                ['merge_folder', 'alloc_folder'].forEach(function(selectId) {
+                ['merge_folder', 'alloc_folder', 'upload_folder', 'info_folder'].forEach(function(selectId) {
                     var select = document.getElementById(selectId);
                     data.data.forEach(function(folder) {
                         var option = document.createElement('option');
@@ -428,6 +568,17 @@ function loadExportFolders() {
                     } else {
                         document.getElementById('merge-files-container').style.display = 'none';
                         document.getElementById('merge-submit').disabled = true;
+                    }
+                };
+
+                var uploadSelect = document.getElementById('upload_folder');
+                uploadSelect.onchange = function() {
+                    if (this.value) {
+                        loadUploadSites(this.value);
+                    } else {
+                        document.getElementById('su-sites-wrap').style.display = 'none';
+                        document.getElementById('su-site-status').textContent =
+                            '选择文件夹后加载网站列表';
                     }
                 };
 
@@ -566,6 +717,78 @@ function loadAllocFiles(folder) {
         .catch(function(error) {
             console.error('加载文件列表失败:', error);
             fileSelect.innerHTML = '<option value="">加载文件列表失败</option>';
+        });
+}
+
+// 模型 ID 下拉：选择「手动输入」时切换为文本框
+(function() {
+    var sel = document.getElementById('info_model_id');
+    var manual = document.getElementById('info_model_manual');
+    if (!sel || !manual) return;
+    function toggleManual() {
+        var custom = sel.value === '__custom__';
+        manual.style.display = custom ? '' : 'none';
+        if (custom) manual.focus();
+    }
+    sel.addEventListener('change', toggleManual);
+    toggleManual();
+})();
+
+function fetchAgentrouterModels() {
+    var btn = document.getElementById('ar-fetch-btn');
+    var status = document.getElementById('ar-fetch-status');
+    btn.disabled = true;
+    status.style.color = '';
+    status.textContent = '正在连接 AgentRouter 更新模型列表...';
+    fetch('/api/product-data/agentrouter/models')
+        .then(function(response) { return response.json(); })
+        .then(function(data) {
+            btn.disabled = false;
+            if (data.ok && data.data) {
+                var models = data.data.models || [];
+                var sel = document.getElementById('info_model_id');
+                var manual = document.getElementById('info_model_manual');
+                var current = (sel.value || '').trim();
+                // 保留用户当前已选且仍存在的模型，否则回退到已保存/第一个
+                var keep = current && models.indexOf(current) !== -1 ? current : '';
+                if (!keep) {
+                    var saved = data.data.saved_model || '';
+                    keep = saved && models.indexOf(saved) !== -1 ? saved : (models[0] || '');
+                }
+                sel.innerHTML = '';
+                if (models.length) {
+                    models.forEach(function(m) {
+                        var opt = document.createElement('option');
+                        opt.value = m;
+                        opt.textContent = m;
+                        if (m === keep) opt.selected = true;
+                        sel.appendChild(opt);
+                    });
+                } else {
+                    var ph = document.createElement('option');
+                    ph.value = '';
+                    ph.textContent = '（未获取到模型，请检查 API Key）';
+                    sel.appendChild(ph);
+                }
+                var custom = document.createElement('option');
+                custom.value = '__custom__';
+                custom.textContent = '✏️ 手动输入其他模型 ID…';
+                sel.appendChild(custom);
+                if (manual) manual.style.display = 'none';
+                status.style.color = '#10b981';
+                status.textContent = '✓ 已连接 ' + (data.data.base_url || 'AgentRouter') +
+                    '，获取到 ' + models.length + ' 个真实模型并已缓存' +
+                    (data.data.fetched_at ? '（' + data.data.fetched_at + '）' : '') +
+                    '，下次打开页面直接使用';
+            } else {
+                status.style.color = '#ef4444';
+                status.textContent = '✗ 获取失败: ' + (data.error || '未知错误');
+            }
+        })
+        .catch(function(error) {
+            btn.disabled = false;
+            status.style.color = '#ef4444';
+            status.textContent = '✗ 获取失败: ' + error;
         });
 }
 
@@ -738,6 +961,16 @@ function updateAllocSummary() {
                 html += '<span style="color:#10b981;">✓ 每份补充在 ' + minSize.toLocaleString() +
                         ' ~ ' + maxSize.toLocaleString() + ' 条目标范围内</span>';
             }
+            // 批量拆表预览
+            var splitEnabledEl = document.getElementById('split_enabled');
+            if (splitEnabledEl && splitEnabledEl.checked) {
+                var suppRows = parseInt(document.getElementById('supp_rows_per_file').value, 10) || 5000;
+                var mainFiles = n;
+                var suppSplitFiles = 0;
+                for (var pi = 0; pi < portions; pi++) suppSplitFiles += Math.ceil(target / suppRows);
+                html += '<br>拆表: 主数据 ' + mainFiles + ' 个表（不设上限，每表 1 份）'
+                     + '，补充数据约 ' + Math.max(0, suppSplitFiles) + ' 份（每份 ' + suppRows.toLocaleString() + ' 条）';
+            }
         } else {
             html += '<br><span style="color:#f59e0b;">⚠ 去除主分类后没有剩余数据，将只生成主分类表格</span>';
         }
@@ -749,12 +982,322 @@ function updateAllocSummary() {
 document.addEventListener('DOMContentLoaded', function() {
     var loadBtn = document.getElementById('alloc-load-btn');
     if (loadBtn) loadBtn.addEventListener('click', allocLoadCategories);
+
+    // 网站信息审核表格：加载 / 复制 / 应用
+    var infoLoadBtn = document.getElementById('info-table-load-btn');
+    if (infoLoadBtn) infoLoadBtn.addEventListener('click', loadInfoTable);
+    var infoCopyBtn = document.getElementById('info-table-copy-btn');
+    if (infoCopyBtn) infoCopyBtn.addEventListener('click', copyInfoTable);
+    var infoApplyBtn = document.getElementById('info-apply-btn');
+    if (infoApplyBtn) infoApplyBtn.addEventListener('click', applySiteReview);
+    var infoFolderSel = document.getElementById('info_folder');
+    if (infoFolderSel) infoFolderSel.addEventListener('change', function() {
+        if (this.value) { loadInfoTable(); }
+    });
+
+    // 按网站上传：全选 / 提交选中网站
+    var suAll = document.getElementById('su-site-all');
+    if (suAll) suAll.addEventListener('change', function() {
+        var cbs = document.querySelectorAll('.su-site');
+        for (var i = 0; i < cbs.length; i++) { cbs[i].checked = this.checked; }
+    });
+    var suBtn = document.getElementById('su-upload-btn');
+    if (suBtn) suBtn.addEventListener('click', submitDomainUpload);
+
+    // AgentRouter 真实模型列表获取（连接平台 /models 接口）
+    var arFetchBtn = document.getElementById('ar-fetch-btn');
+    if (arFetchBtn) arFetchBtn.addEventListener('click', fetchAgentrouterModels);
     var searchInput = document.getElementById('alloc-search');
     if (searchInput) searchInput.addEventListener('input', allocFilterList);
-    ['alloc_min', 'alloc_max', 'alloc_split'].forEach(function(id) {
+    ['alloc_min', 'alloc_max', 'alloc_split', 'supp_rows_per_file'].forEach(function(id) {
         var el = document.getElementById(id);
         if (el) el.addEventListener('input', updateAllocSummary);
     });
+
+    // 拆表选项联动
+    var splitEnabled = document.getElementById('split_enabled');
+    var suffixMode = document.getElementById('split_suffix_mode');
+    function syncSplitOptions() {
+        var enabled = splitEnabled.checked;
+        ['supp_rows_per_file', 'split_suffix_mode', 'split_custom_suffix',
+         'split_remove_source'].forEach(function(id) {
+            document.getElementById(id).disabled = !enabled;
+        });
+        document.getElementById('split-custom-suffix-box').style.display =
+            (enabled && suffixMode.value === 'custom') ? 'block' : 'none';
+        updateAllocSummary();
+    }
+    if (splitEnabled) splitEnabled.addEventListener('change', syncSplitOptions);
+    if (suffixMode) suffixMode.addEventListener('change', syncSplitOptions);
+    syncSplitOptions();
+
+    // 站群上传：加载已保存配置回填表单
+    fetch('/api/product-data/site-upload/config')
+        .then(function(response) { return response.json(); })
+        .then(function(data) {
+            if (data.ok && data.data) {
+                document.getElementById('su_login_url').value = data.data.login_url || '';
+                document.getElementById('su_upload_url').value = data.data.upload_page_url || '';
+                document.getElementById('su_username').value = data.data.username || '';
+                if (!data.data.has_password) {
+                    var tip = document.getElementById('su-password-tip');
+                    if (tip) tip.style.display = 'inline';
+                }
+            }
+        })
+        .catch(function(error) { console.error('加载站群上传配置失败:', error); });
 });
+
+// ── 网站信息审核表格 ──────────────────────────────
+var infoRows = [];   // 当前加载的 网站信息.xlsx 行
+var INFO_COLS = ['网站（文件夹）', '主类目', '域名', '标题', '描述', '主题',
+                 '地址', '关键词', '产品数', '分类数', '模型', '生成时间', '备注'];
+
+function infoStatus(msg, isError) {
+    var el = document.getElementById('info-table-status');
+    if (el) {
+        el.textContent = msg;
+        el.style.color = isError ? '#dc2626' : '';
+    }
+}
+
+function loadInfoTable() {
+    var folder = document.getElementById('info_folder').value;
+    if (!folder) { infoStatus('请先选择数据文件夹', true); return; }
+    infoStatus('加载中…');
+    fetch('/product-data/site-info/table?folder=' + encodeURIComponent(folder))
+        .then(function(response) { return response.json(); })
+        .then(function(data) {
+            if (!data.ok) {
+                infoRows = [];
+                document.getElementById('info-table-wrap').style.display = 'none';
+                infoStatus(data.error || '加载失败', true);
+                return;
+            }
+            infoRows = data.rows || [];
+            renderInfoTable();
+            var applied = infoRows.filter(function(r) { return r.applied; }).length;
+            infoStatus('共 ' + infoRows.length + ' 个网站（已应用审核 '
+                       + applied + ' 个）— 勾选「通过」后点击「应用审核」');
+        })
+        .catch(function(error) {
+            infoStatus('加载失败: ' + error, true);
+        });
+}
+
+function renderInfoTable() {
+    var head = document.getElementById('info-table-head');
+    var body = document.getElementById('info-table-body');
+    var wrap = document.getElementById('info-table-wrap');
+    head.innerHTML = '<tr><th><input type="checkbox" id="info-approve-all" title="全选/全不选"></th>'
+        + '<th>状态</th>'
+        + INFO_COLS.map(function(c) { return '<th>' + c + '</th>'; }).join('')
+        + '</tr>';
+    var all = document.getElementById('info-approve-all');
+    if (all) all.addEventListener('change', function() {
+        document.querySelectorAll('input.info-approve').forEach(function(cb) {
+            cb.checked = all.checked;
+        });
+    });
+    body.innerHTML = '';
+    infoRows.forEach(function(row, i) {
+        var tr = document.createElement('tr');
+        // 通过勾选
+        var tdPass = document.createElement('td');
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'info-approve';
+        cb.dataset.idx = String(i);
+        tdPass.appendChild(cb);
+        tr.appendChild(tdPass);
+        // 应用状态
+        var tdState = document.createElement('td');
+        tdState.textContent = row.applied ? '✅ 已应用' : '⏳ 待审核';
+        tr.appendChild(tdState);
+        // 数据列（域名可编辑）
+        INFO_COLS.forEach(function(c) {
+            var td = document.createElement('td');
+            if (c === '域名') {
+                var inp = document.createElement('input');
+                inp.type = 'text';
+                inp.value = row[c] || '';
+                inp.className = 'info-domain';
+                inp.dataset.idx = String(i);
+                inp.style.width = '210px';
+                inp.title = '可直接修改域名，应用审核时使用修改后的值';
+                td.appendChild(inp);
+            } else {
+                var v = row[c];
+                td.textContent = (v === undefined || v === null) ? '' : String(v);
+                td.title = td.textContent;
+            }
+            tr.appendChild(td);
+        });
+        body.appendChild(tr);
+    });
+    wrap.style.display = infoRows.length ? 'block' : 'none';
+    if (!infoRows.length) infoStatus('网站信息表为空', true);
+}
+
+function _currentDomains() {
+    // 当前编辑后的域名（input 值优先，未渲染时用行数据）
+    var domains = {};
+    document.querySelectorAll('input.info-domain').forEach(function(inp) {
+        domains[inp.dataset.idx] = inp.value.trim();
+    });
+    return domains;
+}
+
+function copyInfoTable() {
+    if (!infoRows.length) { infoStatus('请先加载网站信息表格', true); return; }
+    var domains = _currentDomains();
+    var lines = [INFO_COLS.join('\t')];
+    infoRows.forEach(function(row, i) {
+        lines.push(INFO_COLS.map(function(c) {
+            if (c === '域名') {
+                return (domains[String(i)] !== undefined)
+                    ? domains[String(i)] : (row[c] || '');
+            }
+            var v = row[c];
+            return (v === undefined || v === null) ? '' : String(v);
+        }).join('\t'));
+    });
+    var text = lines.join('\n');
+    var done = function() { infoStatus('已复制 ' + infoRows.length
+                                      + ' 行，可直接粘贴到 Excel'); };
+    var fallback = function() {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); done(); }
+        catch (e) { infoStatus('复制失败，请手动选择表格复制', true); }
+        document.body.removeChild(ta);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, fallback);
+    } else { fallback(); }
+}
+
+function applySiteReview() {
+    var folder = document.getElementById('info_folder').value;
+    if (!folder) { infoStatus('请先选择数据文件夹', true); return; }
+    if (!infoRows.length) { infoStatus('请先加载网站信息表格', true); return; }
+    var domains = _currentDomains();
+    var sites = [];
+    var invalid = [];
+    document.querySelectorAll('input.info-approve:checked').forEach(function(cb) {
+        var i = cb.dataset.idx;
+        var row = infoRows[i];
+        if (!row) return;
+        var domain = (domains[i] !== undefined)
+            ? domains[i] : String(row['域名'] || '').trim();
+        if (!domain) { invalid.push(row['网站（文件夹）']); return; }
+        sites.push({
+            folder: row['网站（文件夹）'],
+            domain: domain,
+            title: row['标题'] || '',
+            description: row['描述'] || '',
+            theme: row['主题'] || '',
+            address: row['地址'] || '',
+            keywords: row['关键词'] || ''
+        });
+    });
+    if (invalid.length) {
+        infoStatus('以下网站域名为空，请填写: ' + invalid.join(', '), true);
+        return;
+    }
+    if (!sites.length) { infoStatus('请先勾选审核通过的网站', true); return; }
+    if (!confirm('确认应用审核？\n\n将修改 ' + sites.length
+                 + ' 个网站的数据表：\n'
+                 + '· 每个表前五条数据的「原站域名」列 → 域名标记'
+                 + '（主数据 域名_main_partN / 补充数据 域名_partN，每个表格不同）\n'
+                 + '· 数据表名加 data_ 前缀（已加过的不重复加）\n'
+                 + '· 网站文件夹改名为该域名\n'
+                 + '· 审核结果回写 网站信息.xlsx')) return;
+    var form = document.createElement('form');
+    form.method = 'POST';
+    form.action = '/product-data/site-info/apply';
+    var f1 = document.createElement('input');
+    f1.type = 'hidden'; f1.name = 'folder'; f1.value = folder;
+    var f2 = document.createElement('input');
+    f2.type = 'hidden'; f2.name = 'sites'; f2.value = JSON.stringify(sites);
+    form.appendChild(f1); form.appendChild(f2);
+    document.body.appendChild(form);
+    form.submit();
+}
+
+function loadUploadSites(folder) {
+    var wrap = document.getElementById('su-sites-wrap');
+    var list = document.getElementById('su-sites-list');
+    var status = document.getElementById('su-site-status');
+    wrap.style.display = 'none';
+    list.innerHTML = '';
+    status.textContent = '正在加载网站列表...';
+    fetch('/product-data/site-upload/sites?folder=' + encodeURIComponent(folder))
+        .then(function(response) { return response.json(); })
+        .then(function(data) {
+            if (!data.ok) {
+                status.textContent = data.error || '加载失败';
+                return;
+            }
+            var sites = data.sites || [];
+            if (!sites.length) {
+                status.textContent = '该文件夹下没有以域名命名的网站文件夹（请先应用网站信息审核）';
+                return;
+            }
+            document.getElementById('su-site-count').textContent = sites.length;
+            sites.forEach(function(s) {
+                var label = document.createElement('label');
+                label.style.cssText =
+                    'display: flex; align-items: center; gap: 8px; padding: 4px 0;';
+                var cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.className = 'su-site';
+                cb.value = s.name;
+                label.appendChild(cb);
+                var nameSpan = document.createElement('span');
+                nameSpan.textContent = s.name;
+                nameSpan.style.fontWeight = '500';
+                label.appendChild(nameSpan);
+                var meta = document.createElement('span');
+                meta.className = 'text-muted';
+                meta.style.fontSize = '12px';
+                meta.textContent = '（' + s.tables + ' 个 data_ 数据表'
+                    + (s.path !== s.name ? '，位于 ' + s.path : '') + '）';
+                label.appendChild(meta);
+                list.appendChild(label);
+            });
+            document.getElementById('su-site-all').checked = false;
+            wrap.style.display = 'block';
+            status.textContent = '共 ' + sites.length
+                + ' 个网站，勾选后点击「开始上传选中网站」';
+        })
+        .catch(function(error) {
+            status.textContent = '加载网站列表失败: ' + error;
+        });
+}
+
+function submitDomainUpload() {
+    var folder = document.getElementById('upload_folder').value;
+    var cbs = document.querySelectorAll('.su-site:checked');
+    var names = [];
+    for (var i = 0; i < cbs.length; i++) { names.push(cbs[i].value); }
+    if (!folder) { alert('请先选择文件夹'); return; }
+    if (!names.length) { alert('请勾选要上传的网站'); return; }
+    if (!confirm('确认上传 ' + names.length + ' 个网站的数据表？\n\n'
+                 + '· 每个网站只上传文件夹内 data_ 开头的数据表\n'
+                 + '· 按顺序一个网站一个网站上传\n'
+                 + '· 完成后在任务日志中按网站分组输出数据ID')) return;
+    var form = document.createElement('form');
+    form.method = 'POST';
+    form.action = '/product-data/site-upload/domain';
+    var f = document.createElement('input');
+    f.name = 'upload_folder'; f.value = folder; form.appendChild(f);
+    var s = document.createElement('input');
+    s.name = 'sites'; s.value = JSON.stringify(names); form.appendChild(s);
+    document.body.appendChild(form);
+    form.submit();
+}
 </script>
 {% endblock %}

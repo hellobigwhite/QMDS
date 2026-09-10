@@ -1240,7 +1240,7 @@ class SiteOperator:
                             progress_callback("收到停止信号，中止上传")
                         return {"success": False, "message": "用户停止", "success_count": success_count, "failure_count": failure_count, "final_cs": cs}
 
-                    upload_url = f'{site}{update_img.replace("/plxztp.php?", "/dan_duopsot_konbai.php?")}&lv={idcode}&cs={cs}'
+                    upload_url = f'{site}{update_img.replace("/plxztp.php?", "/dan_duopsot.php?")}&lv={idcode}&cs={cs}'
                     try:
                         resp = session.get(upload_url, headers=headers, timeout=120, verify=False)
                     except requests.exceptions.RequestException as exc:

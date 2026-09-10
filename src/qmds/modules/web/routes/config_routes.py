@@ -57,6 +57,9 @@ def site_config():
                 "seo_proxy": request.form.get("seo_proxy", ""),
                 "seo_api_key": request.form.get("seo_api_key", ""),
                 "ark_api_key": request.form.get("ark_api_key", ""),
+                "agentrouter_api_key": request.form.get("agentrouter_api_key", ""),
+                "agentrouter_base_url": request.form.get("agentrouter_base_url", ""),
+                "agentrouter_model": request.form.get("agentrouter_model", ""),
                 "llm_model": request.form.get("llm_model", ""),
                 "rocket_cleanup_frequency": request.form.get("rocket_cleanup_frequency", "daily"),
                 "rocket_preload_links": request.form.get("rocket_preload_links", "1"),
@@ -68,12 +71,20 @@ def site_config():
             for key, value in settings_to_save.items():
                 # 密码框掩码（全为.表示未修改，跳过）；textarea 明文字段不跳过
                 if key not in ("media_root", "seo_proxy", "seo_api_key", "ark_api_key",
+                               "agentrouter_api_key", "agentrouter_base_url",
+                               "agentrouter_model",
                                "report_username", "erp_username", "rocket_cleanup_frequency",
                                "rocket_preload_links", "rocket_minify_css", "rocket_minify_js",
                                "rocket_lazyload", "rocket_remove_unused_css"):
                     if value and all(c == '.' for c in value):
                         continue
                 site_db.set_setting(key, value)
+
+            # 模型下拉框选择「手动输入」时，取配套文本框的值作为默认模型
+            if request.form.get("agentrouter_model", "") == "__custom__":
+                manual = (request.form.get("agentrouter_model_manual") or "").strip()
+                if manual:
+                    site_db.set_setting("agentrouter_model", manual)
 
             # 极速AI API Key 写入配置文件（保留注释行）
             jisuai_keys_content = request.form.get("jisuai_api_keys", "")
@@ -106,6 +117,21 @@ def site_config():
         current_settings["menu_ai_api_keys"] = _read_menu_ai_keys_file()
         current_settings["llm_models"] = list_llm_models()
         current_settings["current_llm_model"] = current_settings.get("llm_model", "") or settings.llm_model
+        # AgentRouter 模型列表缓存（下拉框直接用缓存，不重新连接平台）
+        try:
+            from qmds.modules.web.routes.product_data import _load_ar_models_cache
+            from qmds.utils.agentrouter_client import DEFAULT_AGENTROUTER_BASE_URL
+
+            ar_base = (current_settings.get("agentrouter_base_url", "")
+                       or settings.agentrouter_base_url
+                       or DEFAULT_AGENTROUTER_BASE_URL).strip()
+            ar_cache = _load_ar_models_cache(site_db, ar_base)
+            current_settings["agentrouter_models_list"] = ar_cache["models"]
+            current_settings["agentrouter_models_fetched_at"] = ar_cache["fetched_at"]
+        except Exception as e:
+            log.warning(f"读取 AgentRouter 模型缓存失败: {e}")
+            current_settings["agentrouter_models_list"] = []
+            current_settings["agentrouter_models_fetched_at"] = ""
         return render_template("site_config.html", settings=current_settings)
     except Exception as e:
         log.error(f"配置页面错误: {e}")

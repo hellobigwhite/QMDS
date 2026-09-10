@@ -19,7 +19,7 @@ log = get_logger("llm_models")
 # =========================
 # 每个模型条目定义：
 #   value:     唯一标识（Web 下拉框 value / .env 配置值）
-#   provider:  "mimo" 或 "ark"
+#   provider:  "mimo"、"ark" 或 "agentrouter"
 #   model_id:  传给 API 的模型名
 #   base_url:  API 地址
 #   label:     下拉菜单显示文本
@@ -58,31 +58,92 @@ LLM_MODELS = [
         "label": "火山方舟 DeepSeek-V4-Pro 正式版",
         "desc": "火山方舟 DeepSeek-V4-Pro 文本模型，需配置 ARK API Key",
     },
+    {
+        # AgentRouter 平台（https://agentrouter.org/，OpenAI 兼容网关）。
+        # 不硬编码模型名：model_id 运行时从设置解析（site_db agentrouter_model /
+        # .env AGENTROUTER_MODEL），模型列表通过平台 /models 接口实时获取
+        # （配置页「获取模型列表」按钮 / AI 生成网站信息卡片）。
+        "value": "agentrouter",
+        "provider": "agentrouter",
+        "model_id": "",
+        "base_url": "https://agentrouter.org/v1",
+        "label": "AgentRouter 平台模型",
+        "desc": "AgentRouter 平台真实模型（模型列表从平台实时获取后选择），需配置 AgentRouter API Key",
+    },
 ]
 
 DEFAULT_LLM_MODEL = "mimo-v2.5"
+
+# AgentRouter（https://agentrouter.org/）平台模型的选择值（模型 ID 从设置解析）
+DEFAULT_AGENTROUTER_MODEL = "agentrouter"
 
 
 # =========================
 # 查询辅助
 # =========================
 
-def get_llm_model_config(model_value: str = "") -> dict:
+def get_llm_default_headers(model_config: dict) -> dict:
+    """返回创建 OpenAI client 时需要的 default_headers
+
+    AgentRouter（agentrouter.org，AI Coding 公益站）按 User-Agent 做客户端
+    白名单：OpenAI SDK 默认 UA 会被 401 "unauthorized client detected" 拒绝，
+    必须伪装为白名单内的编程工具 UA（实测 cline/1.0.0 可用）。
+    其他 provider 返回空 dict（用 SDK 默认头）。
+    """
+    if model_config.get("provider") == "agentrouter":
+        from qmds.utils.agentrouter_client import TOOL_USER_AGENT
+        return {"User-Agent": TOOL_USER_AGENT}
+    return {}
+
+def get_llm_model_config(model_value: str = "", site_db=None,
+                        model_id_override: str = "") -> dict:
     """根据 model_value 返回模型配置字典；未找到返回默认模型。
 
     Args:
-        model_value: 模型唯一标识（如 "mimo-v2.5"、"ark-ep-20260822151623"）
+        model_value: 模型唯一标识（如 "mimo-v2.5"、"agentrouter"）
                      空字符串时返回默认模型。
+        site_db: 可选的 SiteDB 实例。AgentRouter 的模型 ID / API 地址
+                 存放在 site_db 设置 agentrouter_model / agentrouter_base_url
+                 （回退 .env AGENTROUTER_MODEL / AGENTROUTER_BASE_URL），
+                 在此解析填充；不硬编码任何平台模型名。
+        model_id_override: 显式模型 ID（如从平台 /models 实时列表中选择的值），
+                 优先级最高。为空时按设置解析。
 
     Returns:
         模型配置 dict
     """
     if not model_value:
         model_value = settings.llm_model or DEFAULT_LLM_MODEL
+    config = None
     for m in LLM_MODELS:
         if m["value"] == model_value:
-            return m
-    return next(m for m in LLM_MODELS if m["value"] == DEFAULT_LLM_MODEL)
+            config = m
+            break
+    if config is None:
+        config = next(m for m in LLM_MODELS if m["value"] == DEFAULT_LLM_MODEL)
+
+    # AgentRouter：model_id / base_url 均运行时解析（模型名不硬编码，
+    # 一律来自平台 /models 实时列表的选择或用户显式填写）
+    if config.get("provider") == "agentrouter":
+        model_id = str(model_id_override or "").strip()
+        base_url = ""
+        if site_db is not None:
+            if not model_id:
+                model_id = site_db.get_setting("agentrouter_model", "") or ""
+            base_url = site_db.get_setting("agentrouter_base_url", "") or ""
+        if not model_id:
+            model_id = settings.agentrouter_model
+        if not base_url:
+            base_url = settings.agentrouter_base_url
+        model_id = str(model_id or "").strip()
+        if not model_id:
+            raise ValueError(
+                "AgentRouter 未选择模型：请先点击「获取模型列表」从平台真实"
+                "模型中选择（或在配置页设置默认模型）后再调用")
+        config = dict(config, model_id=model_id,
+                      base_url=(str(base_url).strip().rstrip("/")
+                                or config["base_url"]))
+    return config
 
 
 def list_llm_models() -> list:
@@ -149,6 +210,16 @@ def get_llm_api_key(model_config: dict, site_db=None) -> str:
                 return key
         return settings.ark_api_key
 
+    if provider == "agentrouter":
+        if site_db is not None:
+            key = site_db.get_setting("agentrouter_api_key", "")
+            if key:
+                return key
+        if settings.agentrouter_api_key:
+            return settings.agentrouter_api_key
+        raise RuntimeError("未配置 AgentRouter API Key（请在配置页设置，"
+                           "或在 .env 配置 AGENTROUTER_API_KEY）")
+
     # mimo: 多 key 轮换
     return _get_next_mimo_key()
 
@@ -161,6 +232,11 @@ def has_llm_api_key(model_config: dict, site_db=None) -> bool:
         if site_db is not None and site_db.get_setting("ark_api_key", ""):
             return True
         return bool(settings.ark_api_key)
+
+    if provider == "agentrouter":
+        if site_db is not None and site_db.get_setting("agentrouter_api_key", ""):
+            return True
+        return bool(settings.agentrouter_api_key)
 
     # mimo: key 文件有可用 key，或 settings.mimo_api_key 有默认值
     return count_mimo_keys() > 0 or bool(settings.mimo_api_key)
@@ -177,7 +253,12 @@ def get_llm_extra_body(model_config: dict) -> Optional[dict]:
     {"thinking": {"type": "disabled"}} 关闭深度思考。
     思考型模型若不关闭思考，token 会被 reasoning 耗尽导致 content 为空。
     若模型不支持该参数，chat_completion_with_fallback 会自动降级重试。
+
+    AgentRouter 网关（Gemini/GPT/Claude 等）不支持该参数，返回 None
+    直接以标准 OpenAI 参数调用。
     """
+    if model_config.get("provider") == "agentrouter":
+        return None
     return {"thinking": {"type": "disabled"}}
 
 
@@ -206,7 +287,7 @@ def resolve_llm_model(model_value: str = "", site_db=None) -> dict:
             "system_message": str,   # system message
         }
     """
-    config = get_llm_model_config(model_value)
+    config = get_llm_model_config(model_value, site_db)
     api_key = get_llm_api_key(config, site_db)
     return {
         "config": config,

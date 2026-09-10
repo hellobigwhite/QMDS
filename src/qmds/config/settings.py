@@ -55,6 +55,11 @@ class Settings:
     # 火山方舟（Ark）— 用于 LLM 文本模型和图片生成
     ark_api_key: str = ""
 
+    # AgentRouter（https://agentrouter.org/）— OpenAI 兼容模型网关
+    agentrouter_api_key: str = ""
+    agentrouter_base_url: str = "https://agentrouter.org/v1"
+    agentrouter_model: str = ""
+
     # LLM 文本模型选择（筛站/补充分类/构建菜单共用）
     llm_model: str = "mimo-v2.5"
 
@@ -103,6 +108,10 @@ class Settings:
             glm_model=os.getenv("GLM_MODEL", "mimo-v2.5"),
             ai_batch_size=int(os.getenv("AI_BATCH_SIZE", "10")),
             ark_api_key=os.getenv("ARK_API_KEY", ""),
+            agentrouter_api_key=os.getenv("AGENTROUTER_API_KEY", ""),
+            agentrouter_base_url=os.getenv("AGENTROUTER_BASE_URL",
+                                           "https://agentrouter.org/v1"),
+            agentrouter_model=os.getenv("AGENTROUTER_MODEL", ""),
             llm_model=os.getenv("LLM_MODEL", "mimo-v2.5"),
         )
 

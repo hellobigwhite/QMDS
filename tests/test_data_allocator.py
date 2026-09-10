@@ -44,7 +44,8 @@ def make_df(categories):
             rows.append({"SKU": f"S{i}-{j}", "Name": f"P{i}-{j}",
                          "Description": "d", "Regular price": 9.9,
                          "Categories": cat[0], "Images": "", "cf_opingts": "",
-                         "自定义分类": "", "原站域名": "", "分布网站识别": 0, "语言": "en"})
+                         "自定义分类": "", "原站域名": "example.com",
+                         "分布网站识别": 0, "语言": "en"})
     return pd.DataFrame(rows, columns=EXPORT_COLUMNS)
 
 
@@ -294,41 +295,148 @@ def test_run_allocation_task(workdir):
     out_dir = out_dirs[0]
     assert out_dir.name.startswith("export_test_分配_")
 
-    files = sorted(p.name for p in out_dir.glob("*.xlsx"))
-    # 剩余 6400 条 / 2000 上限 -> 4 份补充（2 绑定主分类 + 2 额外）+ 2 主数据表
-    assert set(files) == {"Main_One.xlsx", "Main_Two.xlsx",
-                          "Main_One_补充.xlsx", "Main_Two_补充.xlsx",
-                          "补充数据_额外1.xlsx", "补充数据_额外2.xlsx"}, files
-    assert len(files) == 6
+    # 结构: 每个主分类一个数据文件夹（主数据 + 补充数据同文件夹），额外补充 extra{N}
+    folders = {d.name for d in out_dir.iterdir() if d.is_dir()}
+    assert folders == {"Main_One", "Main_Two", "extra1", "extra2"}, folders
+    assert list(out_dir.glob("*.xlsx")) == []
 
-    supp_files = ["Main_One_补充.xlsx", "Main_Two_补充.xlsx",
-                  "补充数据_额外1.xlsx", "补充数据_额外2.xlsx"]
+    # 主数据表: main 前缀命名，只含对应分类
+    main1 = pd.read_excel(out_dir / "Main_One" / "mainMain_One.xlsx", engine="openpyxl")
+    assert len(main1) == 120
+    assert (main1["Categories"] == "Main One").all()
+    main2 = pd.read_excel(out_dir / "Main_Two" / "mainMain_Two.xlsx", engine="openpyxl")
+    assert len(main2) == 80
+    assert (main2["Categories"] == "Main|||Two").all()
+
+    # 补充数据表: 与主数据同文件夹，命名不含中文
+    supp_files = [out_dir / "Main_One" / "Main_One_supp.xlsx",
+                  out_dir / "Main_Two" / "Main_Two_supp.xlsx",
+                  out_dir / "extra1" / "extra1.xlsx",
+                  out_dir / "extra2" / "extra2.xlsx"]
     supp_sizes = []
-    total_rows = 0
+    total_rows = len(main1) + len(main2)
     seen = set()
-    for p in out_dir.glob("*.xlsx"):
+    for sub in (main1, main2):
+        for sku in sub["SKU"]:
+            assert sku not in seen
+            seen.add(sku)
+    for p in supp_files:
+        assert p.exists(), p
+        # 命名不含中文
+        assert not any("一" <= ch <= "鿿" for ch in p.stem), p.stem
         sub = pd.read_excel(p, engine="openpyxl")
         total_rows += len(sub)
         for sku in sub["SKU"]:
             assert sku not in seen  # 数据不重复
             seen.add(sku)
-        if p.name in supp_files:
-            supp_sizes.append(len(sub))
-            # 补充表不含主分类
-            assert not sub["Categories"].isin(["Main One", "Main|||Two"]).any()
-            # Big Cat(3400 > 1000) 拆分：每份恰好 850 条
-            assert int((sub["Categories"] == "Big Cat").sum()) == 850
-            # 每份在 1500~2000 范围内
-            assert 1500 <= len(sub) <= 2000
+        supp_sizes.append(len(sub))
+        # 补充表不含主分类
+        assert not sub["Categories"].isin(["Main One", "Main|||Two"]).any()
+        # Big Cat(3400 > 1000) 拆分：每份恰好 850 条
+        assert int((sub["Categories"] == "Big Cat").sum()) == 850
+        # 每份在 1500~2000 范围内
+        assert 1500 <= len(sub) <= 2000
     assert total_rows == len(df)  # 数据不丢失
     assert sum(supp_sizes) == 3400 + 3000
     assert sorted(supp_sizes) == [1550, 1550, 1650, 1650]
 
-    # 主数据表只含对应分类
-    main1 = pd.read_excel(out_dir / "Main_One.xlsx", engine="openpyxl")
-    assert (main1["Categories"] == "Main One").all()
-    main2 = pd.read_excel(out_dir / "Main_Two.xlsx", engine="openpyxl")
-    assert (main2["Categories"] == "Main|||Two").all()
+
+def test_run_allocation_task_with_split(workdir):
+    """分配后批量拆表：主数据不设上限（整表一份），补充数据按行数拆分"""
+    from qmds.modules.web.task_manager import task_manager
+
+    cats = [("Main One", 120), ("Main|||Two", 80), ("Big Cat", 3400)]
+    cats += [(f"cat{i}", 100) for i in range(30)]  # 3000 条小分类
+    df = make_df(cats)
+    fp = workdir / "export_split.xlsx"
+    df.to_excel(fp, index=False, engine="openpyxl")
+
+    task_id = "test_alloc_split"
+    task_manager.create(task_id, "data_allocate", "test")
+    run_allocation_task(task_id, fp, ["Main One", "Main|||Two"], 1500, 2000, 1000,
+                        split_options={"enabled": True,
+                                       "supp_rows_per_file": 700,
+                                       "suffix_mode": "part",
+                                       "remove_source": True})
+
+    task = task_manager.get(task_id)
+    assert task["status"] == "completed", task_manager.get_logs(task_id)
+
+    out_dir = next(d for d in workdir.iterdir() if d.is_dir()
+                   and d.name.startswith("export_split_分配_"))
+
+    # 拆分后源表格被删除；主数据与补充数据的分卷都在同一分类文件夹内
+    xlsx_left = list(out_dir.glob("*.xlsx"))
+    assert xlsx_left == [], xlsx_left
+    folders = {d.name for d in out_dir.iterdir() if d.is_dir()}
+    assert folders == {"Main_One", "Main_Two", "extra1", "extra2"}, folders
+
+    import re as _re
+
+    # Main_One 文件夹: 主数据 1 份（不设上限）+ 补充数据 3 份
+    main_one_files = list((out_dir / "Main_One").glob("*.xlsx"))
+    main_parts = [p for p in main_one_files if p.name.startswith("main")]
+    assert len(main_parts) == 1
+    assert main_parts[0].name.startswith("mainMain_One_part")
+    df1 = pd.read_excel(main_parts[0], engine="openpyxl")
+    assert len(df1) == 120
+    # 后缀模式 part: 数据行添加 _part1 后缀
+    assert (df1["原站域名"] == "example.com_part1").all()
+
+    supp_parts = [p for p in main_one_files if "_supp_" in p.name]
+    assert len(supp_parts) == 3
+    sizes = [len(pd.read_excel(p, engine="openpyxl")) for p in supp_parts]
+    assert sorted(sizes, reverse=True) == [700, 700, 250]
+    # 后缀 part1..part3 的原站域名
+    for p in supp_parts:
+        m = _re.search(r"_part(\d+)_", p.name)
+        dfp = pd.read_excel(p, engine="openpyxl")
+        expected_suffix = f"example.com_part{m.group(1)}"
+        assert (dfp["原站域名"] == expected_suffix).all()
+
+    # 额外补充文件夹: extra{N}_part{M}，命名不含中文
+    extra_files = list((out_dir / "extra1").glob("*.xlsx"))
+    assert len(extra_files) == 3
+    assert all(p.name.startswith("extra1_part") for p in extra_files)
+    for p in extra_files:
+        assert not any("\u4e00" <= ch <= "\u9fff" for ch in p.stem), p.stem
+
+    # 全部数据不重不漏（分类统计.xlsx 是统计文件，非数据表，跳过）
+    all_skus = []
+    for d in out_dir.iterdir():
+        if d.is_dir():
+            for p in d.glob("*.xlsx"):
+                if p.name == "分类统计.xlsx":
+                    continue
+                all_skus.extend(pd.read_excel(p, engine="openpyxl")["SKU"])
+    assert len(all_skus) == len(df)
+    assert len(set(all_skus)) == len(df)
+
+
+def test_run_allocation_task_split_disabled(workdir):
+    """未启用拆表（enabled=False）：主数据与补充数据同文件夹，无分卷"""
+    from qmds.modules.web.task_manager import task_manager
+
+    df = make_df([("Main One", 50), ("other", 100)])
+    fp = workdir / "no_split.xlsx"
+    df.to_excel(fp, index=False, engine="openpyxl")
+
+    task_id = "test_alloc_nosplit"
+    task_manager.create(task_id, "data_allocate", "test")
+    run_allocation_task(task_id, fp, ["Main One"], 40, 100,
+                        split_options={"enabled": False})
+
+    task = task_manager.get(task_id)
+    assert task["status"] == "completed"
+    out_dir = next(d for d in workdir.iterdir() if d.is_dir())
+    # 每个主分类一个文件夹: main 前缀主数据 + _supp 补充数据 + 分类统计
+    folders = {d.name for d in out_dir.iterdir() if d.is_dir()}
+    assert folders == {"Main_One"}, folders
+    assert list(out_dir.glob("*.xlsx")) == []
+    names = sorted(p.name for p in (out_dir / "Main_One").glob("*.xlsx"))
+    # 分配完成后自动生成网站分类统计（默认开启）
+    assert names == ["Main_One_supp.xlsx", "mainMain_One.xlsx", "分类统计.xlsx"], names
+    assert not any(d.is_dir() for d in (out_dir / "Main_One").iterdir())
 
 
 def test_run_allocation_task_all_main(workdir):
@@ -346,8 +454,10 @@ def test_run_allocation_task_all_main(workdir):
     task = task_manager.get(task_id)
     assert task["status"] == "completed"
     out_dir = next(d for d in workdir.iterdir() if d.is_dir())
-    files = sorted(p.name for p in out_dir.glob("*.xlsx"))
-    assert files == ["Only_A.xlsx", "Only_B.xlsx"]
+    folders = {d.name for d in out_dir.iterdir() if d.is_dir()}
+    assert folders == {"Only_A", "Only_B"}, folders
+    assert (out_dir / "Only_A" / "mainOnly_A.xlsx").exists()
+    assert (out_dir / "Only_B" / "mainOnly_B.xlsx").exists()
 
 
 def test_run_allocation_task_invalid_file(workdir):
@@ -363,3 +473,70 @@ def test_run_allocation_task_invalid_file(workdir):
     run_allocation_task(task_id, fp, ["A"], 40000, 50000)
 
     assert task_manager.get(task_id)["status"] == "failed"
+
+
+# ── 分配后自动网站分类统计 ─────────────────────
+
+def _read_stats(path):
+    """读取分类统计.xlsx（复用 category_stats 的读取器），返回 {分类: 产品数}"""
+    from qmds.modules.web.services.category_stats import read_stats_excel
+
+    result = read_stats_excel(path)
+    counts = {c["category"]: c["count"] for c in result["categories"]}
+    return counts, result["summary"]
+
+
+def test_run_allocation_task_generates_stats(workdir):
+    """分配完成后自动生成各网站（主分类文件夹）的分类统计.xlsx
+
+    每个主分类文件夹一份统计（主数据 + 补充数据合并计数），
+    extra 文件夹不属于网站不生成统计。
+    """
+    from qmds.modules.web.task_manager import task_manager
+
+    cats = [("Main One", 120), ("Main|||Two", 80)]
+    cats += [(f"cat{i}", 100) for i in range(10)]  # 1000 条剩余
+    df = make_df(cats)
+    fp = workdir / "export_stats.xlsx"
+    df.to_excel(fp, index=False, engine="openpyxl")
+
+    task_id = "test_alloc_stats"
+    task_manager.create(task_id, "data_allocate", "test")
+    run_allocation_task(task_id, fp, ["Main One", "Main|||Two"], 500, 600, 1000)
+
+    task = task_manager.get(task_id)
+    assert task["status"] == "completed", task_manager.get_logs(task_id)
+    assert "网站分类统计" in task["message"], task["message"]
+
+    out_dir = next(d for d in workdir.iterdir() if d.is_dir())
+    # 各网站文件夹（主分类）都有统计文件
+    stats1 = out_dir / "Main_One" / "分类统计.xlsx"
+    stats2 = out_dir / "Main_Two" / "分类统计.xlsx"
+    assert stats1.exists(), list((out_dir / "Main_One").iterdir())
+    assert stats2.exists(), list((out_dir / "Main_Two").iterdir())
+
+    # Main_One = 主数据 120 + 补充 500（10 个小分类整类分配，不拆散）
+    counts1, summary1 = _read_stats(stats1)
+    assert sum(counts1.values()) == 120 + 500, sum(counts1.values())
+    assert counts1.get("Main One") == 120
+    small = {c: n for c, n in counts1.items() if c.startswith("cat")}
+    assert sum(small.values()) == 500
+    assert all(n == 100 for n in small.values())
+    # 汇总指向正确的文件夹
+    assert summary1["数据文件夹"] == "Main_One"
+
+    # Main_Two = 主数据 80 + 剩余 500
+    counts2, summary2 = _read_stats(stats2)
+    assert sum(counts2.values()) == 80 + 500, sum(counts2.values())
+    assert counts2.get("Main|||Two") == 80
+    assert summary2["数据文件夹"] == "Main_Two"
+
+    # extra 文件夹（未绑定主分类，不属于网站）不生成统计
+    extra_dirs = [d for d in out_dir.iterdir()
+                  if d.is_dir() and d.name.startswith("extra")]
+    for d in extra_dirs:
+        assert not (d / "分类统计.xlsx").exists()
+
+    # 日志包含统计完成记录
+    logs = [e.get("message", "") for e in task_manager.get_logs(task_id)]
+    assert any("网站分类统计完成: Main_One" in m for m in logs)

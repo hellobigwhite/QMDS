@@ -19,6 +19,7 @@ from qmds.config.llm_models import (
     has_llm_api_key,
     get_llm_extra_body,
     get_llm_system_message,
+    get_llm_default_headers,
     extract_llm_text,
     chat_completion_with_fallback,
 )
@@ -189,7 +190,7 @@ def _call_llm_build_menu(main_cat, target_top, id_to_info, tree_data, site_db=No
     model_value = settings.llm_model
     if site_db is not None:
         model_value = site_db.get_setting("llm_model", "") or model_value
-    config = get_llm_model_config(model_value)
+    config = get_llm_model_config(model_value, site_db)
 
     cat_list_str = _build_category_list(id_to_info)
     tree_summary = _build_tree_summary(tree_data, id_to_info)
@@ -199,7 +200,8 @@ def _call_llm_build_menu(main_cat, target_top, id_to_info, tree_data, site_db=No
     for attempt in range(3):
         api_key = get_llm_api_key(config, site_db)
         try:
-            client = OpenAI(base_url=config["base_url"], api_key=api_key)
+            client = OpenAI(base_url=config["base_url"], api_key=api_key,
+                            default_headers=get_llm_default_headers(config))
             completion = chat_completion_with_fallback(
                 client,
                 config=config,

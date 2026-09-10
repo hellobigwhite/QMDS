@@ -90,6 +90,49 @@
     </div>
 
     <div class="card">
+        <h2>AgentRouter 平台配置</h2>
+        <p class="text-muted mb-4">AgentRouter（<a href="https://agentrouter.org/" target="_blank">agentrouter.org</a>）是 OpenAI 兼容的模型网关。用于「AI 生成网站信息」等功能，也可作为全局 LLM 文本模型。模型不硬编码：点击「获取模型列表」真实连接平台拉取当前可用模型。</p>
+        <div>
+            <label>AgentRouter API Key</label>
+            <input type="text" name="agentrouter_api_key" value="{{ settings.agentrouter_api_key|default('') }}"
+                   placeholder="sk-xxxxxxxxxxxxxxxx"
+                   autocomplete="off">
+            <small style="color:#666;font-size:12px;">从 <a href="https://agentrouter.org/" target="_blank">AgentRouter 平台</a> 获取 API Key。</small>
+        </div>
+        <div style="margin-top:12px;">
+            <label>API 地址（OpenAI 兼容路径）</label>
+            <input type="text" name="agentrouter_base_url" value="{{ settings.agentrouter_base_url|default('https://agentrouter.org/v1') }}"
+                   placeholder="https://agentrouter.org/v1"
+                   style="width:100%; max-width:480px;">
+            <small style="color:#666;font-size:12px;">默认 https://agentrouter.org/v1；若平台文档给出其他接口地址，在此修改。</small>
+        </div>
+        <div style="margin-top:12px;">
+            {% set ar_models = settings.agentrouter_models_list or [] %}
+            {% set ar_saved = settings.agentrouter_model or '' %}
+            {% set ar_options = ar_models if (not ar_saved or ar_saved in ar_models) else ([ar_saved] + ar_models) %}
+            <label>默认模型 ID（从平台真实模型中选择）</label>
+            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                <select name="agentrouter_model" id="agentrouter_model_input"
+                        style="width:100%; max-width:360px;">
+                    {% if ar_options %}
+                        {% for m in ar_options %}
+                        <option value="{{ m }}" {{ 'selected' if m == ar_saved else '' }}>{{ m }}</option>
+                        {% endfor %}
+                    {% else %}
+                        <option value="" selected>（未获取模型列表，点击右侧按钮更新）</option>
+                    {% endif %}
+                    <option value="__custom__">✏️ 手动输入其他模型 ID…</option>
+                </select>
+                <button type="button" class="btn-sm" id="ar-config-fetch-btn">🔄 更新模型列表</button>
+            </div>
+            <input type="text" name="agentrouter_model_manual" id="agentrouter_model_manual"
+                   placeholder="输入平台模型 ID，如 glm-5.3"
+                   style="display:none; width:100%; max-width:360px; margin-top:8px;">
+            <small style="color:#666;font-size:12px;" id="ar-config-fetch-status">{% if ar_models %}已缓存 {{ ar_models|length }} 个模型{% if settings.agentrouter_models_fetched_at %}（{{ settings.agentrouter_models_fetched_at }} 获取）{% endif %}，点击按钮可重新连接平台更新{% else %}尚未获取模型列表，点击右侧按钮连接平台获取并缓存{% endif %}</small>
+        </div>
+    </div>
+
+    <div class="card">
         <h2>AI 菜单配置</h2>
         <p class="text-muted mb-4">用于AI构建菜单功能。每行一个API Key，# 开头为注释。多Key自动轮换，支持多线程调用。</p>
         <div>
@@ -113,7 +156,7 @@
                 {% endfor %}
             </select>
             <small style="color:#666;font-size:12px;">
-                MiMo 模型使用 menu_ai_api_keys.txt 中的 Key；火山方舟模型使用上方配置的 ark_api_key。
+                MiMo 模型使用 menu_ai_api_keys.txt 中的 Key；火山方舟模型使用上方配置的 ark_api_key；AgentRouter 模型使用上方配置的 AgentRouter API Key，模型 ID 从平台实时获取（上方「获取模型列表」）。
             </small>
         </div>
     </div>
@@ -194,4 +237,88 @@
         </a>
     </div>
 </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var fetchBtn = document.getElementById('ar-config-fetch-btn');
+    if (!fetchBtn) return;
+
+    // 模型下拉：选择「手动输入」时切换为文本框
+    var modelSelect = document.getElementById('agentrouter_model_input');
+    var modelManual = document.getElementById('agentrouter_model_manual');
+    function toggleManual() {
+        if (!modelSelect || !modelManual) return;
+        var custom = modelSelect.value === '__custom__';
+        modelManual.style.display = custom ? '' : 'none';
+        if (custom) modelManual.focus();
+    }
+    if (modelSelect) {
+        modelSelect.addEventListener('change', toggleManual);
+        toggleManual();
+    }
+
+    fetchBtn.addEventListener('click', function() {
+        var keyInput = document.querySelector('input[name="agentrouter_api_key"]');
+        var urlInput = document.querySelector('input[name="agentrouter_base_url"]');
+        var status = document.getElementById('ar-config-fetch-status');
+        fetchBtn.disabled = true;
+        status.style.color = '';
+        status.textContent = '正在连接 AgentRouter 验证并获取模型列表...';
+        fetch('/api/product-data/agentrouter/models', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                api_key: keyInput ? keyInput.value.trim() : '',
+                base_url: urlInput ? urlInput.value.trim() : ''
+            })
+        })
+            .then(function(response) { return response.json(); })
+            .then(function(data) {
+                fetchBtn.disabled = false;
+                if (data.ok && data.data) {
+                    var models = data.data.models || [];
+                    var sel = document.getElementById('agentrouter_model_input');
+                    var current = sel ? (sel.value || '').trim() : '';
+                    var keep = current && models.indexOf(current) !== -1 ? current : '';
+                    if (!keep && models.length) keep = models[0];
+                    if (sel) {
+                        sel.innerHTML = '';
+                        if (models.length) {
+                            models.forEach(function(m) {
+                                var opt = document.createElement('option');
+                                opt.value = m;
+                                opt.textContent = m;
+                                if (m === keep) opt.selected = true;
+                                sel.appendChild(opt);
+                            });
+                        } else {
+                            var ph = document.createElement('option');
+                            ph.value = '';
+                            ph.textContent = '（未获取到模型，请检查 API Key）';
+                            sel.appendChild(ph);
+                        }
+                        var custom = document.createElement('option');
+                        custom.value = '__custom__';
+                        custom.textContent = '✏️ 手动输入其他模型 ID…';
+                        sel.appendChild(custom);
+                    }
+                    if (modelManual) modelManual.style.display = 'none';
+                    status.style.color = '#10b981';
+                    status.textContent = '✓ 连接成功（' + (data.data.base_url || '') +
+                        '）：平台当前共 ' + models.length + ' 个真实模型并已缓存' +
+                        (data.data.fetched_at ? '（' + data.data.fetched_at + '）' : '') +
+                        '，请选择默认模型后保存配置';
+                } else {
+                    status.style.color = '#ef4444';
+                    status.textContent = '✗ 连接失败: ' + (data.error || '未知错误');
+                }
+            })
+            .catch(function(error) {
+                fetchBtn.disabled = false;
+                status.style.color = '#ef4444';
+                status.textContent = '✗ 连接失败: ' + error;
+            });
+    });
+});
+</script>
 {% endblock %}

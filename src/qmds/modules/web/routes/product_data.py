@@ -1,14 +1,17 @@
 """产品数据管理路由"""
 
+import json
 import os
 import re
 import time
+from datetime import datetime
 
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
 
 from qmds.config import settings
 from qmds.config.categories import parse_collection_prefix, normalize_subcategory
-from qmds.modules.web.db_helpers import get_mongo_db, get_product_db
+from qmds.config.llm_models import DEFAULT_AGENTROUTER_MODEL, list_llm_models
+from qmds.modules.web.db_helpers import get_mongo_db, get_product_db, get_site_db
 from qmds.modules.web.services.category_tasks import (
     resolve_category_list as _resolve_category_list,
     run_category_optimize_task,
@@ -21,6 +24,22 @@ from qmds.modules.web.services.data_allocator import (
     count_excel_categories,
     resolve_export_file,
     run_allocation_task,
+)
+from qmds.modules.web.services.site_info_generator import (
+    INFO_FILE_NAME,
+    read_site_info_excel,
+    run_batch_site_info_task,
+)
+from qmds.modules.web.services.site_review import (
+    apply_site_review_task,
+    is_site_applied,
+    locate_info_file,
+    locate_site_folder,
+)
+from qmds.modules.web.services.site_uploader import resolve_export_target
+from qmds.utils.agentrouter_client import (
+    DEFAULT_AGENTROUTER_BASE_URL,
+    fetch_agentrouter_models,
 )
 from qmds.modules.web.task_manager import make_progress_callback, task_manager
 from qmds.utils.logger import get_logger
@@ -427,7 +446,115 @@ def product_data_export():
         flash(f"数据{mode_label}任务已启动: {category}/{sub_display}", "info")
         return redirect(url_for("product_data.product_data_export"))
 
-    return render_template("product_export.html", category_stats=[])
+    # AgentRouter 模型列表缓存（页面加载直接展示，无需每次连接平台获取）
+    ar_cache = {"models": [], "fetched_at": ""}
+    ar_saved_model = ""
+    try:
+        site_db = get_site_db()
+        ar_saved_model = (site_db.get_setting("agentrouter_model", "")
+                          or settings.agentrouter_model or "").strip()
+        ar_base = (site_db.get_setting("agentrouter_base_url", "")
+                   or settings.agentrouter_base_url
+                   or DEFAULT_AGENTROUTER_BASE_URL).strip()
+        ar_cache = _load_ar_models_cache(site_db, ar_base)
+    except Exception as e:
+        log.warning(f"读取 AgentRouter 模型缓存失败: {e}")
+
+    return render_template("product_export.html", category_stats=[],
+                           llm_models=list_llm_models(),
+                           default_info_model=DEFAULT_AGENTROUTER_MODEL,
+                           agentrouter_models=ar_cache["models"],
+                           agentrouter_models_fetched_at=ar_cache["fetched_at"],
+                           agentrouter_saved_model=ar_saved_model)
+
+
+AR_MODELS_CACHE_KEY = "agentrouter_models_cache"
+
+
+def _load_ar_models_cache(site_db, base_url: str) -> dict:
+    """读取已缓存的 AgentRouter 模型列表（site_db）
+
+    base_url 与缓存时不一致则视为无缓存（不同网关的模型列表不同）。
+    返回 {"models": [...], "fetched_at": "..."}。
+    """
+    import json
+
+    raw = (site_db.get_setting(AR_MODELS_CACHE_KEY, "") or "").strip()
+    if not raw:
+        return {"models": [], "fetched_at": ""}
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return {"models": [], "fetched_at": ""}
+    if not isinstance(data, dict):
+        return {"models": [], "fetched_at": ""}
+    if ((data.get("base_url") or "").rstrip("/")
+            != (base_url or "").rstrip("/")):
+        return {"models": [], "fetched_at": ""}
+    models = [str(m) for m in (data.get("models") or []) if str(m).strip()]
+    return {"models": models, "fetched_at": str(data.get("fetched_at") or "")}
+
+
+def _save_ar_models_cache(site_db, models: list, base_url: str) -> str:
+    """缓存 AgentRouter 模型列表到 site_db（页面加载时直接使用，不重新连接平台）
+
+    返回缓存时间戳字符串。
+    """
+    import json
+
+    fetched_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    site_db.set_setting(AR_MODELS_CACHE_KEY, json.dumps({
+        "models": list(models),
+        "base_url": (base_url or "").strip(),
+        "fetched_at": fetched_at,
+    }, ensure_ascii=False))
+    return fetched_at
+
+
+@bp.route("/api/product-data/agentrouter/models", methods=["GET", "POST"])
+def api_agentrouter_models():
+    """真实连接 AgentRouter 平台，拉取实际可用模型列表（GET {base_url}/models）
+
+    - GET：使用已保存的配置（site_db 设置，回退 .env）；
+    - POST：可携带配置页中已填写但尚未保存的 api_key / base_url（JSON body），
+      便于「先验证连接，再保存配置」。
+    模型列表不硬编码，保证与平台真实可用模型一致。
+    拉取成功后自动缓存到 site_db（agentrouter_models_cache），页面加载时
+    直接读缓存展示，无需每次重新获取；本接口保留用于手动更新缓存。
+    """
+    try:
+        site_db = get_site_db()
+        api_key = (site_db.get_setting("agentrouter_api_key", "")
+                   or settings.agentrouter_api_key or "").strip()
+        base_url = (site_db.get_setting("agentrouter_base_url", "")
+                    or settings.agentrouter_base_url
+                    or DEFAULT_AGENTROUTER_BASE_URL).strip()
+
+        if request.method == "POST":
+            body = request.get_json(silent=True) or {}
+            api_key = (str(body.get("api_key") or "").strip()) or api_key
+            base_url = (str(body.get("base_url") or "").strip()) or base_url
+
+        if not api_key:
+            return jsonify({"ok": False,
+                            "error": "未配置 AgentRouter API Key（请先在「配置」页填写并保存）"}), 400
+
+        models = fetch_agentrouter_models(api_key, base_url)
+        # 成功后更新缓存（含拉取时间），页面加载时直接使用
+        fetched_at = _save_ar_models_cache(site_db, models, base_url)
+        saved_model = (site_db.get_setting("agentrouter_model", "")
+                       or settings.agentrouter_model or "").strip()
+        return jsonify({"ok": True, "data": {
+            "models": models,
+            "base_url": base_url,
+            "saved_model": saved_model,
+            "fetched_at": fetched_at,
+        }})
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:
+        log.error(f"获取 AgentRouter 模型列表失败: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 502
 
 
 @bp.route("/api/product-data/export-folders")
@@ -642,6 +769,21 @@ def product_data_allocate():
     split_threshold = _parse_portion_size(request.form.get("split_threshold"), 3000,
                                           min_value=0)
 
+    # 分配后批量拆表选项（移植自 BB 批量拆表工具）
+    # 主数据表格不设上限；补充数据按 supp_rows_per_file 拆分（默认 5000）
+    split_options = {
+        "enabled": request.form.get("split_enabled") == "on",
+        "supp_rows_per_file": _parse_portion_size(request.form.get("supp_rows_per_file"),
+                                                  5000),
+        "suffix_mode": request.form.get("split_suffix_mode", "none"),
+        "custom_suffix": (request.form.get("split_custom_suffix") or "").strip(),
+        "remove_source": request.form.get("split_remove_source") != "off",
+    }
+    if split_options["suffix_mode"] not in ("none", "custom", "part"):
+        split_options["suffix_mode"] = "none"
+    if split_options["suffix_mode"] != "custom":
+        split_options["custom_suffix"] = None
+
     if not folder or not filename:
         flash("请选择文件夹和表格文件", "error")
         return redirect(url_for("product_data.product_data_export"))
@@ -664,8 +806,135 @@ def product_data_allocate():
     task_manager.start_task_thread(
         task_id,
         lambda: run_allocation_task(task_id, file_path, main_categories,
-                                    min_size, max_size, split_threshold))
-    flash(f"数据分配任务已启动: {filename}（{len(main_categories)} 个主分类）", "info")
+                                    min_size, max_size, split_threshold,
+                                    split_options))
+    msg = f"数据分配任务已启动: {filename}（{len(main_categories)} 个主分类）"
+    if split_options["enabled"]:
+        msg += f"，分配完成后将批量拆表（主数据不设上限，补充数据每份 {split_options['supp_rows_per_file']} 条）"
+    msg += "，拆表后自动统计每个网站数据的分类结构（分类统计.xlsx）"
+    flash(msg, "info")
+    return redirect(url_for("product_data.product_data_export"))
+
+
+@bp.route("/product-data/site-info", methods=["POST"])
+def product_data_site_info():
+    """批量 AI 生成网站信息：遍历所选文件夹下所有「最后一层文件夹」
+    （每个 = 一个网站的数据，数据分配后每个主分类一个文件夹），
+    按顺序逐个调用 LLM（默认 AgentRouter 平台模型）生成
+    域名/标题/描述/地址/关键词 -> 所选文件夹下的 网站信息.xlsx（每行一个网站）"""
+    folder = request.form.get("folder", "").strip()
+    model = request.form.get("model", "").strip()
+    model_id_override = (request.form.get("model_id") or "").strip()
+    # 下拉框选择「手动输入其他模型 ID」时，取配套文本框的值
+    if model_id_override == "__custom__":
+        model_id_override = (request.form.get("model_id_manual") or "").strip()
+
+    if not folder:
+        flash("请选择数据文件夹", "error")
+        return redirect(url_for("product_data.product_data_export"))
+    try:
+        folder_path = resolve_export_target(folder, "")
+    except FileNotFoundError as e:
+        flash(f"文件夹不存在: {e}", "error")
+        return redirect(url_for("product_data.product_data_export"))
+
+    task_id = f"site_info_{re.sub(r'[^\w-]+', '_', folder)}_{int(time.time())}"
+    task_manager.create(task_id, "site_info", f"批量AI生成网站信息: {folder}")
+
+    task_manager.start_task_thread(
+        task_id,
+        lambda: run_batch_site_info_task(task_id, folder_path, model,
+                                         model_id_override))
+    flash(f"批量 AI 生成网站信息任务已启动: {folder}（将遍历其下最后一层文件夹，"
+          "逐个网站顺序生成）", "info")
+    return redirect(url_for("product_data.product_data_export"))
+
+
+@bp.route("/product-data/site-info/table", methods=["GET"])
+def product_data_site_info_table():
+    """读取所选文件夹下的 网站信息.xlsx，返回表格数据（前端展示/审核用）
+
+    每行附带 applied 字段：该网站是否已应用过审核（数据表已带 data_ 前缀）。
+    """
+    folder = request.args.get("folder", "").strip()
+    if not folder:
+        return jsonify({"ok": False, "error": "请选择数据文件夹"})
+    try:
+        folder_path = resolve_export_target(folder, "")
+    except FileNotFoundError as e:
+        return jsonify({"ok": False, "error": f"文件夹不存在: {e}"})
+
+    # 所选文件夹可以是网站信息的上级目录（如日期/大类目录），递归定位
+    info_path = locate_info_file(folder_path)
+    if info_path is None:
+        return jsonify({"ok": False,
+                        "error": f"该文件夹下暂无 {INFO_FILE_NAME}，请先批量生成网站信息"})
+    try:
+        rows = read_site_info_excel(info_path)
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"读取 {INFO_FILE_NAME} 失败: {e}"})
+
+    # 标记已应用审核的网站（数据表已加 data_ 前缀）
+    # 定位：文件夹名列优先；未命中时回退用域名列（审核应用后文件夹
+    # 已改名为域名，而 xlsx 行可能仍是旧文件夹名）
+    for row in rows:
+        site_folder = (locate_site_folder(folder_path,
+                                          row.get("网站（文件夹）"))
+                       or locate_site_folder(folder_path, row.get("域名")))
+        row["applied"] = bool(site_folder and is_site_applied(site_folder))
+
+    return jsonify({"ok": True, "folder": folder, "rows": rows})
+
+
+@bp.route("/product-data/site-info/apply", methods=["POST"])
+def product_data_site_info_apply():
+    """应用网站信息审核：审核通过的网站用通过后的域名修改其数据表
+
+    - 每个数据表前五条数据的「原站域名」列改为域名标记：
+      主数据 {域名}_main_part{N} / 补充数据 {域名}_part{N}（每个表格不同）
+    - 数据表名加 data_ 前缀（后续上传只识别 data_ 前缀的网站数据表）
+    - 审核结果（域名等编辑值 + 审核通过备注）回写 网站信息.xlsx
+    """
+    folder = request.form.get("folder", "").strip()
+    sites_raw = request.form.get("sites", "").strip()
+
+    if not folder:
+        flash("请选择数据文件夹", "error")
+        return redirect(url_for("product_data.product_data_export"))
+    try:
+        folder_path = resolve_export_target(folder, "")
+    except FileNotFoundError as e:
+        flash(f"文件夹不存在: {e}", "error")
+        return redirect(url_for("product_data.product_data_export"))
+
+    try:
+        sites = json.loads(sites_raw) if sites_raw else []
+    except json.JSONDecodeError:
+        flash("审核数据格式错误，请刷新页面重试", "error")
+        return redirect(url_for("product_data.product_data_export"))
+    if not isinstance(sites, list) or not sites:
+        flash("请先勾选审核通过的网站", "error")
+        return redirect(url_for("product_data.product_data_export"))
+    # 只保留必要字段；域名/网站名缺失的项直接报错（前端已校验）
+    sites = [{"folder": str(s.get("folder") or "").strip(),
+              "domain": str(s.get("domain") or "").strip(),
+              "title": str(s.get("title") or ""),
+              "description": str(s.get("description") or ""),
+              "theme": str(s.get("theme") or ""),
+              "address": str(s.get("address") or ""),
+              "keywords": str(s.get("keywords") or "")}
+             for s in sites if isinstance(s, dict)]
+    bad = [s["folder"] for s in sites if not s["folder"] or not s["domain"]]
+    if bad:
+        flash(f"以下网站的域名为空，请填写后再应用: {', '.join(bad)}", "error")
+        return redirect(url_for("product_data.product_data_export"))
+
+    task_id = f"site_review_{re.sub(r'[^\w-]+', '_', folder)}_{int(time.time())}"
+    task_manager.create(task_id, "site_review", f"应用网站信息审核: {folder}")
+    task_manager.start_task_thread(
+        task_id, lambda: apply_site_review_task(task_id, folder_path, sites))
+    flash(f"网站信息审核应用任务已启动: {len(sites)} 个网站（用通过后的域名"
+          "修改数据表并加 data_ 前缀）", "info")
     return redirect(url_for("product_data.product_data_export"))
 
 
@@ -744,3 +1013,139 @@ def product_data_category_optimize():
         lambda: run_category_optimize_task(task_id, category, subcategory))
     flash(f"模型优化分类任务已启动: {category}/{sub_display}", "info")
     return redirect(url_for("product_data.product_data_clean"))
+
+
+# ── 数据表上传站群系统（惠升版） ─────────────────────────────
+
+@bp.route("/api/product-data/site-upload/config", methods=["GET"])
+def api_site_upload_config():
+    """获取站群系统上传配置（密码不回传明文，仅返回是否已设置）"""
+    try:
+        from qmds.modules.web.services.site_uploader import load_upload_config
+        cfg = load_upload_config()
+        return jsonify({"ok": True, "data": {
+            "login_url": cfg.get("login_url", ""),
+            "upload_page_url": cfg.get("upload_page_url", ""),
+            "username": cfg.get("username", ""),
+            "has_password": bool(cfg.get("password", "").strip()),
+        }})
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@bp.route("/product-data/site-upload/config", methods=["POST"])
+def product_data_site_upload_config():
+    """保存站群系统上传配置（密码留空表示保持原值不变）"""
+    from qmds.modules.web.services.site_uploader import load_upload_config, save_upload_config
+
+    login_url = request.form.get("login_url", "").strip()
+    upload_page_url = request.form.get("upload_page_url", "").strip()
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "").strip()
+
+    try:
+        if not login_url or not upload_page_url or not username:
+            raise ValueError("登录地址、上传地址和账号均为必填项")
+        # 密码留空 -> 沿用已保存的密码
+        if not password:
+            old = load_upload_config()
+            password = old.get("password", "")
+        if not password:
+            raise ValueError("密码不能为空")
+        save_upload_config({
+            "login_url": login_url,
+            "upload_page_url": upload_page_url,
+            "username": username,
+            "password": password,
+        })
+        flash("站群系统上传配置已保存", "info")
+    except ValueError as e:
+        flash(f"保存配置失败: {e}", "error")
+    return redirect(url_for("product_data.product_data_export"))
+
+
+@bp.route("/product-data/site-upload", methods=["POST"])
+def product_data_site_upload():
+    """启动站群系统上传任务（惠升版）：上传所选文件夹/表格下的全部 .xlsx"""
+    from qmds.modules.web.services.site_uploader import (
+        load_upload_config, resolve_export_target, run_upload_task, validate_config)
+
+    folder = request.form.get("upload_folder", "").strip()
+    filename = request.form.get("upload_file", "").strip()
+
+    try:
+        if not folder:
+            raise ValueError("请选择要上传的文件夹")
+        cfg = load_upload_config()
+        validate_config(cfg)
+        target = resolve_export_target(folder, filename)
+    except (ValueError, FileNotFoundError) as e:
+        flash(f"启动上传失败: {e}", "error")
+        return redirect(url_for("product_data.product_data_export"))
+
+    target_label = target.name if target.is_file() else f"{target.name}/"
+    task_id = f"site_upload_{target.name}_{int(time.time())}"
+    task_manager.create(task_id, "site_upload_huisheng", f"站群上传: {target_label}")
+
+    task_manager.start_task_thread(
+        task_id, lambda: run_upload_task(task_id, target, cfg))
+    flash(f"站群系统上传任务已启动: {target_label}", "info")
+    return redirect(url_for("product_data.product_data_export"))
+
+
+@bp.route("/product-data/site-upload/sites")
+def product_data_site_upload_sites():
+    """列出所选文件夹下所有以域名命名的网站文件夹（含 data_ 数据表数量）"""
+    from qmds.modules.web.services.site_uploader import (
+        collect_domain_sites, resolve_export_target)
+
+    folder = request.args.get("folder", "").strip()
+    try:
+        if not folder:
+            raise ValueError("请选择文件夹")
+        target = resolve_export_target(folder)
+        sites = collect_domain_sites(target)
+    except (ValueError, FileNotFoundError) as e:
+        return jsonify({"ok": False, "error": str(e)})
+    return jsonify({"ok": True, "sites": sites})
+
+
+@bp.route("/product-data/site-upload/domain", methods=["POST"])
+def product_data_site_upload_domain():
+    """按网站（域名文件夹）上传：逐站上传选中网站内 data_ 开头的数据表"""
+    from qmds.modules.web.services.site_uploader import (
+        collect_domain_sites, load_upload_config, resolve_export_target,
+        run_domain_upload_task, validate_config)
+
+    folder = request.form.get("upload_folder", "").strip()
+    raw_sites = request.form.get("sites", "").strip()
+
+    try:
+        if not folder:
+            raise ValueError("请选择文件夹")
+        try:
+            site_names = [str(s).strip() for s in json.loads(raw_sites)
+                          if str(s).strip()]
+        except (json.JSONDecodeError, TypeError):
+            raise ValueError("网站列表格式不正确")
+        if not site_names:
+            raise ValueError("请勾选要上传的网站")
+        cfg = load_upload_config()
+        validate_config(cfg)
+        target = resolve_export_target(folder)
+        # 提前校验域名文件夹存在（避免任务启动后才失败）
+        known = {s["name"] for s in collect_domain_sites(target)}
+        missing = [n for n in site_names if n not in known]
+        if missing:
+            raise ValueError("未找到域名文件夹: " + ", ".join(missing))
+    except (ValueError, FileNotFoundError) as e:
+        flash(f"启动上传失败: {e}", "error")
+        return redirect(url_for("product_data.product_data_export"))
+
+    task_id = f"site_upload_domain_{int(time.time())}"
+    task_manager.create(task_id, "site_upload_huisheng",
+                        f"站群上传: {len(site_names)} 个网站")
+    task_manager.start_task_thread(
+        task_id, lambda: run_domain_upload_task(task_id, target, site_names, cfg))
+    flash(f"站群系统上传任务已启动: {len(site_names)} 个网站", "info")
+    return redirect(url_for("product_data.product_data_export"))

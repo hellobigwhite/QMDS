@@ -31,6 +31,7 @@ from qmds.config.llm_models import (
     has_llm_api_key,
     get_llm_extra_body,
     get_llm_system_message,
+    get_llm_default_headers,
     extract_llm_text,
     chat_completion_with_fallback,
     count_mimo_keys,
@@ -264,7 +265,7 @@ def _call_llm_core(prompt_base: str, log_callback=None, site_db=None,
     model_value = settings.llm_model
     if site_db is not None:
         model_value = site_db.get_setting("llm_model", "") or model_value
-    config = get_llm_model_config(model_value)
+    config = get_llm_model_config(model_value, site_db)
 
     last_err = ""
     total_keys = 1 if config["provider"] == "ark" else count_mimo_keys()
@@ -281,7 +282,9 @@ def _call_llm_core(prompt_base: str, log_callback=None, site_db=None,
             # （含多 key 轮换、429 退避、温度递降），SDK 默认的 max_retries=2
             # 会对超时请求静默重试 2 次，把实际等待拉长到 3 倍超时（30s 配置
             # 实测等 95s），且绕过外层的 key 轮换与日志
-            client = OpenAI(base_url=config["base_url"], api_key=api_key, max_retries=0)
+            client = OpenAI(base_url=config["base_url"], api_key=api_key,
+                            max_retries=0,
+                            default_headers=get_llm_default_headers(config))
             completion = chat_completion_with_fallback(
                 client,
                 config=config,

@@ -31,6 +31,7 @@ from qmds.config.llm_models import (
     has_llm_api_key,
     get_llm_extra_body,
     get_llm_system_message,
+    get_llm_default_headers,
     extract_llm_text,
     chat_completion_with_fallback,
 )
@@ -91,7 +92,7 @@ def _resolve_runtime_config(site_db=None) -> dict:
     model_value = settings.llm_model
     if site_db is not None:
         model_value = site_db.get_setting("llm_model", "") or model_value
-    return get_llm_model_config(model_value)
+    return get_llm_model_config(model_value, site_db)
 
 
 def _get_glm_client(config: dict, site_db=None) -> "OpenAI":
@@ -128,6 +129,7 @@ def _get_glm_client(config: dict, site_db=None) -> "OpenAI":
     _glm_client = OpenAI(
         base_url=config["base_url"],
         api_key=api_key,
+        default_headers=get_llm_default_headers(config),
     )
     _glm_client_config = config
     log.info(f"LLM 客户端已创建: {config['label']} (provider={config['provider']}, model={config['model_id']})")
