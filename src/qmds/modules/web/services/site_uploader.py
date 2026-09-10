@@ -164,11 +164,15 @@ def collect_xlsx_files(target) -> list[Path]:
 
 
 def collect_site_tables(folder) -> list[Path]:
-    """收集网站文件夹中以 data_ 开头的数据表（自然排序: part1 -> part10）
+    """收集网站文件夹中以 data_ 开头的数据表（主数据在前，补充数据按分卷顺序）
 
     审核应用后网站数据表名为 data_main{分类}_part{N}_*.xlsx（主数据）与
     data_{分类}_supp_part{N}_*.xlsx（补充数据）；其他文件（分类统计.xlsx、
     网站信息.xlsx 等）不上传。
+
+    排序：主数据表（data_main 前缀）必须排在补充数据之前 —— ERP 站群
+    系统要求先上传主数据建立站点基础，再上传补充数据（否则服务器返回
+    「表错了」）。组内按自然排序（part1 -> part10）。
     """
     folder = Path(folder)
     if not folder.is_dir():
@@ -177,7 +181,13 @@ def collect_site_tables(folder) -> list[Path]:
              if p.is_file() and p.suffix.lower() == ".xlsx"
              and p.name.startswith(DATA_PREFIX)
              and not p.name.startswith("~$")]
-    files.sort(key=_natural_key)
+
+    def _rank(p: Path) -> tuple:
+        # 剥离 data_ 前缀后以 main 开头 = 主数据表，排最前
+        base = p.name[len(DATA_PREFIX):] if p.name.startswith(DATA_PREFIX) else p.name
+        return (0 if base.startswith("main") else 1, _natural_key(p.name))
+
+    files.sort(key=_rank)
     return files
 
 
@@ -218,6 +228,289 @@ def collect_domain_sites(target) -> list[dict]:
                 queue.append(entry)
     sites.sort(key=lambda s: _natural_key(s["path"]))
     return sites
+
+
+# ── ERP 兼容格式转换（inlineStr -> sharedStrings）──────────────
+# 本机 openpyxl(3.1.x) 写出的 xlsx 全部使用内联字符串（<c t="inlineStr">
+# <is><t>文本</t></is>）且不含 xl/sharedStrings.xml；ERP 站群的服务端
+# 解析器不接受该写法，上传直接返回「表错了」。老 BB 工具的批量拆表输出
+# 之所以能上传，是因为拆表后用 Excel/WPS 重新保存过（save_with_xlwings，
+# 注释原话「以解决兼容性问题」）——重存把字符串转成了共享字符串表。
+# 此处在上传前用纯 Python 完成同样的转换（不依赖本机 office）：
+#   1. 内联字符串 -> 共享字符串表（新增 xl/sharedStrings.xml，同步更新
+#      [Content_Types].xml 与 xl/_rels/workbook.xml.rels）；
+#   2. 工作表名统一为 Sheet（老工具拆表输出的工作表名）。
+# 转换后数据与原文件逐值校验一致，再原子替换原文件；已是兼容格式时不动。
+#
+# 修复路径：早期版本的转换没有解码数字字符引用，已转换过的文件
+# sharedStrings 中残留 &#NNNN; 形态（ERP 字符串比较列名失败）。此处
+# 检测已存在的 sharedStrings 中的数字字符引用并解码为原始字符——
+# 解码不改变 XML 语义与共享索引，可安全作用于任何形态的文件。
+#
+# rels 规范化：魔改 openpyxl 把 Relationship 写成 Type/Target/Id 属性
+# 顺序且 worksheet Target 为包根绝对路径（/xl/worksheets/sheet1.xml）；
+# Excel/WPS 标准形态是 Id/Type/Target 顺序 + 相对路径。ERP 的 PHP
+# 解析器按属性顺序正则匹配、按目录拼接解析路径，两种偏差都会导致
+# 找不到 worksheet 部件（表错了）。此处统一规范化所有 .rels。
+
+_SST_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+_XML_DECL = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+_SST_CT = ("application/vnd.openxmlformats-officedocument"
+           ".spreadsheetml.sharedStrings+xml")
+_SST_REL = ("http://schemas.openxmlformats.org/officeDocument/2006"
+            "/relationships/sharedStrings")
+
+# openpyxl 输出的内联字符串单元格: <c r="A1" t="inlineStr"><is><t>文本</t></is></c>
+_INLINE_CELL_RE = re.compile(
+    r'<c\b([^>]*?)\st="inlineStr"([^>]*)>'
+    r'<is><t(?:\s+xml:space="preserve")?>(.*?)</t></is></c>', re.S)
+# 空字符串单元格: <c r="C2" t="inlineStr"></c>（无 <is> 内容）-> 普通空单元格
+_EMPTY_INLINE_CELL_RE = re.compile(r'<c\b([^>]*?)\st="inlineStr"([^>]*)></c>')
+_SHEET_NAME_RE = re.compile(r'(<sheet\b[^>]*?)\sname="[^"]*"([^>]*/>)')
+_SHEET_TAG_RE = re.compile(r"<sheet\b[^>]*/>")
+
+
+def _ensure_decl(xml: str) -> str:
+    """给缺少 XML 声明的部分补上标准声明（openpyxl 输出常省略）"""
+    if xml.lstrip().startswith("<?xml"):
+        return xml
+    return _XML_DECL + xml
+
+
+# 数字字符引用（&#NNNN; / &#xHH;）——与原始字符在 XML 语义上完全等价，
+# 但 ERP 的 PHP 解析器做字符串级比较，不解码实体：中文列名（自定义分类 等）
+# 必须以原始 UTF-8 字符写入 sharedStrings（与老工具 WPS 重存后的形态一致）。
+# 注意 &amp; &lt; &gt; &quot; &apos; 属于 XML 结构转义，必须保留不解码。
+_DEC_CHAR_REF_RE = re.compile(r"&#(?:x([0-9A-Fa-f]+)|(\d+));")
+
+
+def _decode_char_refs(text: str) -> str:
+    """把数字字符引用解码为原始字符（&#20013; -> 中）"""
+    return _DEC_CHAR_REF_RE.sub(
+        lambda m: chr(int(m.group(1), 16) if m.group(1) else int(m.group(2))),
+        text)
+
+
+_REL_TAG_RE = re.compile(r"<Relationship\b[^>]*/>")
+_REL_ATTR_RE = re.compile(r'([\w:]+)="([^"]*)"')
+
+
+def _rels_base(part_name: str) -> str:
+    """rels 部件对应源部件的所在目录（带尾部斜杠）
+
+    xl/_rels/workbook.xml.rels -> 'xl/'（源部件 xl/workbook.xml）
+    _rels/.rels                -> ''  （包根）
+    """
+    d = part_name.rsplit("/", 1)[0] if "/" in part_name else ""
+    if d == "_rels":
+        return ""
+    if d.endswith("/_rels"):
+        return d[: -len("/_rels")] + "/"
+    return ""
+
+
+def _normalize_rels(xml: str, base: str) -> str:
+    """Relationship 规范化为 Excel/WPS 标准形态（幂等）
+
+    - 属性顺序统一为 Id, Type, Target（魔改 openpyxl 写成 Type/Target/Id，
+      ERP 的 PHP 解析器按顺序做正则匹配会失败）；
+    - 包根绝对 Target（/xl/worksheets/sheet1.xml）转为相对路径
+      （worksheets/sheet1.xml，按 base 剥离前缀；ERP 按目录拼接解析）。
+    """
+    def _repl(m):
+        attrs = dict(_REL_ATTR_RE.findall(m.group(0)))
+        rid = attrs.get("Id", "")
+        typ = attrs.get("Type", "")
+        tgt = attrs.get("Target", "")
+        if tgt.startswith("/") and base and tgt[1:].startswith(base):
+            tgt = tgt[len(base) + 1:]
+        mode = attrs.get("TargetMode", "")
+        mode_attr = f' TargetMode="{mode}"' if mode else ""
+        return f'<Relationship Id="{rid}" Type="{typ}" Target="{tgt}"{mode_attr}/>'
+
+    return _REL_TAG_RE.sub(_repl, xml)
+
+
+def make_erp_compatible(path, log_fn=None) -> bool:
+    """把数据表转换为 ERP 站群可读格式（原文件被原子替换，幂等）
+
+    见上方模块注释。返回是否发生修改；已是兼容格式返回 False。
+    转换失败（校验不一致/文件被占用等）抛出异常，原文件保持不变。
+    """
+    import os
+    import zipfile
+
+    import pandas as pd
+
+    path = Path(path)
+    with zipfile.ZipFile(path) as z:
+        names = z.namelist()
+        infos = {i.filename: i for i in z.infolist()}
+        contents = {n: z.read(n) for n in names}
+
+    sheet_names = [n for n in names
+                   if re.fullmatch(r"xl/worksheets/sheet\d+\.xml", n)]
+    sheet_xmls = {n: contents[n].decode("utf-8") for n in sheet_names}
+    needs_strings = any('t="inlineStr"' in x for x in sheet_xmls.values())
+    ss_name = "xl/sharedStrings.xml"
+    # 修复路径：已存在的 sharedStrings 中含数字字符引用 -> 解码为原始字符
+    # （早期版本转换残留的坏形态；解码不改变语义与索引，安全）
+    fix_ss_refs = (ss_name in names
+                   and _DEC_CHAR_REF_RE.search(contents[ss_name]
+                                               .decode("utf-8")) is not None)
+    if needs_strings and ss_name in names:
+        # 文件同时含共享字符串与内联字符串（混合格式，本链路不会产生）：
+        # 不动字符串部分，避免破坏已有索引（引用解码仍执行）
+        if log_fn:
+            log_fn(f"{path.name}: 已存在 sharedStrings 且含内联字符串，"
+                   f"跳过格式转换", "warning")
+        needs_strings = False
+    if fix_ss_refs and log_fn:
+        log_fn(f"{path.name}: sharedStrings 含数字字符引用，"
+               f"解码为原始字符（ERP 字符串比较需要）")
+
+    wb_xml = contents["xl/workbook.xml"].decode("utf-8")
+    sheet_tags = _SHEET_TAG_RE.findall(wb_xml)
+    rename_sheet = (len(sheet_tags) == 1
+                    and 'name="Sheet"' not in sheet_tags[0])
+
+    # ── rels 规范化：属性顺序（Id, Type, Target）+ 绝对 Target → 相对 ──
+    rels_parts: dict[str, str] = {}
+    rels_changed = False
+    for n in names:
+        if not n.endswith(".rels"):
+            continue
+        xml = _ensure_decl(contents[n].decode("utf-8"))
+        fixed = _normalize_rels(xml, _rels_base(n))
+        if fixed != xml:
+            rels_changed = True
+            if log_fn:
+                log_fn(f"{path.name}: {n} Relationship 已规范化"
+                       f"（Id/Type/Target 顺序与相对路径）")
+        rels_parts[n] = fixed
+
+    if (not needs_strings and not rename_sheet and not fix_ss_refs
+            and not rels_changed):
+        return False
+
+    # ── 1. 内联字符串 -> 共享字符串 ──
+    strings: list[str] = []
+    index: dict[str, int] = {}
+    total_refs = 0
+
+    def _repl(m):
+        nonlocal total_refs
+        # 数字实体 -> 原始 UTF-8 字符（ERP 按字符串比较列名）
+        text = _decode_char_refs(m.group(3))
+        idx = index.get(text)
+        if idx is None:
+            idx = len(strings)
+            strings.append(text)
+            index[text] = idx
+        total_refs += 1
+        return f'<c{m.group(1)} t="s"{m.group(2)}><v>{idx}</v></c>'
+
+    new_sheets = {}
+    if needs_strings:
+        for n, xml in sheet_xmls.items():
+            converted, _ = _INLINE_CELL_RE.subn(_repl, xml)
+            # 空内联单元格 -> 普通空单元格（<c r="C2"/>，与 Excel 写法一致）
+            converted = _EMPTY_INLINE_CELL_RE.sub(
+                lambda m: f'<c{m.group(1).rstrip()}/>', converted)
+            if 't="inlineStr"' in converted:
+                raise ValueError(f"{path.name}: 存在无法识别的内联字符串单元格")
+            new_sheets[n] = _ensure_decl(converted)
+
+    # ── 2. 工作表名 -> Sheet ──
+    new_wb = wb_xml
+    if rename_sheet:
+        new_wb = _SHEET_NAME_RE.sub(r'\1 name="Sheet"\2', wb_xml, count=1)
+
+    # ── 3. sharedStrings 部件与引用注册 ──
+    parts = [f'<sst xmlns="{_SST_NS}" count="{total_refs}"'
+             f' uniqueCount="{len(strings)}">']
+    for text in strings:
+        preserve = ' xml:space="preserve"' if text != text.strip() else ''
+        parts.append(f'<si><t{preserve}>{text}</t></si>')
+    parts.append("</sst>")
+    ss_xml = _XML_DECL + "".join(parts)
+
+    ct_xml = _ensure_decl(
+        contents["[Content_Types].xml"].decode("utf-8"))
+    if needs_strings and "/xl/sharedStrings.xml" not in ct_xml:
+        ct_xml = ct_xml.replace(
+            "</Types>",
+            f'<Override PartName="/xl/sharedStrings.xml" ContentType="{_SST_CT}"/>'
+            "</Types>")
+
+    rels_name = "xl/_rels/workbook.xml.rels"
+    rels_xml = rels_parts[rels_name]
+    if needs_strings and "sharedStrings.xml" not in rels_xml:
+        max_rid = max((int(m) for m in re.findall(r'Id="rId(\d+)"', rels_xml)),
+                      default=0)
+        rels_xml = rels_xml.replace(
+            "</Relationships>",
+            f'<Relationship Id="rId{max_rid + 1}" Type="{_SST_REL}"'
+            f' Target="sharedStrings.xml"/></Relationships>')
+
+    # ── 4. 写临时文件 -> 数据校验 -> 原子替换 ──
+    tmp = path.with_name(path.name + ".erp_tmp")
+    try:
+        with zipfile.ZipFile(tmp, "w") as zout:
+            for n in names:
+                if n in new_sheets:
+                    data = new_sheets[n].encode("utf-8")
+                elif n == "xl/workbook.xml":
+                    data = _ensure_decl(new_wb).encode("utf-8")
+                elif n == "[Content_Types].xml":
+                    data = ct_xml.encode("utf-8")
+                elif n == rels_name:
+                    data = rels_xml.encode("utf-8")
+                elif n in rels_parts:
+                    data = rels_parts[n].encode("utf-8")
+                elif n == ss_name and fix_ss_refs:
+                    # 修复路径：解码 sharedStrings 中的数字字符引用
+                    data = _ensure_decl(
+                        _decode_char_refs(
+                            contents[n].decode("utf-8"))).encode("utf-8")
+                elif n.endswith((".xml", ".rels")):
+                    # 其余 XML 部件统一补声明（老工具重存后的形态）
+                    try:
+                        data = _ensure_decl(
+                            contents[n].decode("utf-8")).encode("utf-8")
+                    except UnicodeDecodeError:
+                        data = contents[n]
+                else:
+                    data = contents[n]
+                info = zipfile.ZipInfo(n, date_time=infos[n].date_time)
+                info.compress_type = infos[n].compress_type
+                info.external_attr = infos[n].external_attr
+                zout.writestr(info, data)
+            if needs_strings:
+                info = zipfile.ZipInfo("xl/sharedStrings.xml",
+                                       date_time=infos[names[0]].date_time)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                zout.writestr(info, ss_xml.encode("utf-8"))
+
+        # 逐值校验：转换前后 pandas 读取结果必须完全一致
+        before = pd.read_excel(path, engine="openpyxl")
+        after = pd.read_excel(tmp, engine="openpyxl")
+        if before.shape != after.shape or not before.equals(after):
+            raise ValueError("转换后数据校验不一致，放弃替换")
+
+        # 文件可能被杀毒/同步软件瞬时占用：短暂重试后仍失败才放弃
+        import time as _time
+        for attempt in range(4):
+            try:
+                os.replace(tmp, path)
+                return True
+            except PermissionError:
+                if attempt == 3:
+                    raise
+                _time.sleep(0.5)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
 
 
 def login(session, config: dict, log_fn=None):
@@ -382,6 +675,14 @@ def run_upload_task(task_id: str, target_path, config: dict | None = None):
             task_manager.update(task_id, status="stopped", message="任务已停止")
             return
 
+        # ── ERP 兼容格式转换（inlineStr -> sharedStrings）──
+        for fp in files:
+            try:
+                if make_erp_compatible(fp):
+                    _log(f"已转为 ERP 兼容格式（共享字符串）: {fp.name}")
+            except Exception as e:
+                _log(f"{fp.name}: 兼容格式转换失败（按原样上传）: {e}", "warning")
+
         uploaded: list[tuple[Path, str]] = []  # (文件, 数据ID) 按上传顺序
         failed = 0
         for i, fp in enumerate(files):
@@ -433,9 +734,11 @@ def run_domain_upload_task(task_id: str, target_path, site_names: list,
     """按网站（域名文件夹）逐站上传任务体
 
     登录一次站群系统，按所选顺序一个网站一个网站地顺序上传：每个网站只
-    上传文件夹内以 data_ 开头的数据表（自然排序，part1 -> part10）。
-    全部完成后在任务日志中按网站分组输出上传返回的数据 ID，并把各网站的
-    数据 ID 写入其文件夹内的 数据ID.txt（主数据 ID 在最前）。
+    上传文件夹内以 data_ 开头的数据表，且主数据表（data_main 前缀）先
+    上传、补充数据表（data_*_supp_part*）后上传 —— ERP 要求先传主数据
+    建立站点基础，再传补充数据。全部完成后在任务日志中按网站分组输出
+    上传返回的数据 ID，并把各网站的数据 ID 写入其文件夹内的
+    数据ID.txt（主数据 ID 在最前）。
     """
     import requests
 
@@ -485,8 +788,20 @@ def run_domain_upload_task(task_id: str, target_path, site_names: list,
                 _log(f"[{si}/{len(chosen)}] ⚠ 网站 {name}: 没有 data_ 数据表，跳过")
                 site_ids.append((name, []))
                 continue
-            _log(f"[{si}/{len(chosen)}] ▶ 网站 {name}: "
-                 f"开始上传 {len(tables)} 个数据表")
+            n_main = sum(1 for t in tables
+                         if t.name[len(DATA_PREFIX):].startswith("main"))
+            _log(f"[{si}/{len(chosen)}] ▶ 网站 {name}: 开始上传 "
+                 f"{len(tables)} 个数据表（主数据 {n_main} 表先传，"
+                 f"补充数据 {len(tables) - n_main} 表）")
+
+            # ── ERP 兼容格式转换（inlineStr -> sharedStrings）──
+            for fp in tables:
+                try:
+                    if make_erp_compatible(fp):
+                        _log(f"  ⚙ {fp.name}: 已转为 ERP 兼容格式（共享字符串）")
+                except Exception as e:
+                    _log(f"  ⚠ {fp.name}: 兼容格式转换失败（按原样上传）: {e}",
+                         "warning")
 
             site_uploaded: list[tuple[Path, str]] = []
             site_failed = 0

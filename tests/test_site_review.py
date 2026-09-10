@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """网站信息审核应用（site_review）测试
 
-覆盖：数据表收集/分类、域名标记写入（前五条原站域名）、data_ 前缀重命名、
+覆盖：数据表收集/分类、域名标记写入（整列原站域名）、data_ 前缀重命名、
 幂等重应用、无 _partN 表名的序号回退、缺列容错、批量任务与路由。
 """
 
@@ -104,7 +104,7 @@ def test_collect_data_tables(workdir):
 # ── 单网站应用 ────────────────────────────────────
 
 def test_apply_domain_to_site(workdir):
-    """前五条原站域名标记 + data_ 前缀重命名；其余行不变"""
+    """整列原站域名标记 + data_ 前缀重命名（ERP 按整列一致标记识别）"""
     site = workdir / "Toilet_Tank_Lid"
     site.mkdir()
     main1 = write_table(site, "mainToilet_Tank_Lid_part1_AK1.xlsx")
@@ -127,15 +127,15 @@ def test_apply_domain_to_site(workdir):
     assert st["folder"] == new_site
     assert new_site.is_dir() and not site.exists()
 
-    # 主数据表：前五条 -> 域名_main_part1，其余保持原值
+    # 主数据表：整列 -> 域名_main_part1
     df = pd.read_excel(new_site / (DATA_PREFIX + main1.name), engine="openpyxl")
-    assert list(df[ORIGIN_COLUMN][:5]) == ["tanklidpro.com_main_part1"] * 5
-    assert list(df[ORIGIN_COLUMN][5:]) == ["old-site.com"] * 3
-    # 补充表 1/2 -> 域名_part1 / 域名_part2
+    assert list(df[ORIGIN_COLUMN]) == ["tanklidpro.com_main_part1"] * len(df)
+    assert "old-site.com" not in set(df[ORIGIN_COLUMN])
+    # 补充表 1/2 -> 整列 域名_part1 / 域名_part2
     df1 = pd.read_excel(new_site / (DATA_PREFIX + supp1.name), engine="openpyxl")
-    assert list(df1[ORIGIN_COLUMN][:5]) == ["tanklidpro.com_part1"] * 5
+    assert list(df1[ORIGIN_COLUMN]) == ["tanklidpro.com_part1"] * len(df1)
     df2 = pd.read_excel(new_site / (DATA_PREFIX + supp2.name), engine="openpyxl")
-    assert list(df2[ORIGIN_COLUMN][:5]) == ["tanklidpro.com_part2"] * 5
+    assert list(df2[ORIGIN_COLUMN]) == ["tanklidpro.com_part2"] * len(df2)
     # 结果文件不重命名（跟随文件夹一起改名）
     assert (new_site / STATS_FILE_NAME).is_file()
     assert (new_site / INFO_FILE_NAME).is_file()
@@ -143,7 +143,7 @@ def test_apply_domain_to_site(workdir):
     # 已应用状态
     assert is_site_applied(new_site)
     # 日志包含标记说明与文件夹改名
-    assert any("前 5 行" in m for m in logs)
+    assert any("整列" in m for m in logs)
     assert any("改名为域名" in m for m in logs)
 
 
@@ -163,9 +163,9 @@ def test_apply_domain_to_site_fallback_numbering(workdir):
                           engine="openpyxl")
     df_s2 = pd.read_excel(new_site / (DATA_PREFIX + "beta_supp.xlsx"),
                           engine="openpyxl")
-    assert list(df_main[ORIGIN_COLUMN][:5]) == ["abc.com_main_part1"] * 5
-    assert list(df_s1[ORIGIN_COLUMN][:5]) == ["abc.com_part1"] * 5
-    assert list(df_s2[ORIGIN_COLUMN][:5]) == ["abc.com_part2"] * 5
+    assert list(df_main[ORIGIN_COLUMN]) == ["abc.com_main_part1"] * len(df_main)
+    assert list(df_s1[ORIGIN_COLUMN]) == ["abc.com_part1"] * len(df_s1)
+    assert list(df_s2[ORIGIN_COLUMN]) == ["abc.com_part2"] * len(df_s2)
 
 
 def test_apply_domain_to_site_idempotent(workdir):
@@ -187,7 +187,7 @@ def test_apply_domain_to_site_idempotent(workdir):
     assert not (second_dir / (DATA_PREFIX + DATA_PREFIX + "mainCat_part1_X.xlsx")).exists()
     df = pd.read_excel(second_dir / (DATA_PREFIX + "mainCat_part1_X.xlsx"),
                        engine="openpyxl")
-    assert list(df[ORIGIN_COLUMN][:5]) == ["second.com_main_part1"] * 5
+    assert list(df[ORIGIN_COLUMN]) == ["second.com_main_part1"] * len(df)
 
     # 域名与文件夹名相同：改名跳过（幂等）
     apply_domain_to_site(second_dir, "second.com")
@@ -304,16 +304,16 @@ def test_apply_site_review_task(workdir):
     assert not (workdir / "Site_A").exists()
     assert not (workdir / "Site_B").exists()
 
-    # Site_A 主表前五条 -> 修改后的域名标记
+    # Site_A 主表整列 -> 修改后的域名标记
     df = pd.read_excel(workdir / "faucet-pro-fixed.com"
                        / (DATA_PREFIX + "mainFaucets_part1_X.xlsx"),
                        engine="openpyxl")
-    assert list(df[ORIGIN_COLUMN][:5]) == ["faucet-pro-fixed.com_main_part1"] * 5
-    # Site_B 补充表 part2
+    assert list(df[ORIGIN_COLUMN]) == ["faucet-pro-fixed.com_main_part1"] * len(df)
+    # Site_B 补充表 part2 整列
     df = pd.read_excel(workdir / "doorstore.com"
                        / (DATA_PREFIX + "Door Hardware_supp_part2_Z.xlsx"),
                        engine="openpyxl")
-    assert list(df[ORIGIN_COLUMN][:5]) == ["doorstore.com_part2"] * 5
+    assert list(df[ORIGIN_COLUMN]) == ["doorstore.com_part2"] * len(df)
 
     # 网站信息.xlsx 回写：域名/标题更新 + 审核通过备注 + 文件夹名同步为域名；
     # 未审核字段保留

@@ -93,19 +93,22 @@ def test_collect_domain_sites_nested(workdir):
 
 
 def test_collect_site_tables(workdir):
-    """只收集 data_ 前缀 .xlsx，自然排序（part2 < part10），跳过结果文件"""
+    """只收集 data_ 前缀 .xlsx；主数据先于补充数据；组内自然排序 part2 < part10"""
     site = workdir / "a.com"
     site.mkdir()
-    p10 = make_data_table(site / "data_x_supp_part10_ZZ.xlsx")
-    p2 = make_data_table(site / "data_x_supp_part2_ZZ.xlsx")
-    p1 = make_data_table(site / "data_mainX_part1_ZZ.xlsx")
+    # 真实命名风格: 分类名首字母小于 'm'，补充表自然排序会排在主表之前
+    supp10 = make_data_table(site / "data_American_Standard_supp_part10_ZZ.xlsx")
+    supp2 = make_data_table(site / "data_American_Standard_supp_part2_ZZ.xlsx")
+    supp1 = make_data_table(site / "data_American_Standard_supp_part1_ZZ.xlsx")
+    main = make_data_table(site / "data_mainAmerican_Standard_part1_ZZ.xlsx")
     # 非 data_ 文件不上传
-    make_data_table(site / "mainX_part1.xlsx")
+    make_data_table(site / "mainAmerican_part1.xlsx")
     make_data_table(site / "分类统计.xlsx")
     (site / "数据ID.txt").write_text("1", encoding="utf-8")
 
     tables = collect_site_tables(site)
-    assert tables == [p1, p2, p10]
+    # 主数据必须排最前（ERP 要求先传主数据，再传补充数据）
+    assert tables == [main, supp1, supp2, supp10]
     assert collect_site_tables(workdir / "not_exist") == []
 
 
@@ -197,6 +200,16 @@ def test_run_domain_upload_task(workdir):
                   if m.startswith("[1/2]") and "a-site.com 完成" in m)
     b_start = next(i for i, m in enumerate(logs) if "▶ 网站 b-site.com" in m)
     assert a_done < b_start
+    # 站内顺序：主数据（data_main 前缀）先于补充数据上传
+    a_ok = [m.split("（")[0].strip().replace("✓ ", "")
+            for m in logs if m.startswith("  ✓ data_")]
+    first_b_idx = next(i for i, m in enumerate(a_ok) if "CatB" in m)
+    a_files = a_ok[:first_b_idx]
+    assert a_files[0].startswith("data_mainCatA"), a_files  # 主数据最先
+    assert all("main" not in m for m in a_files[1:]), a_files  # 其余为补充
+    # 开始日志带主/补充分解
+    assert any("主数据 1 表先传" in m and "补充数据 2 表" in m
+               for m in logs)
     # 分组汇总输出：按网站列出全部数据ID
     summary_idx = next(i for i, m in enumerate(logs) if "数据ID汇总" in m)
     a_line = next(m for m in logs[summary_idx:] if m.startswith("a-site.com"))

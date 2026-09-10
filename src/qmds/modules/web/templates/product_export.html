@@ -205,7 +205,7 @@
     <hr style="margin: 18px 0; border: none; border-top: 1px dashed #d1d5db;">
 
     <h3 style="margin-bottom: 8px;">📋 网站信息审核</h3>
-    <p class="text-muted" style="margin-bottom: 10px;">生成后点击「查看网站信息表格」加载 <code>网站信息.xlsx</code>（切换上方文件夹也会自动加载）。表格可一键复制粘贴到 Excel 中审核；修改域名后勾选「通过」，点击「应用审核」——系统将用<b>通过后的域名</b>修改对应网站的数据表：① 每个表<b>前五条数据</b>的「原站域名」列改为域名标记：主数据 <code>域名_main_partN</code>、补充数据 <code>域名_partN</code>（每个表格互不相同）；② 数据表名最前面加 <code>data_</code> 前缀，用于后续上传数据时识别（只上传网站数据表）；③ <b>网站文件夹改名为该域名</b>（如 Toilet_Tank_Lid → tanklidpro.com）。重复应用时只更新标记，不重复加前缀。</p>
+    <p class="text-muted" style="margin-bottom: 10px;">生成后点击「查看网站信息表格」加载 <code>网站信息.xlsx</code>（切换上方文件夹也会自动加载）。表格可一键复制粘贴到 Excel 中审核；修改域名后勾选「通过」，点击「应用审核」——系统将用<b>通过后的域名</b>修改对应网站的数据表：① 每个表的「原站域名」列<b>整列统一</b>为域名标记：主数据 <code>域名_main_partN</code>、补充数据 <code>域名_partN</code>（每个表格互不相同；ERP 按整列一致的标记识别站点与分卷）；② 数据表名最前面加 <code>data_</code> 前缀，用于后续上传数据时识别（只上传网站数据表）；③ <b>网站文件夹改名为该域名</b>（如 Toilet_Tank_Lid → tanklidpro.com）。重复应用时只更新标记，不重复加前缀。</p>
     <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap;">
         <button type="button" class="btn-sm" id="info-table-load-btn">🔄 查看/刷新网站信息表格</button>
         <button type="button" class="btn-sm" id="info-table-copy-btn">📋 复制表格（可粘贴到 Excel）</button>
@@ -346,6 +346,15 @@
     height: 16px;
     cursor: pointer;
 }
+/* 按网站上传: 站点选择行 */
+.su-site-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 6px 8px; border-radius: 6px; cursor: pointer;
+    transition: background .15s;
+}
+.su-site-row:hover { background: #f3f4f6; }
+.su-site-row .text-muted { margin-left: auto; font-size: 12px; white-space: nowrap; }
+#su-sites-list { display: flex; flex-direction: column; gap: 2px; }
 .alloc-cat-row {
     padding: 1px 0;
 }
@@ -1210,7 +1219,7 @@ function applySiteReview() {
     if (!sites.length) { infoStatus('请先勾选审核通过的网站', true); return; }
     if (!confirm('确认应用审核？\n\n将修改 ' + sites.length
                  + ' 个网站的数据表：\n'
-                 + '· 每个表前五条数据的「原站域名」列 → 域名标记'
+                 + '· 每个表的「原站域名」列整列统一为域名标记'
                  + '（主数据 域名_main_partN / 补充数据 域名_partN，每个表格不同）\n'
                  + '· 数据表名加 data_ 前缀（已加过的不重复加）\n'
                  + '· 网站文件夹改名为该域名\n'
@@ -1249,8 +1258,7 @@ function loadUploadSites(folder) {
             document.getElementById('su-site-count').textContent = sites.length;
             sites.forEach(function(s) {
                 var label = document.createElement('label');
-                label.style.cssText =
-                    'display: flex; align-items: center; gap: 8px; padding: 4px 0;';
+                label.className = 'su-site-row';
                 var cb = document.createElement('input');
                 cb.type = 'checkbox';
                 cb.className = 'su-site';
@@ -1258,13 +1266,12 @@ function loadUploadSites(folder) {
                 label.appendChild(cb);
                 var nameSpan = document.createElement('span');
                 nameSpan.textContent = s.name;
-                nameSpan.style.fontWeight = '500';
+                nameSpan.style.cssText = 'font-weight: 500; overflow: hidden; text-overflow: ellipsis;';
                 label.appendChild(nameSpan);
                 var meta = document.createElement('span');
                 meta.className = 'text-muted';
-                meta.style.fontSize = '12px';
-                meta.textContent = '（' + s.tables + ' 个 data_ 数据表'
-                    + (s.path !== s.name ? '，位于 ' + s.path : '') + '）';
+                meta.textContent = s.tables + ' 个数据表'
+                    + (s.path !== s.name ? ' · ' + s.path : '');
                 label.appendChild(meta);
                 list.appendChild(label);
             });

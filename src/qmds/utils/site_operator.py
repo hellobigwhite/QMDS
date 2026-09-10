@@ -34,6 +34,21 @@ ICON_NAMES = ["icon.png", "head.png", "favicon.png"]
 # Banner文件名
 WP_BANNER_NAMES = ["banner.jpg", "banner.webp", "bannerstore.jpg", "banner-scaled.jpg"]
 
+# ── upload_data 数据上传轮询上限 ──────────────────────────────
+DATA_MAX_ROUNDS = 800       # 数据上传轮询轮数上限（每轮约100条，800轮≈8万条）
+
+# ── 批量下图（图片处理阶段）守护阈值 ──────────────────────────
+# one_dimg.php 每轮处理一批图片（约50张）并返回「成功-N 失败-M」，
+# 全部下图完成后返回「成功-0 失败-0」（旧 dimg.php 为无空格的
+# 「成功-0失败-0」）。此前按无空格子串判断完成，one_dimg.php 的带空格
+# 格式永远匹配不上，完成检测失效；且轮询固定 400 轮上限，跑满或连续
+# 请求失败后直接按成功返回 —— 站点图片没下图完毕就显示「上传成功/已上传」。
+IMG_PROGRESS_RE = re.compile(r"成功\s*-\s*(\d+)\s*失败\s*-\s*(\d+)")
+IMG_MAX_RETRIES = 10        # 连续请求失败/无有效响应次数上限（与旧实现一致，超过即中止）
+IMG_STALL_ROUNDS = 50       # 连续「成功0张」轮数上限：剩余图片反复下图失败
+IMG_UNKNOWN_ROUNDS = 10     # 连续无法解析进度的轮数上限（接口报错/格式变化）
+IMG_MAX_ROUNDS = 20000      # 绝对轮数上限（防服务器异常导致死循环，正常远达不到）
+
 
 class SSLAdapter(HTTPAdapter):
     """自定义SSL适配器，禁用证书验证"""
@@ -1234,7 +1249,7 @@ class SiteOperator:
                     "X-Requested-With": "XMLHttpRequest",
                 }
 
-                for i in range(800):
+                for i in range(DATA_MAX_ROUNDS):
                     if stop_callback and stop_callback():
                         if progress_callback:
                             progress_callback("收到停止信号，中止上传")
@@ -1286,8 +1301,23 @@ class SiteOperator:
                             progress_callback(f"完成 已上传{cs} 成功{success_count} 失败{failure_count} 重复{repeat_count}")
                             progress_callback("开始批量处理图片")
 
+                        # ── 批量下图轮询（one_dimg.php 每轮处理一批图片）──
+                        # 完成判定用 IMG_PROGRESS_RE 正则解析（兼容「成功-0失败-0」
+                        # 与「成功-0 失败-0」两种格式）；不设固定轮数上限，仅以
+                        # 连续请求失败 / 连续无进展 / 连续无法解析 三类守护条件
+                        # 终止。异常终止时返回失败并保留数据断点 —— 重新执行本
+                        # 步骤时数据校验秒级完成后，服务器会跳过已下载的图片
+                        # 继续下图剩余图片，不会重复下载。
                         img_retry = 0
-                        for j in range(400):
+                        img_rounds = 0
+                        img_stall_rounds = 0
+                        img_unknown_rounds = 0
+                        img_ok_total = 0
+                        img_fail_total = 0
+                        img_done = False
+                        img_abort_reason = ""
+
+                        while img_rounds < IMG_MAX_ROUNDS:
                             if stop_callback and stop_callback():
                                 if progress_callback:
                                     progress_callback("收到停止信号，中止图片处理")
@@ -1299,8 +1329,9 @@ class SiteOperator:
                             except requests.exceptions.RequestException as exc:
                                 img_retry += 1
                                 if progress_callback:
-                                    progress_callback(f"图片处理请求异常，重试 {img_retry}/10: {exc}")
-                                if img_retry > 10:
+                                    progress_callback(f"图片处理请求异常，重试 {img_retry}/{IMG_MAX_RETRIES}: {exc}")
+                                if img_retry > IMG_MAX_RETRIES:
+                                    img_abort_reason = f"连续 {img_retry} 次图片处理请求失败（最后错误: {exc}）"
                                     break
                                 time.sleep(2)
                                 continue
@@ -1309,25 +1340,76 @@ class SiteOperator:
                             if img_resp.status_code != 200 or img_payload is None:
                                 img_retry += 1
                                 if progress_callback:
-                                    progress_callback(f"图片处理失败，重试 {img_retry}/10")
-                                if img_retry > 10:
+                                    progress_callback(f"图片处理失败，重试 {img_retry}/{IMG_MAX_RETRIES}")
+                                if img_retry > IMG_MAX_RETRIES:
+                                    img_abort_reason = f"连续 {img_retry} 次图片处理无有效响应（HTTP {img_resp.status_code}）"
                                     break
                                 time.sleep(2)
                                 continue
 
                             img_retry = 0
+                            img_rounds += 1
                             img_msg = str(img_payload.get("msg", ""))
-                            if "成功-0失败-0" in img_msg:
+                            m = IMG_PROGRESS_RE.search(img_msg)
+                            if m is None:
+                                # 无法解析进度（接口报错/返回格式变化）：
+                                # 原样记录消息；连续多轮都解析不出时终止，避免死循环
+                                img_unknown_rounds += 1
                                 if progress_callback:
-                                    progress_callback(f"图片处理完成")
+                                    progress_callback(f"图片处理: {img_msg}")
+                                if img_unknown_rounds >= IMG_UNKNOWN_ROUNDS:
+                                    img_abort_reason = (f"连续 {img_unknown_rounds} 轮无法解析图片处理进度"
+                                                        f"（最后消息: {img_msg[:120]}）")
+                                    break
+                                time.sleep(1)
+                                continue
+
+                            img_unknown_rounds = 0
+                            ok_n = int(m.group(1))
+                            fail_n = int(m.group(2))
+                            img_ok_total += ok_n
+                            img_fail_total += fail_n
+                            if ok_n == 0 and fail_n == 0:
+                                # 本轮既无成功也无失败：服务器已无待下图图片，全部完成
+                                img_done = True
+                                if progress_callback:
+                                    progress_callback(f"图片处理完成: 共{img_rounds}轮, "
+                                                      f"成功{img_ok_total}张, 失败{img_fail_total}张")
                                 break
 
                             if progress_callback:
                                 progress_callback(f"图片处理: {img_msg}")
+                            if ok_n > 0:
+                                img_stall_rounds = 0
+                            else:
+                                # 本轮一张都没下图成功：剩余图片反复下载失败，
+                                # 继续轮询没有意义，达到阈值后终止并如实报告
+                                img_stall_rounds += 1
+                                if img_stall_rounds >= IMG_STALL_ROUNDS:
+                                    img_abort_reason = (f"连续 {img_stall_rounds} 轮下图无进展"
+                                                        f"（每轮成功0张, 最后失败{fail_n}张），"
+                                                        f"剩余图片反复下载失败")
+                                    break
                             time.sleep(1)
+                        else:
+                            img_abort_reason = f"图片处理轮询达绝对上限 {IMG_MAX_ROUNDS} 轮仍未完成"
 
-                        return {"success": True, "message": f"上传完成: 成功{success_count}, 失败{failure_count}, 重复{repeat_count}",
-                                "success_count": success_count, "failure_count": failure_count, "final_cs": "0"}
+                        if img_done:
+                            return {"success": True,
+                                    "message": (f"上传完成: 成功{success_count}, 失败{failure_count}, "
+                                                f"重复{repeat_count}, 图片成功{img_ok_total}张/失败{img_fail_total}张"),
+                                    "success_count": success_count, "failure_count": failure_count, "final_cs": "0"}
+
+                        # 图片未下图完毕即中止：不能按成功返回（否则站点图片不全
+                        # 却显示「已上传」）。保留数据断点返回失败，任务日志与站点
+                        # 状态都会如实显示未完成，重新执行本步骤即可继续下图。
+                        if progress_callback:
+                            progress_callback(f"图片处理未完成: {img_abort_reason}")
+                        log.error(f"[{domain}] 图片处理未完成: {img_abort_reason}")
+                        return {"success": False,
+                                "message": (f"图片处理未完成（下图成功{img_ok_total}张, 失败{img_fail_total}张）: "
+                                            f"{img_abort_reason}；数据已上传，重新执行本步骤可继续下图剩余图片"),
+                                "success_count": success_count, "failure_count": failure_count, "final_cs": cs}
 
                     if "code" in payload:
                         next_cs = str(payload["code"])
@@ -1345,8 +1427,16 @@ class SiteOperator:
 
                     time.sleep(1)
 
-                return {"success": True, "message": f"上传结束: 成功{success_count}, 失败{failure_count}",
-                        "success_count": success_count, "failure_count": failure_count, "final_cs": "0"}
+                # 数据上传轮询达上限仍未完成：不能按成功返回（会提前显示完成
+                # 且清除断点）。保留断点返回失败，重新执行时从断点继续上传。
+                if progress_callback:
+                    progress_callback(f"数据上传轮询达 {DATA_MAX_ROUNDS} 轮上限仍未完成，保留断点 {cs}")
+                log.error(f"[{domain}] 数据上传轮询达 {DATA_MAX_ROUNDS} 轮上限仍未完成，断点 {cs}")
+                return {"success": False,
+                        "message": (f"数据上传轮询达 {DATA_MAX_ROUNDS} 轮上限仍未完成"
+                                    f"（成功{success_count}, 失败{failure_count}），断点 {cs} 已保留，"
+                                    f"请重新执行本步骤继续上传"),
+                        "success_count": success_count, "failure_count": failure_count, "final_cs": cs}
 
             except Exception as e:
                 log.error(f"[{domain}] 上传异常 (第{outer_retry + 1}次): {e}")

@@ -6,11 +6,12 @@
 
 1. 修改数据表内容：网站文件夹内每个数据表（数据分配输出结构：
    主数据表 main{分类名}_part{N}_{后缀}.xlsx / 补充数据表
-   {分类名}_supp_part{N}_{后缀}.xlsx），其前五条数据行的「原站域名」列
-   改为该表的域名标记（每个表格互不相同，N 取自表名 _partN）：
+   {分类名}_supp_part{N}_{后缀}.xlsx），「原站域名」列整列统一为该表的
+   域名标记（每个表格互不相同，N 取自表名 _partN）：
    - 主数据表   -> {域名}_main_part{N}
    - 补充数据表 -> {域名}_part{N}
-   其余行的原站域名保持不变（保留原始来源站信息）。
+   （ERP 站群按整列一致的标记识别站点与分卷；老 BB 工具拆表输出
+   即为整列统一形态，混合来源域名会被服务器以「表错了」拒绝。）
 2. 修改数据表名：表名最前面加 data_ 前缀（如 data_main....xlsx），
    用于后续上传数据时识别——只上传网站数据表（data_ 前缀）。
 3. 网站文件夹改名为审核通过的域名（Toilet_Tank_Lid -> tanklidpro.com），
@@ -39,8 +40,7 @@ ORIGIN_COLUMN = "原站域名"
 # 数据表名前缀（审核应用后）：后续上传只识别 data_ 前缀的网站数据表
 DATA_PREFIX = "data_"
 
-# 每个数据表修改「原站域名」列的行数（前五条数据）
-MARK_ROW_COUNT = 5
+# 「原站域名」列整列统一为该表标记（ERP 按整列一致的标记识别站点）
 
 # 应用审核时回写 网站信息.xlsx 的字段映射（前端字段 -> 表格列）
 _INFO_FIELD_MAP = (
@@ -168,7 +168,7 @@ def apply_domain_to_site(site_folder, domain: str,
                          log_fn=None, stop_check=None) -> dict:
     """把审核通过的域名写入一个网站的数据表并改文件夹名
 
-    - 每个数据表前五条数据行的「原站域名」列改为该表标记：
+    - 每个数据表的「原站域名」列整列统一为该表标记：
       主数据 {domain}_main_part{N} / 补充数据 {domain}_part{N}
     - 表名加 data_ 前缀（已加过的不重复加）
     - 网站文件夹改名为域名（如 Toilet_Tank_Lid -> tanklidpro.com；
@@ -198,7 +198,10 @@ def apply_domain_to_site(site_folder, domain: str,
             marker = (f"{domain}_main_part{n}" if kind == "main"
                       else f"{domain}_part{n}")
 
-            # ── 修改前五条数据的原站域名列 ──
+            # ── 原站域名列整列统一为该表标记 ──
+            # ERP 站群按整列一致的 域名_..._partN 识别目标站点与分卷
+            # （老 BB 工具拆表输出的形态）；列中混有其他来源域名时
+            # 服务器返回「表错了」。
             df = pd.read_excel(path, engine="openpyxl")
             if ORIGIN_COLUMN not in df.columns:
                 if log_fn:
@@ -206,13 +209,12 @@ def apply_domain_to_site(site_folder, domain: str,
                            f"「{ORIGIN_COLUMN}」列，跳过域名标记（仍重命名）",
                            "warning")
             else:
-                rows = min(MARK_ROW_COUNT, len(df))
-                df.loc[df.index[:rows], ORIGIN_COLUMN] = marker
+                df[ORIGIN_COLUMN] = marker
                 df.to_excel(path, index=False, engine="openpyxl")
                 stats[kind] += 1
                 if log_fn:
-                    log_fn(f"[{folder.name}] {path.name}: 前 {rows} 行"
-                           f"{ORIGIN_COLUMN} -> {marker}")
+                    log_fn(f"[{folder.name}] {path.name}: {ORIGIN_COLUMN} "
+                           f"整列 {len(df)} 行 -> {marker}")
 
             # ── 表名加 data_ 前缀（幂等） ──
             if not path.name.startswith(DATA_PREFIX):
@@ -239,7 +241,7 @@ def apply_site_review_task(task_id: str, folder, sites: list):
     """应用网站信息审核后台任务体
 
     对每个审核通过的网站（sites 元素含 folder 与通过后的 domain 等
-    前端编辑字段）：用域名修改其数据表（前五条原站域名标记 + data_ 前缀），
+    前端编辑字段）：用域名修改其数据表（整列原站域名标记 + data_ 前缀），
     并把审核结果（域名等编辑值 + 「审核通过」备注）回写 网站信息.xlsx。
     单个网站失败记录错误日志并继续，最后汇总。
 
