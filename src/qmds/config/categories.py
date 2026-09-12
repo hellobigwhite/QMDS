@@ -184,12 +184,21 @@ SHOPIFY_TO_CN_CATEGORY = {
 def get_cn_category_name(shopify_category: str) -> str:
     """将简化分类名转换为中文一级分类名，未知分类返回原值
 
+    输入先规范化（去首尾空白、转小写、空白/连字符统一为下划线）再查表：
+    历史数据的 source_category 存在空格形式（"animals pet supplies"，
+    清洗流程曾把下划线替换为空格），与标准下划线形式
+    （"animals_pet_supplies"）都能正确映射为中文。
+
     示例:
         get_cn_category_name("hardware") -> "五金"
         get_cn_category_name("electronics") -> "电子产品"
+        get_cn_category_name("animals pet supplies") -> "动物"
         未知分类返回传入值原样
     """
-    return SHOPIFY_TO_CN_CATEGORY.get(shopify_category, shopify_category)
+    if not shopify_category or not shopify_category.strip():
+        return shopify_category
+    key = re.sub(r"[\s\-]+", "_", shopify_category.strip().lower())
+    return SHOPIFY_TO_CN_CATEGORY.get(key, shopify_category)
 
 
 def get_google_category_name(shopify_category: str) -> str:

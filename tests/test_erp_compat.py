@@ -327,3 +327,64 @@ def test_upload_task_converts_before_post(workdir):
     # 转换日志
     logs = [e["message"] for e in task_manager.get_logs(task_id)]
     assert any("已转为 ERP 兼容格式" in m for m in logs)
+
+
+# ── CRLF 回车行尾（真实数据回归：描述含 \r\n 导致校验不一致）──────
+
+def test_decode_char_refs_safety():
+    """解码安全边界：CR 保留引用；& < > 转命名实体；非法字符保留；其余解码"""
+    from qmds.modules.web.services.site_uploader import _decode_char_refs
+
+    # 常规字符（中文、• ’ 等）解码为原始字符（ERP 字符串比较列名需要）
+    assert _decode_char_refs("&#20013;&#25991;") == "中文"
+    assert _decode_char_refs("&#8226;&#8217;") == "•’"
+    assert _decode_char_refs("&#x4E2D;") == "中"  # 十六进制形式
+    # CR 保留引用形态（字面 CR 会被 XML 解析器归一化为 LF，数据失真）
+    assert _decode_char_refs("a&#13;\nb") == "a&#13;\nb"
+    assert _decode_char_refs("a&#x0D;b") == "a&#x0D;b"
+    # & < > 转标准命名实体（写字面会破坏 XML 结构）
+    assert _decode_char_refs("&#38;") == "&amp;"
+    assert _decode_char_refs("&#60;") == "&lt;"
+    assert _decode_char_refs("&#62;") == "&gt;"
+    # XML 1.0 非法字符（控制字符）保留引用形态
+    assert _decode_char_refs("&#1;") == "&#1;"
+    # 命名实体不属于数字引用，原样保留
+    assert _decode_char_refs("&amp;&#38;") == "&amp;&amp;"
+
+
+def test_convert_crlf_text(workdir):
+    r"""描述含 \r\n 行尾：转换成功且 CR 精确保留（真实数据回归）
+
+    openpyxl 把单元格文本中的 CR 写成 &#13; 引用；旧逻辑把 &#13; 解码为
+    字面 CR 写入 sharedStrings，被 XML 解析器归一化为 LF，转换前后数据
+    不一致（描述 \r\n 变 \n），触发「转换后数据校验不一致」放弃替换，
+    未转换的内联格式上传 ERP 即「表错了」。
+    """
+    desc = "Line1\r\nLine2\r\n\r\nBullet • item"
+    df = pd.DataFrame([
+        {"SKU": "S1", "描述": desc, "自定义分类": "五金"},
+        {"SKU": "S2", "描述": "\r\n前导回车\r\n", "自定义分类": "五金"},
+    ])
+    fp = write_table(workdir / "t.xlsx", df)
+    # 前置确认：openpyxl 写出的内联形态确实含 &#13; 引用
+    with zipfile.ZipFile(fp) as z:
+        sheet_xml = z.read("xl/worksheets/sheet1.xml").decode("utf-8")
+    assert "&#13;" in sheet_xml, "测试前置失败：应含 CR 字符引用"
+    before = pd.read_excel(fp, engine="openpyxl")
+
+    assert make_erp_compatible(fp) is True
+
+    after = pd.read_excel(fp, engine="openpyxl")
+    assert after.equals(before)
+    # CR 精确保留（未被归一化为 LF），前导/末尾 CR 同样保留
+    assert after["描述"].iloc[0] == desc
+    assert after["描述"].iloc[1] == "\r\n前导回车\r\n"
+    # sharedStrings 中 CR 以合法引用形态存在；中文列名为原始字符
+    with zipfile.ZipFile(fp) as z:
+        ss = z.read("xl/sharedStrings.xml").decode("utf-8")
+    assert "&#13;" in ss
+    assert "自定义分类" in ss
+    # 幂等：再次转换不再修改（仅含 &#13; 引用不触发重写）
+    data = fp.read_bytes()
+    assert make_erp_compatible(fp) is False
+    assert fp.read_bytes() == data

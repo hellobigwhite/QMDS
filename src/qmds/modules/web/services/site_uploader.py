@@ -319,11 +319,36 @@ def _ensure_decl(xml: str) -> str:
 _DEC_CHAR_REF_RE = re.compile(r"&#(?:x([0-9A-Fa-f]+)|(\d+));")
 
 
+# 解码安全边界（写字面字符前必须检查，否则转换后数据校验不一致或 XML 非法）：
+# - &#13;（CR 回车）不能解码为字面字符：XML 1.0 禁止内容中出现字面 CR，
+#   解析器会把它归一化为 LF，Excel 单元格中的 \r\n 行尾会变成 \n
+#   （描述字段常见，正是「转换后数据校验不一致」的根因）——保留引用形态；
+# - &#38; &#60; &#62;（& < >）写字面会破坏 XML 结构（裸 & / < 非法、
+#   ]]&gt; 序列非法）——转为标准命名实体 &amp; &lt; &gt;（语义等价）；
+# - 其余 XML 1.0 非法字符（控制字符/代理区）同样保留引用形态；
+# - 其余字符（中文、• ’ ® 等）解码为原始 UTF-8 字符。
+_REF_TO_NAMED = {0x26: "&amp;", 0x3C: "&lt;", 0x3E: "&gt;"}
+
+
 def _decode_char_refs(text: str) -> str:
-    """把数字字符引用解码为原始字符（&#20013; -> 中）"""
-    return _DEC_CHAR_REF_RE.sub(
-        lambda m: chr(int(m.group(1), 16) if m.group(1) else int(m.group(2))),
-        text)
+    """把数字字符引用解码为原始字符（&#20013; -> 中）
+
+    不能以字面形态安全写入 XML 内容的字符按上述安全边界处理：
+    CR 保留 &#13; 引用形态；& < > 转命名实体；控制字符保留引用。
+    """
+
+    def _repl(m):
+        cp = int(m.group(1), 16) if m.group(1) else int(m.group(2))
+        if cp in _REF_TO_NAMED:
+            return _REF_TO_NAMED[cp]
+        # XML 1.0 合法字符：#x9 | #xA | #x20-#xD7FF | #xE000-#xFFFD | #x10000+
+        # （#xD 即 CR 除外：字面 CR 会被解析器归一化为 LF）
+        if (cp == 0x9 or cp == 0xA or 0x20 <= cp <= 0xD7FF
+                or 0xE000 <= cp <= 0xFFFD or cp >= 0x10000):
+            return chr(cp)
+        return m.group(0)  # 非法字符：保留原引用形态
+
+    return _DEC_CHAR_REF_RE.sub(_repl, text)
 
 
 _REL_TAG_RE = re.compile(r"<Relationship\b[^>]*/>")
@@ -389,10 +414,13 @@ def make_erp_compatible(path, log_fn=None) -> bool:
     needs_strings = any('t="inlineStr"' in x for x in sheet_xmls.values())
     ss_name = "xl/sharedStrings.xml"
     # 修复路径：已存在的 sharedStrings 中含数字字符引用 -> 解码为原始字符
-    # （早期版本转换残留的坏形态；解码不改变语义与索引，安全）
-    fix_ss_refs = (ss_name in names
-                   and _DEC_CHAR_REF_RE.search(contents[ss_name]
-                                               .decode("utf-8")) is not None)
+    # （早期版本转换残留的坏形态；解码不改变语义与索引，安全）。
+    # 以「解码后内容有实际变化」判定：&#13;（CR）按解码安全边界保留引用
+    # 形态，仅含 CR 引用的文件（本版本转换后的正常形态）不需要重写。
+    fix_ss_refs = False
+    if ss_name in names:
+        _ss_xml = contents[ss_name].decode("utf-8")
+        fix_ss_refs = _decode_char_refs(_ss_xml) != _ss_xml
     if needs_strings and ss_name in names:
         # 文件同时含共享字符串与内联字符串（混合格式，本链路不会产生）：
         # 不动字符串部分，避免破坏已有索引（引用解码仍执行）
