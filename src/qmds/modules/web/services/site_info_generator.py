@@ -11,8 +11,12 @@
    所有网站的分类一次性塞给模型）：
    a. 读取该文件夹下的 分类统计.xlsx（category_stats 生成；数据分配后
       已自动生成；不存在时自动扫描文件夹内全部表格补生成）；
-   b. 以该网站的分类结构（分类 + 产品数）+ 主类目为上下文构造提示词；
-   c. 调用 LLM（默认 AgentRouter https://agentrouter.org/ 平台的模型）
+   b. 以该网站的分类结构（分类 + 产品数）+ 主类目为上下文构造提示词，
+      并注入该网站专属的「创意方向」（品牌声线/命名风格/文案角度/城市，
+      各网站互不相同）与反指纹规则（禁用套路化域名后缀/标题句式/描述
+      开头/陈词滥调），避免整批站点呈现同一套措辞（被识别为批量建站）；
+   c. 调用 LLM（默认 AgentRouter https://agentrouter.org/ 平台的模型，
+      温度随创意方向在 0.7-0.95 间抖动）
       生成英文网站信息（面向美国用户）：
       - domain      网站域名（结合主类目生成，.com）
       - theme       网站主题
@@ -29,7 +33,10 @@
 调用模式参考 ai_menu_builder：同步 OpenAI + 3 次重试 + 格式警告。
 """
 
+import hashlib
 import json
+import os
+import random
 import re
 import time
 from datetime import datetime
@@ -53,6 +60,7 @@ from qmds.modules.web.services.category_stats import (
     write_stats_excel,
 )
 from qmds.modules.web.task_manager import task_manager
+from qmds.utils import winpath
 from qmds.utils.logger import get_logger
 
 log = get_logger("web.site_info_generator")
@@ -65,9 +73,12 @@ except ImportError:
     log.warning("openai 未安装，AI 生成网站信息功能不可用")
 
 # 网站信息输出表格（INFO_FILE_NAME = 网站信息.xlsx，从 category_stats 引入）
-# 的数据列：批量任务把所有网站汇总成一张表，每个网站一行
+# 的数据列：批量任务把所有网站汇总成一张表，每个网站一行。
+# 主数据ID/补充数据ID：站群上传任务（site_uploader）把服务器返回的数据 ID
+# 按网站回写（各逗号分隔，主数据在前），供后续站群管理追溯数据分卷。
 INFO_COLUMNS = ("网站（文件夹）", "主类目", "域名", "标题", "描述", "主题", "地址",
-                "关键词", "产品数", "分类数", "模型", "生成时间", "备注")
+                "关键词", "产品数", "分类数", "模型", "生成时间",
+                "主数据ID", "补充数据ID", "备注")
 
 # 输出 JSON 较短，4000 token 足够；重试时附加格式警告
 _LLM_MAX_TOKENS = 4000
@@ -83,6 +94,126 @@ MAX_EXTRA_CATEGORIES = 50
 
 # 垃圾/无意义分类名（纯数字、占位类目），不进入提示词
 _JUNK_CATEGORIES = {"new products", "other", "others", "uncategorized", "misc"}
+
+# ── 反模板化（避免批量生成被识别为站群）──────────────────────
+# 每个网站从下列池子随机抽取一组「创意方向」（品牌声线/命名风格/文案角度/
+# 所在城市等），写进提示词强制差异化。种子 = 网站名 + 任务 nonce 的稳定哈希：
+# 同一网站同一任务内方向固定（重试幂等），不同网站/不同批次方向互不相同。
+
+_BRAND_VOICES = (
+    "family-run shop, second generation, plain-spoken",
+    "trade-grade supplier that contractors and repair pros order from",
+    "boutique curator with an editorial eye",
+    "workshop-direct maker brand",
+    "hobbyist-founded specialist retailer",
+    "no-nonsense replacement-parts dealer",
+    "independent dealer carrying a unusually deep catalog",
+    "budget-minded seller focused on bulk buys",
+)
+
+_TONES = (
+    "warm and conversational",
+    "crisp and technical",
+    "premium and understated",
+    "practical and direct",
+    "lightly playful",
+    "authoritative and detail-oriented",
+)
+
+_DOMAIN_STYLES = (
+    "a coined, made-up word that evokes the niche (like real DTC brands use)",
+    "a two-word compound of two real English words from the niche",
+    "a short evocative real word paired with one niche word",
+    "a niche word plus an unexpected but fitting modifier (material, craft, era)",
+    "a compact two-to-three-word phrase that reads like an independent shop's name",
+)
+
+_TITLE_STYLES = (
+    "brand word first, then a plain descriptor after a colon",
+    "main keyword first, then a specific differentiator after a dash",
+    "a natural sentence-style title with no separator punctuation",
+    "short and plain - just what the store offers, no slogan",
+    "benefit- or use-case-led, still containing the main keyword",
+    "a craft or material angle that names what the products are for",
+)
+
+_TITLE_LENGTHS = ("35-50", "40-60", "45-65")
+
+_DESC_ANGLES = (
+    "open with the concrete product range, then one sentence on service",
+    "open with the customer's problem or project, then how the store solves it",
+    "open with what the selection is unusually deep in, then who it serves",
+    "open with one specific product example, then the broader range",
+    "open with the audience, then what has been picked for them",
+)
+
+_DESC_LENGTHS = ("80-120", "100-150", "120-170", "140-200", "90-140")
+
+_KEYWORD_RECIPES = (
+    "8-11 keywords, leaning toward long-tail multi-word phrases",
+    "10-14 keywords, head terms first then long-tail",
+    "6-9 keywords, only the highest-intent phrases",
+    "12-16 keywords, covering the main subcategories",
+)
+
+# 城市池：刻意避开模型最爱扎堆的 Austin/Denver/Portland/Miami 等热门城市，
+# 分散在各州中等城市，让整批站点的地址不呈现同一地理聚集
+_ADDRESS_CITIES = (
+    ("Huntsville", "AL"), ("Anchorage", "AK"), ("Mesa", "AZ"),
+    ("Fayetteville", "AR"), ("Stockton", "CA"), ("Fort Collins", "CO"),
+    ("Hartford", "CT"), ("Wilmington", "DE"), ("Ocala", "FL"),
+    ("Marietta", "GA"), ("Coeur d'Alene", "ID"), ("Schaumburg", "IL"),
+    ("Carmel", "IN"), ("Cedar Rapids", "IA"), ("Overland Park", "KS"),
+    ("Bowling Green", "KY"), ("Lafayette", "LA"), ("Grand Rapids", "MI"),
+    ("Rochester", "MN"), ("Springfield", "MO"), ("Biloxi", "MS"),
+    ("Billings", "MT"), ("Lincoln", "NE"), ("Sparks", "NV"),
+    ("Manchester", "NH"), ("Cherry Hill", "NJ"), ("Rio Rancho", "NM"),
+    ("Schenectady", "NY"), ("High Point", "NC"), ("Fargo", "ND"),
+    ("Dayton", "OH"), ("Norman", "OK"), ("Salem", "OR"),
+    ("Reading", "PA"), ("Warwick", "RI"), ("Greenville", "SC"),
+    ("Sioux Falls", "SD"), ("Chattanooga", "TN"), ("Tyler", "TX"),
+    ("Ogden", "UT"), ("Burlington", "VT"), ("Roanoke", "VA"),
+    ("Bellingham", "WA"), ("Morgantown", "WV"), ("Appleton", "WI"),
+    ("Cheyenne", "WY"),
+)
+
+_STREET_HINTS = (
+    "a simple street number and name",
+    "include a Suite or Unit number",
+    "a small commercial-road address (number plus road name)",
+)
+
+
+def _site_creative_direction(key: str) -> dict:
+    """按稳定哈希种子为单个网站抽取创意方向（品牌声线/命名/文案/地理）
+
+    种子取 key 的 SHA-256（Python 内建 hash 受 PYTHONHASHSEED 影响不稳定，
+    不能用于跨进程可复现的方向）。同一 key 结果固定；key 中含任务 nonce
+    （task_id 含时间戳）时，重跑批次会得到不同的方向组合。
+
+    Returns:
+        {"voice", "tone", "domain_style", "title_style", "title_len",
+         "desc_angle", "desc_len", "keyword_recipe", "city", "state",
+         "street_hint", "temperature"} — 全部为提示词文本与采样参数
+    """
+    seed = int(hashlib.sha256(str(key).encode("utf-8")).hexdigest()[:16], 16)
+    rng = random.Random(seed)
+    city, state = rng.choice(_ADDRESS_CITIES)
+    return {
+        "voice": rng.choice(_BRAND_VOICES),
+        "tone": rng.choice(_TONES),
+        "domain_style": rng.choice(_DOMAIN_STYLES),
+        "title_style": rng.choice(_TITLE_STYLES),
+        "title_len": rng.choice(_TITLE_LENGTHS),
+        "desc_angle": rng.choice(_DESC_ANGLES),
+        "desc_len": rng.choice(_DESC_LENGTHS),
+        "keyword_recipe": rng.choice(_KEYWORD_RECIPES),
+        "city": city,
+        "state": state,
+        "street_hint": rng.choice(_STREET_HINTS),
+        # 温度在 0.7-0.95 间抖动：进一步拉开同批站点输出分布
+        "temperature": round(rng.uniform(0.7, 0.95), 2),
+    }
 
 
 def _norm(s) -> str:
@@ -101,6 +232,81 @@ def _clean_main_category(folder_name: str) -> str:
     name = re.sub(r"_+", " ", str(folder_name or ""))
     name = re.sub(r"\s+", " ", name).strip(" -")
     return name
+
+
+def resolve_main_category(site_folder, categories) -> str:
+    """网站文件夹 -> 原始主类目名（与导出表格「分类」列完全一致，含 ||| 层级分隔符）
+
+    数据分配用 sanitize_filename(分类) 命名文件夹与主数据表（||| 与 Windows
+    非法字符统一转下划线——文件名不能含 |），网站信息的「主类目」需还原为
+    表格中的原始分类值。匹配优先级（分类按统计顺序，即产品数降序，首个命中）：
+    1) sanitize(分类) == 文件夹名（数据分配的原始命名）；
+    2) sanitize(分类) == 文件夹名去掉防重名后缀 _{N}（两个分类 sanitize 同名）；
+    3) sanitize(分类) == 主数据表名 main 前缀后的部分（审核应用后文件夹已
+       改名为域名，表名仍保留分类名；兼容 data_ 前缀与 _part{N} 分卷）。
+
+    Args:
+        site_folder: 网站数据文件夹（str/Path；不存在时跳过表名匹配）
+        categories: 分类统计的分类列表（[{"category", "count", ...}] 或 [str]）
+
+    Returns:
+        原始分类值（含 |||）；未命中返回 ""（由调用方决定回退值）
+    """
+    from qmds.modules.web.services.data_allocator import sanitize_filename
+
+    folder = Path(site_folder) if site_folder else None
+    name = folder.name if folder is not None else ""
+    if not name:
+        return ""
+
+    cats = []
+    for c in categories or []:
+        raw = c.get("category") if isinstance(c, dict) else c
+        cat = str(raw or "").strip()
+        if cat:
+            cats.append(cat)
+    if not cats:
+        return ""
+
+    # 数据分配防重名会追加 _{N} 后缀（两个分类 sanitize 后同名时）
+    base = re.sub(r"_\d+$", "", name)
+
+    # 主数据表名集合（main{sanitize(分类)}，可能带 data_ 前缀 / _part 分卷）
+    main_names: set = set()
+    if folder is not None and winpath.is_dir(folder):
+        try:
+            with os.scandir(winpath.long_path(folder)) as it:
+                for e in it:
+                    n = e.name
+                    if not e.is_file() or not n.lower().endswith(".xlsx"):
+                        continue
+                    if n.startswith("~$") or n in (STATS_FILE_NAME, INFO_FILE_NAME):
+                        continue
+                    if n.startswith("data_"):
+                        n = n[len("data_"):]
+                    if n.lower().startswith("main"):
+                        # 去掉 main 前缀与 .xlsx 后缀 -> sanitize(分类) 候选
+                        main_names.add(n[len("main"):-len(".xlsx")])
+        except OSError:
+            pass
+
+    # 匹配分三轮：先精确文件夹名（含分类本身带数字尾的，如 "Widgets 2"），
+    # 再去后缀基名（防重名 _{N}），最后主数据表名——避免同批分类中
+    # "Widgets"（基名）抢先于 "Widgets 2"（精确名）误匹配
+    for target in (name, base):
+        if not target:
+            continue
+        for cat in cats:
+            key = sanitize_filename(cat)
+            if key and key != "Unnamed" and key == target:
+                return cat
+    for cat in cats:
+        key = sanitize_filename(cat)
+        if not key or key == "Unnamed":
+            continue
+        if any(n == key or n.startswith(f"{key}_part") for n in main_names):
+            return cat
+    return ""
 
 
 def _is_junk_category(name: str) -> bool:
@@ -148,47 +354,79 @@ def _write_info_excel(out_path: Path, rows: list[dict]) -> Path:
     out_path = Path(out_path)
     df = pd.DataFrame([{c: row.get(c, "") for c in INFO_COLUMNS} for row in rows],
                       columns=list(INFO_COLUMNS))
-    with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
+    # 网站文件夹路径可能超过 Windows 260 字符，用扩展长度前缀写出
+    with pd.ExcelWriter(winpath.long_path(out_path), engine="openpyxl") as writer:
         df.to_excel(writer, sheet_name="网站信息", index=False)
         ws = writer.book["网站信息"]
         for i, col in enumerate(INFO_COLUMNS, start=1):
             width = max(len(col) * 2 + 2, 14)
             if col in ("标题", "描述", "关键词", "地址", "主类目"):
                 width = 40
+            if col in ("主数据ID", "补充数据ID"):
+                # 多个 ID 逗号连接可能较长，加宽便于查看
+                width = 30
             ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = width
     return out_path
+
+
+def _norm_id_cell(value) -> str:
+    """数据ID 单元格值归一为字符串
+
+    纯数字 ID（如 "301"）经 pandas 写 Excel 会被转为数值，读回是
+    int/float（301 / 301.0）；多 ID 逗号串（"301,302"）保持字符串。
+    统一还原为字符串，保证展示/回写/JSON 输出形态稳定。
+    """
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
 
 
 def read_site_info_excel(path) -> list[dict]:
     """读取 网站信息.xlsx，还原网站信息行（每行一个网站）
 
     供测试与后续建站流程使用；返回 [{列名: 值, ...}, ...]。
+    主数据ID/补充数据ID 列归一为字符串（数字型 ID 不带小数点）。
     """
     import pandas as pd
 
     path = Path(path)
-    if not path.is_file():
+    if not winpath.is_file(path):
         raise FileNotFoundError(f"网站信息表不存在: {path.name}")
 
-    df = pd.read_excel(path, sheet_name="网站信息", engine="openpyxl")
+    df = pd.read_excel(winpath.long_path(path), sheet_name="网站信息", engine="openpyxl")
     rows = []
     for _, row in df.iterrows():
         item = {}
         for col in INFO_COLUMNS:
             val = row.get(col)
-            item[col] = "" if val is None or str(val).lower() == "nan" else val
+            if val is None or str(val).lower() == "nan":
+                item[col] = ""
+            elif col in ("主数据ID", "补充数据ID"):
+                item[col] = _norm_id_cell(val)
+            else:
+                item[col] = val
         if item.get("网站（文件夹）"):
             rows.append(item)
     return rows
 
 
-def build_site_info_prompt(stats: dict, folder_name: str) -> str:
-    """根据分类统计构建网站信息生成提示词
+def build_site_info_prompt(stats: dict, folder_name: str,
+                           main_category: str = "",
+                           direction: dict = None) -> str:
+    """根据分类统计构建网站信息生成提示词（含反模板化创意方向）
 
     结构（主类目优先，避免被补充数据的大量其他分类淹没）：
-    - STORE SPECIALTY：主类目名（清洗后的）+ 主类目相关分类（网站主打）
+    - STORE SPECIALTY：主类目名 + 主类目相关分类（网站主打）
     - SUPPLEMENTARY mix：其余分类按产品数取前 N（仅作商品广度背景，
       明确指示不得主导品牌信息）
+    - CREATIVE DIRECTION：该网站专属的品牌声线/命名风格/文案角度/城市，
+      各网站互不相同，避免整批站点呈现同一套措辞与命名习惯（站群指纹）
+    - Anti-fingerprint rules：禁用套路化域名后缀/标题句式/描述开头/陈词滥调
+
+    main_category 优先用调用方传入的原始分类值（含 ||| 层级分隔符，
+    与导出表格「分类」列完全一致）；为空时从分类统计反查还原
+    （文件夹名 == sanitize(分类)），仍未命中回退清洗后的文件夹名。
+    direction 为空时按文件夹名确定性抽取（供直接调用/测试复现）。
     """
     categories = stats.get("categories") or []
     summary = stats.get("summary") or {}
@@ -196,7 +434,11 @@ def build_site_info_prompt(stats: dict, folder_name: str) -> str:
     if total_products in (None, "", "nan"):
         total_products = sum(c.get("count", 0) for c in categories)
 
-    main_cat = _clean_main_category(folder_name)
+    main_cat = (str(main_category or "").strip()
+                or resolve_main_category(folder_name, categories)
+                or _clean_main_category(folder_name))
+
+    d = direction or _site_creative_direction(folder_name)
 
     # 去垃圾 -> 主类目相关（core）与补充（extra）分流
     clean_cats = [c for c in categories
@@ -221,7 +463,9 @@ def build_site_info_prompt(stats: dict, folder_name: str) -> str:
             lines.append(f"(showing top {limit} of {len(cats)} categories)")
         return "\n".join(lines) or "(none)"
 
-    return f"""You are a senior e-commerce branding expert. Create the brand identity of a niche English e-commerce website targeting customers in the United States.
+    return f"""You are a seasoned e-commerce branding consultant. Create the brand identity of ONE independent niche English e-commerce website targeting customers in the United States.
+
+Context: this store belongs to a portfolio of separately-founded stores. Anyone comparing the portfolio will look for stores that read like mass-produced siblings — identical naming habits, phrasing and sentence shapes. Your job is to make THIS store feel like it was started by different people than the rest.
 
 STORE SPECIALTY (main category): {main_cat or "(unknown)"}
 Catalog: {total_products} products across {len(clean_cats)} categories
@@ -233,13 +477,24 @@ SPECIALTY categories ('A|||B' means B is a subcategory of A; the store is built 
 SUPPLEMENTARY product mix (also carried, for breadth only — do NOT let these dominate the branding):
 {_lines(extra, MAX_EXTRA_CATEGORIES)}
 
-Generate (all in English, for US customers):
-1. "domain": a brandable .com domain for this store, derived from the STORE SPECIALTY. Lowercase, short and memorable, no www, no scheme (e.g. "toilettanklidpro.com"). Prefer no hyphens.
-2. "theme": concise English site theme matching the specialty, e.g. "Toilet Tank Lids & Repair Parts".
-3. "title": natural SEO title, 40-60 characters, built around the specialty keyword. Avoid the lazy pattern "<keyword> Store".
-4. "description": homepage meta description, 100-160 characters. Lead with the specialty, may add one clause about the wide selection.
-5. "address": a plausible business address in the USA, format "Street, City, STATE ZIP".
-6. "keywords": 10-15 lowercase English SEO keywords about the SPECIALTY, most important first.
+CREATIVE DIRECTION assigned to this particular store (its siblings got different ones — follow yours, do not average back toward generic):
+- Brand persona: {d["voice"]}
+- Writing tone: {d["tone"]}
+- Domain naming style: {d["domain_style"]}
+- Title style: {d["title_style"]} ({d["title_len"]} characters)
+- Description angle: {d["desc_angle"]} ({d["desc_len"]} characters)
+- Keywords: {d["keyword_recipe"]}
+- Store location: in or around {d["city"]}, {d["state"]} — a plausible US street address ({d["street_hint"]}), format "Street, City, STATE ZIP", with a ZIP that is plausible for that state.
+
+Generate (all in English, for US customers), following the creative direction above:
+1. "domain": a brandable .com domain derived from the STORE SPECIALTY, in the naming style assigned above. Lowercase, short and memorable, no www, no scheme, at most 3 words. Do NOT end it with any of these tired suffixes: "pro", "hub", "central", "mart", "store", "shop", "online", "usa", "365", "deals", "best", "top", "direct".
+2. "theme": a short natural English phrase naming what the store sells, matching the specialty (a plain description, not a slogan).
+3. "title": homepage title containing the main specialty keyword. Never use the patterns "<keyword> Store", "<keyword> Shop", "<keyword> Online", "<keyword> - Buy <keyword> Online".
+4. "description": homepage meta description per the assigned angle and length. Do NOT open with "Shop", "Discover", "Find", "Looking for", "Welcome to" or "Explore" (the most common bulk-generated openings), and do not repeat the title verbatim inside it.
+5. "address": follow the store location line above.
+6. "keywords": lowercase English SEO keywords about the SPECIALTY, most important first, per the assigned keyword recipe. No duplicates, no city names.
+
+Never use these clichés anywhere: "one-stop shop", "go-to destination", "look no further", "elevate your", "wide range of high-quality", "unbeatable prices", "shop with confidence", "your journey starts here", "curated for you".
 
 Return ONLY valid JSON (no markdown, no code fences):
 {{"domain": "...", "theme": "...", "title": "...", "description": "...", "address": "...", "keywords": ["..."]}}"""
@@ -282,9 +537,12 @@ def parse_site_info(content: str) -> dict:
     return info
 
 
-def _call_site_info_llm(config: dict, api_key: str, prompt: str, log_fn=None) -> dict:
+def _call_site_info_llm(config: dict, api_key: str, prompt: str, log_fn=None,
+                        temperature: float = 0.85) -> dict:
     """调用 LLM 生成网站信息：3 次重试 + 格式警告 + max_tokens 降级
 
+    temperature 默认 0.85（高于常规取值）：配合每站不同的创意方向，
+    降低整批站点输出趋同的概率；调用方可按方向微调（0.7-0.95）。
     部分 OpenAI 兼容网关不支持 max_completion_tokens 参数，
     报错时自动降级为 max_tokens 重试。
     """
@@ -305,7 +563,7 @@ def _call_site_info_llm(config: dict, api_key: str, prompt: str, log_fn=None) ->
             try:
                 completion = chat_completion_with_fallback(
                     client, config=config, messages=messages,
-                    temperature=0.4, max_completion_tokens=_LLM_MAX_TOKENS,
+                    temperature=temperature, max_completion_tokens=_LLM_MAX_TOKENS,
                     top_p=0.95, timeout=_LLM_TIMEOUT)
             except Exception as e:
                 err = str(e).lower()
@@ -313,7 +571,7 @@ def _call_site_info_llm(config: dict, api_key: str, prompt: str, log_fn=None) ->
                     # 网关不支持 max_completion_tokens，降级为 max_tokens
                     completion = client.chat.completions.create(
                         model=config["model_id"], messages=messages,
-                        temperature=0.4, max_tokens=_LLM_MAX_TOKENS,
+                        temperature=temperature, max_tokens=_LLM_MAX_TOKENS,
                         top_p=0.95, timeout=_LLM_TIMEOUT)
                 else:
                     raise
@@ -335,12 +593,15 @@ def _call_site_info_llm(config: dict, api_key: str, prompt: str, log_fn=None) ->
 
 
 def _process_site_folder(task_id: str, folder: Path, config: dict, api_key: str,
-                         log_fn) -> dict:
+                         log_fn, variant: int = 0) -> dict:
     """处理单个网站文件夹：读/生成分类统计 -> 调用 LLM -> 返回表格行
 
     每次只处理一个网站的分类结构（批量任务按顺序逐个调用本函数），
     返回 INFO_COLUMNS 结构的一行，由调用方汇总写入 网站信息.xlsx。
     抛出异常表示该网站生成失败（由调用方决定是否继续下一个）。
+
+    variant 用于域名冲突重试：变化创意方向的随机种子（换一套品牌声线/
+    命名风格/城市），常规生成恒为 0，同一 (task_id, folder) 内重试幂等。
     """
     # ── 读取分类统计（不存在时自动生成） ──
     stats_path = folder / STATS_FILE_NAME
@@ -365,9 +626,20 @@ def _process_site_folder(task_id: str, folder: Path, config: dict, api_key: str,
     if not categories:
         raise ValueError(f"{STATS_FILE_NAME} 中没有分类数据")
 
-    # ── 调用 LLM（只带这一个网站的分类结构） ──
-    prompt = build_site_info_prompt(stats, folder.name)
-    info = _call_site_info_llm(config, api_key, prompt, log_fn=log_fn)
+    # ── 主类目：还原为表格原始分类值（含 ||| 层级分隔符）──
+    # 文件夹名是 sanitize 后的分类（||| 已转下划线，Windows 文件名不能
+    # 含 |），从分类统计反查原始值；未命中回退清洗后的文件夹名
+    main_cat = (resolve_main_category(folder, categories)
+                or _clean_main_category(folder.name))
+
+    # ── 创意方向（反模板化）：task_id 含时间戳，重跑批次方向组合会变化 ──
+    direction = _site_creative_direction(f"{task_id}|{folder.name}|v{variant}")
+
+    # ── 调用 LLM（只带这一个网站的分类结构 + 专属创意方向） ──
+    prompt = build_site_info_prompt(stats, folder.name, main_category=main_cat,
+                                    direction=direction)
+    info = _call_site_info_llm(config, api_key, prompt, log_fn=log_fn,
+                               temperature=direction["temperature"])
 
     if not info["address"]:
         log_fn(f"[{folder.name}] 返回结果缺少地址 (address)，已留空", "warning")
@@ -383,7 +655,7 @@ def _process_site_folder(task_id: str, folder: Path, config: dict, api_key: str,
     # 汇总为表格行（批量任务逐行累积写入 网站信息.xlsx）
     row = {
         "网站（文件夹）": folder.name,
-        "主类目": _clean_main_category(folder.name),
+        "主类目": main_cat,
         "域名": info["domain"],
         "标题": info["title"],
         "描述": info["description"],
@@ -474,19 +746,38 @@ def run_site_info_task(task_id: str, folder, model_value: str = "",
                 pass
 
 
+def _scandir_entries(folder: Path) -> list[tuple[str, bool, bool]]:
+    """os.scandir 枚举目录项（超长路径安全）
+
+    返回 [(名字, is_file, is_dir), ...]；目录或文件路径超过 Windows
+    MAX_PATH(260) 时 Path.iterdir/is_file 会静默失败，scandir 配合
+    扩展长度前缀可正常工作。
+    """
+    import os as _os
+
+    out: list[tuple[str, bool, bool]] = []
+    try:
+        with _os.scandir(winpath.long_path(folder)) as it:
+            for e in it:
+                try:
+                    out.append((e.name, e.is_file(), e.is_dir()))
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return out
+
+
 def _has_site_xlsx(folder: Path) -> bool:
     """文件夹内（不含子文件夹）是否有 .xlsx 文件（数据表或统计表均可）
 
     统计表 分类统计.xlsx 也算：数据上传后源表格可能被清理，
     只剩统计表的文件夹依然是网站数据文件夹。
     """
-    try:
-        for p in folder.iterdir():
-            if (p.is_file() and p.suffix.lower() == ".xlsx"
-                    and not p.name.startswith("~$")):
-                return True
-    except OSError:
-        return False
+    for name, is_file, _is_dir in _scandir_entries(folder):
+        if (is_file and name.lower().endswith(".xlsx")
+                and not name.startswith("~$")):
+            return True
     return False
 
 
@@ -501,10 +792,12 @@ def collect_site_folders(root) -> list[Path]:
     - root 本身就是数据文件夹（无子文件夹且有表格）时，直接作为唯一网站。
     """
     root = Path(root)
-    if not root.is_dir():
+    if not winpath.is_dir(root):
         return []
 
-    subdirs = sorted(d for d in root.iterdir() if d.is_dir())
+    # os.scandir 枚举（超长路径安全；分类文件夹路径可能超 260 字符）
+    subdirs = sorted((Path(root) / n for n, _f, is_d in _scandir_entries(root)
+                      if is_d), key=lambda p: str(p).lower())
     if not subdirs:
         # root 即最后一层：有 .xlsx（数据表或统计表）才算网站文件夹
         return [root] if _has_site_xlsx(root) else []
@@ -572,6 +865,7 @@ def run_batch_site_info_task(task_id: str, folder, model_value: str = "",
         rows: list[dict] = []
         succeeded: list[Path] = []
         failed: list[tuple[str, str]] = []
+        used_domains: set[str] = set()  # 批内域名去重（站群最明显的指纹之一）
         for i, site in enumerate(sites):
             if task_manager.is_stopped(task_id):
                 task_manager.update(task_id, status="stopped", message="任务已停止")
@@ -582,6 +876,17 @@ def run_batch_site_info_task(task_id: str, folder, model_value: str = "",
             try:
                 _log(f"[{i + 1}/{len(sites)}] 开始生成网站信息: {site.name}")
                 row = _process_site_folder(task_id, site, config, api_key, _log)
+                if row["域名"] in used_domains:
+                    # 域名与已生成网站重复：换一套创意方向重试一次
+                    _log(f"[{i + 1}/{len(sites)}] ⚠ {site.name} 域名 "
+                         f"{row['域名']} 与已生成网站重复，更换创意方向重新生成",
+                         "warning")
+                    row = _process_site_folder(task_id, site, config, api_key,
+                                               _log, variant=1)
+                    if row["域名"] in used_domains:
+                        raise ValueError(
+                            f"域名 {row['域名']} 与其他网站重复（两次生成均冲突）")
+                used_domains.add(row["域名"])
                 rows.append(row)
                 succeeded.append(site)
                 _log(f"[{i + 1}/{len(sites)}] ✓ {site.name} 完成: "

@@ -28,6 +28,7 @@ from datetime import datetime
 from pathlib import Path
 
 from qmds.modules.web.task_manager import task_manager
+from qmds.utils import winpath
 from qmds.utils.logger import get_logger
 
 log = get_logger("web.data_allocator")
@@ -74,7 +75,7 @@ def count_excel_categories(filepath: Path):
     """
     from openpyxl import load_workbook
 
-    wb = load_workbook(filepath, read_only=True, data_only=True)
+    wb = load_workbook(winpath.long_path(filepath), read_only=True, data_only=True)
     try:
         ws = wb.worksheets[0]
         rows = ws.iter_rows(values_only=True)
@@ -294,7 +295,7 @@ def run_allocation_task(task_id: str, file_path: Path, main_categories: list,
             return
 
         _log(f"读取表格: {file_path.name}")
-        df = pd.read_excel(file_path, engine="openpyxl")
+        df = pd.read_excel(winpath.long_path(file_path), engine="openpyxl")
         cat_col = detect_category_column(df.columns)
         if cat_col is None:
             raise ValueError("表格中未找到分类列（Categories/分类）")
@@ -310,7 +311,7 @@ def run_allocation_task(task_id: str, file_path: Path, main_categories: list,
         portions = plan["portions"]
         out_dir = file_path.parent / (
             f"{file_path.stem}_分配_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-        out_dir.mkdir(parents=True, exist_ok=True)
+        winpath.makedirs(out_dir)
 
         # ── 输出方案日志 ─────────────────────────────
         _log(f"共 {len(df)} 行数据，分类列: {cat_col}，唯一分类 {len(category_counts)} 个")
@@ -364,7 +365,7 @@ def run_allocation_task(task_id: str, file_path: Path, main_categories: list,
                 k += 1
             used_folders.add(name)
             folder = out_dir / name
-            folder.mkdir(parents=True, exist_ok=True)
+            winpath.makedirs(folder)
             return folder
 
         # 拆分配置（分配后批量拆表）
@@ -397,7 +398,9 @@ def run_allocation_task(task_id: str, file_path: Path, main_categories: list,
             main_folders.append(folder)
             # 主数据表: main 前缀 + 分类名，与补充数据同文件夹
             path = folder / f"main{s}.xlsx"
-            sub.to_excel(path, index=False, engine="openpyxl")
+            # 分类名可能很长（含多级类目），路径接近/超过 Windows 260 上限时
+            # 用扩展长度前缀写出（winpath.long_path）
+            sub.to_excel(winpath.long_path(path), index=False, engine="openpyxl")
             done += 1
             task_manager.update(task_id, progress=int(done / total_steps * 100))
             _log(f"主数据表: {path.relative_to(out_dir)}（{len(sub)} 条）")
@@ -421,7 +424,7 @@ def run_allocation_task(task_id: str, file_path: Path, main_categories: list,
                 folder = category_folder(f"extra{extra_index}")
                 path = folder / f"extra{extra_index}.xlsx"
                 desc = "额外补充表（未绑定主分类）"
-            sub.to_excel(path, index=False, engine="openpyxl")
+            sub.to_excel(winpath.long_path(path), index=False, engine="openpyxl")
             done += 1
             task_manager.update(task_id, progress=int(done / total_steps * 100))
             _log(f"{desc}: {path.relative_to(out_dir)}（{len(sub)} 条，{len(portion['categories'])} 个分类）")
@@ -539,6 +542,6 @@ def resolve_export_file(folder: str, filename: str) -> Path:
         raise FileNotFoundError("文件不存在")
     if file_path.suffix.lower() != ".xlsx" or file_path.name.startswith("~$"):
         raise FileNotFoundError("文件不存在")
-    if not file_path.is_file():
+    if not winpath.is_file(file_path):
         raise FileNotFoundError("文件不存在")
     return file_path

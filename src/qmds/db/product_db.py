@@ -1452,7 +1452,13 @@ class ProductDBClient:
                 }
 
             if progress_callback:
-                progress_callback(idx + 1, len(sub_items))
+                # 统一进度回调协议：单参数 dict（见 task_manager.make_progress_callback）
+                progress_callback({
+                    "message": f"[{prefix}] 汇总完成（{idx + 1}/{len(sub_items)}）",
+                    "progress": int((idx + 1) / len(sub_items) * 100),
+                    "current": idx + 1,
+                    "total": len(sub_items),
+                })
 
         if not all_rows:
             log.info(f"合并导出 {category}: 无清洗后数据")

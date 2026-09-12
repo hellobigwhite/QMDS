@@ -264,6 +264,136 @@ def test_run_domain_upload_task_errors(workdir):
     assert task_manager.get(task_id2)["status"] == "failed"
 
 
+# ── 数据ID回写 网站信息.xlsx ─────────────
+
+def _write_info_table(root, rows):
+    """在 root 下写 网站信息.xlsx（补齐缺失列）"""
+    from qmds.modules.web.services.site_info_generator import (
+        INFO_FILE_NAME, _write_info_excel)
+    return _write_info_excel(Path(root) / INFO_FILE_NAME, rows)
+
+
+def _read_info_table(root):
+    from qmds.modules.web.services.site_info_generator import (
+        INFO_FILE_NAME, read_site_info_excel)
+    return read_site_info_excel(Path(root) / INFO_FILE_NAME)
+
+
+def _info_row(folder="", domain="", **extra):
+    row = {"网站（文件夹）": folder, "域名": domain, "主类目": "",
+           "标题": "", "描述": "", "主题": "", "地址": "", "关键词": "",
+           "产品数": "", "分类数": "", "模型": "", "生成时间": "",
+           "主数据ID": "", "补充数据ID": "", "备注": ""}
+    row.update(extra)
+    return row
+
+
+def test_update_info_data_ids(workdir):
+    """数据ID回写：主/补充分列逗号连接、文件夹名与域名列匹配、覆盖旧值"""
+    from qmds.modules.web.services.site_uploader import update_info_data_ids
+
+    (workdir / "a.com").mkdir()
+    (workdir / "b.com").mkdir()
+    # 行匹配两条路径：a.com 行按「网站（文件夹）」（审核后同步为域名），
+    # b.com 行按「域名」列兜底（行仍是旧文件夹名，域名列命中）
+    _write_info_table(workdir, [
+        _info_row(folder="a.com", domain="a.com", 主数据ID="999",
+                  补充数据ID="888"),  # 旧值应被覆盖
+        _info_row(folder="CatB_Folder", domain="b.com"),
+        _info_row(folder="c.com", domain="c.com"),
+    ])
+
+    uploaded = [
+        # a.com：主数据 1 份 + 补充数据 2 份（按分卷顺序上传）
+        (workdir / "a.com" / "data_mainCatA_part1_AB1.xlsx", "101"),
+        (workdir / "a.com" / "data_CatA_supp_part1_CD1.xlsx", "102"),
+        (workdir / "a.com" / "data_CatA_supp_part2_EF2.xlsx", "103"),
+        # b.com：仅主数据
+        (workdir / "b.com" / "data_mainCatB_part1_AB1.xlsx", "201"),
+    ]
+    info_path, updated = update_info_data_ids(workdir, uploaded)
+
+    assert updated == 2
+    assert info_path == workdir / "网站信息.xlsx"
+    rows = _read_info_table(workdir)
+    by_key = {r["网站（文件夹）"]: r for r in rows}
+    # a.com 行：主/补充分列，各逗号连接，旧值被覆盖
+    assert by_key["a.com"]["主数据ID"] == "101"
+    assert by_key["a.com"]["补充数据ID"] == "102,103"
+    # b.com 行（域名列匹配）：主数据 ID 写入，无补充数据为空
+    by_domain = {r["域名"]: r for r in rows}
+    assert by_domain["b.com"]["主数据ID"] == "201"
+    assert by_domain["b.com"]["补充数据ID"] == ""
+    # 未上传的网站行不受影响
+    assert by_key["c.com"]["主数据ID"] == ""
+
+
+def test_update_info_data_ids_no_table_or_unmatched(workdir):
+    """无 网站信息.xlsx 静默跳过；无匹配行不更新并告警"""
+    from qmds.modules.web.services.site_uploader import update_info_data_ids
+
+    # 无信息表：返回 (None, 0)，不抛错（上传不依赖信息表）
+    assert update_info_data_ids(workdir, []) == (None, 0)
+    (workdir / "x.com").mkdir()
+    assert update_info_data_ids(
+        workdir, [(workdir / "x.com" / "data_mainX.xlsx", "1")]) == (None, 0)
+
+    # 有信息表但上传文件夹无对应行：0 行更新 + 告警日志
+    _write_info_table(workdir, [_info_row(folder="other.com")])
+    logs = []
+
+    def fake_log(msg, level="info"):
+        logs.append(msg)
+
+    info_path, updated = update_info_data_ids(
+        workdir, [(workdir / "x.com" / "data_mainX.xlsx", "1")],
+        log_fn=fake_log)
+    assert updated == 0
+    assert any("未找到对应网站行" in m and "x.com" in m for m in logs)
+    # 未匹配不写文件（行内容不变）
+    assert _read_info_table(workdir)[0]["主数据ID"] == ""
+
+
+def test_run_domain_upload_task_writes_info_ids(workdir):
+    """逐站上传后：数据ID回写 网站信息.xlsx（主数据ID/补充数据ID 两列）"""
+    s1, s1_files = make_site(workdir, "a-site.com", mains=1, supps=2, cat="CatA")
+    s2, s2_files = make_site(workdir, "b-site.com", mains=1, supps=1, cat="CatB")
+
+    _write_info_table(workdir, [
+        _info_row(folder="a-site.com", domain="a-site.com"),
+        _info_row(folder="b-site.com", domain="b-site.com"),
+    ])
+
+    # b-site 的补充表上传失败（服务器返回错误）-> 其补充数据ID 列为空
+    fail_name = "data_CatB_supp_part1_CD1.xlsx"
+    session, state = _mock_session(
+        upload_ok_names=[p.name for p in s1_files]
+        + [p.name for p in s2_files if p.name != fail_name])
+
+    from qmds.modules.web.task_manager import task_manager
+    task_id = "test_domain_info_ids"
+    task_manager.create(task_id, "site_upload_huisheng", "test")
+
+    with mock.patch("requests.Session", return_value=session):
+        run_domain_upload_task(task_id, workdir, ["a-site.com", "b-site.com"],
+                               CFG)
+
+    task = task_manager.get(task_id)
+    assert task["status"] == "completed", task_manager.get_logs(task_id)
+
+    # a-site: 主数据先传（301），补充 2 份（302,303）
+    # b-site: 主数据（304），补充失败 -> 空列
+    rows = {r["网站（文件夹）"]: r for r in _read_info_table(workdir)}
+    assert rows["a-site.com"]["主数据ID"] == "301"
+    assert rows["a-site.com"]["补充数据ID"] == "302,303"
+    assert rows["b-site.com"]["主数据ID"] == "304"
+    assert rows["b-site.com"]["补充数据ID"] == ""
+
+    # 任务日志记录回写
+    logs = [e["message"] for e in task_manager.get_logs(task_id)]
+    assert any("数据ID已回写 网站信息.xlsx" in m for m in logs)
+
+
 # ── 路由 ─────────────
 
 def _make_export_scene(name):

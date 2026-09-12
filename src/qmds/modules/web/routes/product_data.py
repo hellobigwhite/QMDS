@@ -27,6 +27,7 @@ from qmds.modules.web.services.data_allocator import (
 )
 from qmds.modules.web.services.site_info_generator import (
     INFO_FILE_NAME,
+    _write_info_excel,
     read_site_info_excel,
     run_batch_site_info_task,
 )
@@ -35,6 +36,7 @@ from qmds.modules.web.services.site_review import (
     is_site_applied,
     locate_info_file,
     locate_site_folder,
+    repair_row_main_category,
 )
 from qmds.modules.web.services.site_uploader import resolve_export_target
 from qmds.utils.agentrouter_client import (
@@ -42,6 +44,7 @@ from qmds.utils.agentrouter_client import (
     fetch_agentrouter_models,
 )
 from qmds.modules.web.task_manager import make_progress_callback, task_manager
+from qmds.utils import winpath
 from qmds.utils.logger import get_logger
 
 log = get_logger("web.product_data")
@@ -566,11 +569,14 @@ def api_export_folders():
             return jsonify({"ok": True, "data": []})
 
         folders = []
-        for root, dirs, files in os.walk(str(export_dir)):
+        # 深层分配输出（分类文件夹）路径可能超过 Windows 260 字符，
+        # os.walk 配合扩展长度前缀才能完整枚举
+        top = winpath.long_path(export_dir)
+        for root, dirs, files in os.walk(top):
             xlsx_files = [f for f in files if f.endswith('.xlsx')
                           and not f.startswith('merged_') and not f.startswith('~$')]
             if xlsx_files:
-                rel_path = os.path.relpath(root, str(export_dir))
+                rel_path = os.path.relpath(root, top)
                 folders.append({
                     "path": rel_path,
                     "name": rel_path.replace('\\', '/'),
@@ -595,18 +601,26 @@ def api_export_files():
         export_dir = settings.data_dir / "exports"
         folder_path = export_dir / folder
 
-        if not folder_path.exists() or not folder_path.is_dir():
+        if not winpath.is_dir(folder_path):
             return jsonify({"ok": False, "error": "文件夹不存在"}), 404
 
+        # os.scandir + 扩展长度前缀：深层文件夹内的文件路径可能超过
+        # Windows 260 字符，iterdir/stat 对超长路径会抛错或漏文件
         files = []
-        for f in sorted(folder_path.iterdir()):
+        with os.scandir(winpath.long_path(folder_path)) as it:
+            entries = sorted(it, key=lambda e: e.name)
+        for e in entries:
             # 跳过 Excel 打开时产生的 ~$ 临时锁文件
-            if f.suffix == '.xlsx' and not f.name.startswith('~$'):
-                files.append({
-                    "name": f.name,
-                    "size": f.stat().st_size,
-                    "size_mb": round(f.stat().st_size / 1024 / 1024, 2)
-                })
+            if not e.name.lower().endswith('.xlsx') or e.name.startswith('~$'):
+                continue
+            if not e.is_file():
+                continue
+            st = e.stat()  # DirEntry 自带信息，超长路径可用
+            files.append({
+                "name": e.name,
+                "size": st.st_size,
+                "size_mb": round(st.st_size / 1024 / 1024, 2)
+            })
 
         return jsonify({"ok": True, "data": files})
     except Exception as e:
@@ -654,12 +668,13 @@ def product_data_merge():
                         return
 
                     filepath = folder_path / filename
-                    if not filepath.exists():
+                    if not winpath.exists(filepath):
                         task_manager.add_log(task_id, f"跳过不存在的文件: {filename}", "warning")
                         continue
 
                     task_manager.add_log(task_id, f"读取: {filename}", "info")
-                    df = pd.read_excel(filepath, engine="openpyxl")
+                    # 深层文件夹内的文件路径可能超过 Windows 260 字符
+                    df = pd.read_excel(winpath.long_path(filepath), engine="openpyxl")
                     all_dfs.append(df)
                     total_rows += len(df)
 
@@ -694,7 +709,8 @@ def product_data_merge():
                 output_filename = f"merged_{folder_safe}.xlsx"
                 output_path = folder_path / output_filename
 
-                merged_df.to_excel(output_path, index=False, engine="openpyxl")
+                merged_df.to_excel(winpath.long_path(output_path), index=False,
+                                   engine="openpyxl")
                 task_manager.add_log(task_id, f"保存: {output_filename}", "info")
 
                 task_manager.update(task_id, status="completed",
@@ -874,14 +890,29 @@ def product_data_site_info_table():
     except Exception as e:
         return jsonify({"ok": False, "error": f"读取 {INFO_FILE_NAME} 失败: {e}"})
 
-    # 标记已应用审核的网站（数据表已加 data_ 前缀）
+    # 标记已应用审核的网站（数据表已加 data_ 前缀）+ 修复历史生成的主类目
+    # （还原为表格原始分类值，含 ||| 层级分隔符）
     # 定位：文件夹名列优先；未命中时回退用域名列（审核应用后文件夹
     # 已改名为域名，而 xlsx 行可能仍是旧文件夹名）
+    repaired = 0
     for row in rows:
         site_folder = (locate_site_folder(folder_path,
                                           row.get("网站（文件夹）"))
                        or locate_site_folder(folder_path, row.get("域名")))
         row["applied"] = bool(site_folder and is_site_applied(site_folder))
+        if site_folder is not None:
+            try:
+                repaired += 1 if repair_row_main_category(site_folder, row) else 0
+            except Exception as e:
+                log.warning(f"修复主类目失败（{row.get('网站（文件夹）')}）: {e}")
+
+    # 有修复时回写 网站信息.xlsx（表格被 Excel 占用等失败时仅本次显示生效）
+    if repaired:
+        try:
+            _write_info_excel(info_path, rows)
+            log.info(f"已修复 {repaired} 行主类目并回写 {INFO_FILE_NAME}")
+        except Exception as e:
+            log.warning(f"主类目修复回写 {INFO_FILE_NAME} 失败（仅本次显示已修复）: {e}")
 
     return jsonify({"ok": True, "folder": folder, "rows": rows})
 

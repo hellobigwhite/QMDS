@@ -194,10 +194,30 @@ def start_counter_calibration_scheduler(interval_hours: float = 6.0):
 
 
 def make_progress_callback(task_id: str):
-    """创建统一的进度回调函数"""
-    def cb(info):
+    """创建统一的进度回调函数
+
+    兼容多种调用约定，避免 DB 层与路由层回调签名不一致时任务直接失败：
+    - cb({"progress": .., "current": .., "total": .., "message": ..})  # 字典（推荐）
+    - cb("消息文本")
+    - cb(current, total)
+    - cb(current, total, message)
+    """
+    def cb(*args):
         if task_manager.is_stopped(task_id):
             raise InterruptedError("任务被用户停止")
+        if not args:
+            return
+        if len(args) == 1:
+            info = args[0]
+        else:
+            current, total = args[0], args[1]
+            info = {
+                "current": current,
+                "total": total,
+                "progress": int(current / total * 100) if total else 0,
+            }
+            if len(args) >= 3:
+                info["message"] = str(args[2])
         if isinstance(info, dict):
             update = {k: v for k, v in info.items() if k in ("progress", "current", "total", "message")}
             if update:

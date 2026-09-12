@@ -18,6 +18,12 @@ log = get_logger("web")
 
 bp = Blueprint("site_management", __name__)
 
+# ── 批量下图失败图片容忍上限 ──────────────────────────────────
+# 上传数据后的批量下图阶段，反复下载失败的图片在此数量内则跳过并继续
+# 执行下一步（少量图片缺失不影响建站流程）；超过则判定该步骤失败。
+MAIN_MAX_IMG_FAILURES = 100   # 主数据：一个网站下图失败图片容忍上限（张）
+EXTRA_MAX_IMG_FAILURES = 300  # 补充数据：一个网站下图失败图片容忍上限（张）
+
 
 @bp.route("/site-management", methods=["GET"])
 def site_management():
@@ -465,6 +471,8 @@ def site_generate_images():
                     from qmds.utils.proxy_manager import ProxyManager as _PM
                     _proxy_mgr = _PM.from_settings() if settings.load_proxies() else None
                     task_manager.add_log(task_id, f"代理池大小: {_proxy_mgr.total_count if _proxy_mgr else 0} 个", "info")
+                    if provider == "ark":
+                        task_manager.add_log(task_id, "火山方舟为国内端点，图片生成走直连（不使用代理池）", "info")
 
                     items = []
                     for idx, site_id in enumerate(selected_ids):
@@ -1581,10 +1589,13 @@ def site_built():
                                         def check_stop():
                                             return task_manager.is_stopped(task_id)
 
-                                        result = operator.upload_data(domain, data_source, progress, start_cs=start_cs, breakpoint_callback=save_breakpoint, stop_callback=check_stop)
+                                        result = operator.upload_data(domain, data_source, progress, start_cs=start_cs,
+                                                                      breakpoint_callback=save_breakpoint, stop_callback=check_stop,
+                                                                      max_img_failures=(MAIN_MAX_IMG_FAILURES if step_key == "upload_main"
+                                                                                        else EXTRA_MAX_IMG_FAILURES))
                                         final_cs = result.get("final_cs", "0")
                                         if result["success"]:
-                                            return (domain, True, "", final_cs)
+                                            return (domain, True, result.get("message", ""), final_cs)
                                         return (domain, False, result["message"], final_cs)
                                     except Exception as e:
                                         return (domain, False, str(e), None)
@@ -1604,7 +1615,8 @@ def site_built():
                                             else:
                                                 _site_db.update_site(domain, {"extra_data_status": "已上传", "extra_data_time": datetime.utcnow().isoformat(), "extra_data_cs": "0"})
                                             _site_db.update_one_click_progress(domain, step_key, "success", "上传成功")
-                                            task_manager.add_log(task_id, f"[{domain}] ✓ [{step_label}] 上传成功", "info")
+                                            task_manager.add_log(task_id, f"[{domain}] ✓ [{step_label}] 上传成功"
+                                                                 + (f"（{msg}）" if msg else ""), "info")
                                             log.info(f"[一键建站] [{domain}] [{step_label}] ✓ 成功")
                                             step_success_domains.add(domain)
                                         else:
@@ -1916,10 +1928,12 @@ def site_built():
                                         _site_db.update_site(domain, {"main_data_cs": cs_val})
                                     def check_stop():
                                         return task_manager.is_stopped(task_id)
-                                    result = operator.upload_data(domain, data_source, progress, start_cs=start_cs, breakpoint_callback=save_breakpoint, stop_callback=check_stop)
+                                    result = operator.upload_data(domain, data_source, progress, start_cs=start_cs,
+                                                                  breakpoint_callback=save_breakpoint, stop_callback=check_stop,
+                                                                  max_img_failures=MAIN_MAX_IMG_FAILURES)
                                     final_cs = result.get("final_cs", "0")
                                     if result["success"]:
-                                        return (domain, True, "", final_cs)
+                                        return (domain, True, result.get("message", ""), final_cs)
                                     return (domain, False, result["message"], final_cs)
                                 elif action == "upload_extra":
                                     extra_source = site_info.get("extra_data_source_id", "")
@@ -1942,10 +1956,12 @@ def site_built():
                                         _site_db.update_site(domain, {"extra_data_cs": cs_val})
                                     def check_stop():
                                         return task_manager.is_stopped(task_id)
-                                    result = operator.upload_data(domain, extra_source, progress, start_cs=start_cs, breakpoint_callback=save_breakpoint, stop_callback=check_stop)
+                                    result = operator.upload_data(domain, extra_source, progress, start_cs=start_cs,
+                                                                  breakpoint_callback=save_breakpoint, stop_callback=check_stop,
+                                                                  max_img_failures=EXTRA_MAX_IMG_FAILURES)
                                     final_cs = result.get("final_cs", "0")
                                     if result["success"]:
-                                        return (domain, True, "", final_cs)
+                                        return (domain, True, result.get("message", ""), final_cs)
                                     return (domain, False, result["message"], final_cs)
                             except Exception as e:
                                 return (domain, False, str(e), None)
@@ -1965,7 +1981,7 @@ def site_built():
                                     elif action == "upload_extra":
                                         _site_db.update_site(domain, {"extra_data_status": "已上传", "extra_data_time": datetime.utcnow().isoformat(), "extra_data_cs": "0"})
                                     success += 1
-                                    task_manager.add_log(task_id, f"[{domain}] ✓ 上传成功", "info")
+                                    task_manager.add_log(task_id, f"[{domain}] ✓ 上传成功" + (f"（{msg}）" if msg else ""), "info")
                                     log.info(f"[{label}] [{domain}] ✓ 成功")
                                 else:
                                     if final_cs and final_cs != "0":

@@ -618,7 +618,7 @@ def test_run_site_info_task(workdir, monkeypatch):
 
     captured = {}
 
-    def fake_llm(config, api_key, prompt, log_fn=None):
+    def fake_llm(config, api_key, prompt, log_fn=None, **kwargs):
         captured["model_id"] = config["model_id"]
         captured["api_key"] = api_key
         captured["prompt"] = prompt
@@ -671,7 +671,7 @@ def test_run_site_info_task_model_override(workdir, monkeypatch):
 
     captured = {}
 
-    def fake_llm(config, api_key, prompt, log_fn=None):
+    def fake_llm(config, api_key, prompt, log_fn=None, **kwargs):
         captured["model_id"] = config["model_id"]
         return {"domain": "t.com", "theme": "T", "title": "Title",
                 "description": "Desc",
@@ -737,7 +737,7 @@ def test_run_site_info_task_uses_existing_stats(workdir, monkeypatch):
 
     captured = {}
 
-    def fake_llm(config, api_key, prompt, log_fn=None):
+    def fake_llm(config, api_key, prompt, log_fn=None, **kwargs):
         captured["prompt"] = prompt
         return {"domain": "t.com", "theme": "T", "title": "Title",
                 "description": "Desc",
@@ -824,7 +824,7 @@ def test_run_batch_site_info_task(workdir, monkeypatch):
 
     calls = []
 
-    def fake_llm(config, api_key, prompt, log_fn=None):
+    def fake_llm(config, api_key, prompt, log_fn=None, **kwargs):
         calls.append(prompt)
         # 每次提示词只含当前网站的分类（不混入其他网站的分类）
         if "Faucet" in prompt:
@@ -882,7 +882,7 @@ def test_run_batch_site_info_task_failure_continues(workdir, monkeypatch):
         make_df([(f"Cat {name}", 3)]).to_excel(d / "main.xlsx", index=False,
                                                engine="openpyxl")
 
-    def fake_llm(config, api_key, prompt, log_fn=None):
+    def fake_llm(config, api_key, prompt, log_fn=None, **kwargs):
         if "Site_A" in prompt or "Cat Site_A" in prompt:
             raise RuntimeError("模型返回异常")
         return {"domain": "site-b-store.com", "theme": "B", "title": "Site B Store",

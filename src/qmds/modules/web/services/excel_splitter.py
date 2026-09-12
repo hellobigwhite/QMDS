@@ -18,6 +18,7 @@ import string
 import time
 from pathlib import Path
 
+from qmds.utils import winpath
 from qmds.utils.logger import get_logger
 
 log = get_logger("web.excel_splitter")
@@ -90,11 +91,13 @@ def split_excel_file(file_path, rows_per_file=None, suffix_mode=SUFFIX_NONE,
     if output_folder is None:
         output_folder = file_path.parent / f"{base_name}_split"
     output_folder = Path(output_folder)
-    output_folder.mkdir(parents=True, exist_ok=True)
+    # 数据分配输出的分类文件夹/分卷文件路径可能超过 Windows MAX_PATH(260)，
+    # 统一用 \\?\\ 扩展长度前缀创建目录（winpath.makedirs）
+    winpath.makedirs(output_folder)
 
     unlimited = not rows_per_file or rows_per_file <= 0
 
-    src_wb = load_workbook(file_path, read_only=True, data_only=True)
+    src_wb = load_workbook(winpath.long_path(file_path), read_only=True, data_only=True)
     parts = []
     total_rows = 0
     try:
@@ -116,7 +119,10 @@ def split_excel_file(file_path, rows_per_file=None, suffix_mode=SUFFIX_NONE,
                 ws.append(_apply_suffix(header_list, row, domain_idx,
                                         suffix_mode, custom_suffix, part_index))
             out = _unique_part_path(output_folder, base_name, part_index)
-            wb.save(out)
+            # 分卷文件名比源文件长（_partN_XX时间戳.xlsx），路径超 260 时
+            # 必须用扩展长度前缀保存（winpath.long_path）；parts 列表仍存
+            # 普通路径供日志与后续流程使用
+            wb.save(winpath.long_path(out))
             wb.close()
             parts.append(out)
             log.info(f"已生成分卷: {out.name}（{len(buf)} 条）")
@@ -159,7 +165,7 @@ def split_excel_file(file_path, rows_per_file=None, suffix_mode=SUFFIX_NONE,
 
     if remove_source:
         try:
-            file_path.unlink()
+            winpath.remove(file_path)
             log.info(f"已删除源文件: {file_path.name}")
         except OSError as e:
             log.warning(f"删除源文件失败 {file_path.name}: {e}")

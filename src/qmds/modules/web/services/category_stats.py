@@ -16,11 +16,13 @@
 写入的 分类统计.xlsx 由 site_info_generator 读取，用于 AI 生成网站信息。
 """
 
+import os
 import re
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
+from qmds.utils import winpath
 from qmds.utils.logger import get_logger
 
 log = get_logger("web.category_stats")
@@ -66,12 +68,32 @@ def _is_scannable(path: Path) -> bool:
             and path.name not in (STATS_FILE_NAME, INFO_FILE_NAME))
 
 
+def _rglob_xlsx(folder: Path) -> list[Path]:
+    """递归列出文件夹下所有 .xlsx（超长路径安全）
+
+    os.scandir 在 Windows 上支持超过 260 字符的目录路径（walk 用的就是它），
+    而 Path.rglob 在部分 Python 版本上对超长路径会抛 OSError 或漏文件。
+    数据分配的输出（分类文件夹/分卷文件）很容易超过 260 字符。
+    """
+    folder = Path(folder)
+    top = winpath.long_path(folder)
+    out: list[Path] = []
+    for root, _dirs, names in os.walk(top):
+        # relpath 还原相对/绝对形式（保持入参路径形态，不引入前缀）
+        rel = os.path.relpath(root, top)
+        base = folder if rel == "." else folder / Path(rel)
+        for n in names:
+            if n.lower().endswith(".xlsx"):
+                out.append(base / n)
+    return out
+
+
 def collect_stats_files(folder) -> list[Path]:
     """收集文件夹（含子文件夹）中所有可统计的 .xlsx，按自然顺序排列"""
     folder = Path(folder)
-    if not folder.is_dir():
+    if not winpath.is_dir(folder):
         return []
-    files = [p for p in folder.rglob("*.xlsx") if _is_scannable(p)]
+    files = [p for p in _rglob_xlsx(folder) if _is_scannable(p)]
     try:
         files.sort(key=lambda p: [int(t) if t.isdigit() else t.lower()
                                   for t in re.split(r"(\d+)", str(p))])
@@ -91,7 +113,7 @@ def count_file_categories(filepath: Path):
 
     from qmds.modules.web.services.data_allocator import detect_category_column
 
-    wb = load_workbook(filepath, read_only=True, data_only=True)
+    wb = load_workbook(winpath.long_path(filepath), read_only=True, data_only=True)
     try:
         ws = wb.worksheets[0]
         rows = ws.iter_rows(values_only=True)
@@ -208,7 +230,8 @@ def write_stats_excel(out_path: Path, agg: dict, folder_label: str = "") -> Path
         ("一级分类数", len(level1)),
     ], columns=["指标", "值"])
 
-    with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
+    # 输出路径可能超过 Windows 260 字符限制（分类名很长时），用扩展前缀写出
+    with pd.ExcelWriter(winpath.long_path(out_path), engine="openpyxl") as writer:
         df_stats.to_excel(writer, sheet_name="分类统计", index=False)
         df_summary.to_excel(writer, sheet_name="汇总", index=False)
         ws = writer.book["分类统计"]
@@ -243,10 +266,10 @@ def read_stats_excel(path) -> dict:
     import pandas as pd
 
     path = Path(path)
-    if not path.is_file():
+    if not winpath.is_file(path):
         raise FileNotFoundError(f"分类统计表不存在: {path.name}")
 
-    df = pd.read_excel(path, sheet_name="分类统计", engine="openpyxl")
+    df = pd.read_excel(winpath.long_path(path), sheet_name="分类统计", engine="openpyxl")
     categories = []
     for _, row in df.iterrows():
         cat = str(row.get("分类") or "").strip()
@@ -266,7 +289,7 @@ def read_stats_excel(path) -> dict:
 
     summary: dict = {}
     try:
-        df_sum = pd.read_excel(path, sheet_name="汇总", engine="openpyxl")
+        df_sum = pd.read_excel(winpath.long_path(path), sheet_name="汇总", engine="openpyxl")
         for _, row in df_sum.iterrows():
             key = str(row.get("指标") or "").strip()
             if key:

@@ -11,17 +11,22 @@
    - 数据分配后的目录结构（每个主分类一个文件夹，主数据 main 前缀命名）：
      同一文件夹内主数据 ID 与补充数据 ID 写入同一个 txt，主数据 ID 在最前；
    - 其他结构：每个文件夹一个 txt，按 main 前缀识别主数据排序。
+5. 数据 ID 同时回写 网站信息.xlsx（存在时）：按网站行的「主数据ID」与
+   「补充数据ID」两列分别记录（各逗号分隔），行匹配「网站（文件夹）」
+   （审核应用后为域名）或「域名」列；只记录本次上传成功的 ID。
 
 配置存放在 {data_dir}/config/site_upload_config.json，
 包含 login_url / upload_page_url / username / password 四项。
 """
 
 import json
+import os
 import re
 from pathlib import Path
 
 from qmds.modules.web.services.site_review import DATA_PREFIX
 from qmds.modules.web.task_manager import task_manager
+from qmds.utils import winpath
 from qmds.utils.logger import get_logger
 
 log = get_logger("web.site_uploader")
@@ -141,9 +146,29 @@ def resolve_export_target(folder: str, filename: str = "") -> Path:
         raise FileNotFoundError("文件不存在")
     if file_path.suffix.lower() != ".xlsx" or file_path.name.startswith("~$"):
         raise FileNotFoundError("文件不存在")
-    if not file_path.is_file():
+    if not winpath.is_file(file_path):
         raise FileNotFoundError("文件不存在")
     return file_path
+
+
+def _rglob_xlsx(folder: Path) -> list[Path]:
+    """递归列出文件夹下所有 .xlsx（超长路径安全）
+
+    数据分配输出的分卷文件路径可能超过 Windows MAX_PATH(260)，Path.rglob
+    对超长路径会漏文件/抛错；os.walk（基于 os.scandir）配合扩展长度前缀
+    可以正常枚举。返回路径保持入参的相对/绝对形态（不做绝对化）。
+    """
+    folder = Path(folder)
+    top = winpath.long_path(folder)
+    out: list[Path] = []
+    for root, _dirs, names in os.walk(top):
+        # relpath 还原相对/绝对形式（保持入参路径形态，不引入前缀）
+        rel = os.path.relpath(root, top)
+        base = folder if rel == "." else folder / Path(rel)
+        for n in names:
+            if n.lower().endswith(".xlsx"):
+                out.append(base / n)
+    return out
 
 
 def collect_xlsx_files(target) -> list[Path]:
@@ -152,13 +177,13 @@ def collect_xlsx_files(target) -> list[Path]:
     按完整路径自然排序（part1, part2, ..., part10），保证上传顺序与分卷编号一致。
     """
     path = Path(target)
-    if path.is_file():
+    if winpath.is_file(path):
         if path.suffix.lower() == ".xlsx" and not path.name.startswith("~$"):
             return [path]
         return []
-    if not path.is_dir():
+    if not winpath.is_dir(path):
         raise FileNotFoundError("目标路径不存在")
-    files = [p for p in path.rglob("*.xlsx") if not p.name.startswith("~$")]
+    files = [p for p in _rglob_xlsx(path) if not p.name.startswith("~$")]
     files.sort(key=_natural_key)
     return files
 
@@ -175,11 +200,20 @@ def collect_site_tables(folder) -> list[Path]:
     「表错了」）。组内按自然排序（part1 -> part10）。
     """
     folder = Path(folder)
-    if not folder.is_dir():
+    if not winpath.is_dir(folder):
         return []
-    files = [p for p in folder.iterdir()
-             if p.is_file() and p.suffix.lower() == ".xlsx"
-             and p.name.startswith(DATA_PREFIX)
+    # 只看文件夹直接子文件（非递归，与原 iterdir 语义一致）；
+    # os.scandir 配合扩展长度前缀，超长路径也能枚举
+    files: list[Path] = []
+    try:
+        with os.scandir(winpath.long_path(folder)) as it:
+            for e in it:
+                if e.is_file() and e.name.lower().endswith(".xlsx"):
+                    files.append(folder / e.name)
+    except OSError:
+        return []
+    files = [p for p in files
+             if p.name.startswith(DATA_PREFIX)
              and not p.name.startswith("~$")]
 
     def _rank(p: Path) -> tuple:
@@ -203,20 +237,21 @@ def collect_domain_sites(target) -> list[dict]:
     由用户决定是否选择。
     """
     root = Path(target)
-    if not root.is_dir():
+    if not winpath.is_dir(root):
         return []
     sites: list[dict] = []
     queue = [root]
     while queue:
         cur = queue.pop(0)
         try:
-            entries = sorted(cur.iterdir(),
-                             key=lambda p: _natural_key(p.name))
+            # os.scandir 枚举（超长路径安全；深层文件夹可能超 260 字符）
+            with os.scandir(winpath.long_path(cur)) as it:
+                names = [e.name for e in it if e.is_dir()]
         except OSError:
             continue
+        entries = sorted((cur / n for n in names),
+                         key=lambda p: _natural_key(p.name))
         for entry in entries:
-            if not entry.is_dir():
-                continue
             if DOMAIN_FOLDER_RE.match(entry.name.lower()):
                 sites.append({
                     "name": entry.name,
@@ -343,7 +378,7 @@ def make_erp_compatible(path, log_fn=None) -> bool:
     import pandas as pd
 
     path = Path(path)
-    with zipfile.ZipFile(path) as z:
+    with zipfile.ZipFile(winpath.long_path(path)) as z:
         names = z.namelist()
         infos = {i.filename: i for i in z.infolist()}
         contents = {n: z.read(n) for n in names}
@@ -456,7 +491,8 @@ def make_erp_compatible(path, log_fn=None) -> bool:
     # ── 4. 写临时文件 -> 数据校验 -> 原子替换 ──
     tmp = path.with_name(path.name + ".erp_tmp")
     try:
-        with zipfile.ZipFile(tmp, "w") as zout:
+        # 临时文件与原文件同目录：路径超 260 时同样需要扩展长度前缀
+        with zipfile.ZipFile(winpath.long_path(tmp), "w") as zout:
             for n in names:
                 if n in new_sheets:
                     data = new_sheets[n].encode("utf-8")
@@ -493,8 +529,8 @@ def make_erp_compatible(path, log_fn=None) -> bool:
                 zout.writestr(info, ss_xml.encode("utf-8"))
 
         # 逐值校验：转换前后 pandas 读取结果必须完全一致
-        before = pd.read_excel(path, engine="openpyxl")
-        after = pd.read_excel(tmp, engine="openpyxl")
+        before = pd.read_excel(winpath.long_path(path), engine="openpyxl")
+        after = pd.read_excel(winpath.long_path(tmp), engine="openpyxl")
         if before.shape != after.shape or not before.equals(after):
             raise ValueError("转换后数据校验不一致，放弃替换")
 
@@ -502,15 +538,15 @@ def make_erp_compatible(path, log_fn=None) -> bool:
         import time as _time
         for attempt in range(4):
             try:
-                os.replace(tmp, path)
+                winpath.replace(tmp, path)
                 return True
             except PermissionError:
                 if attempt == 3:
                     raise
                 _time.sleep(0.5)
     finally:
-        if tmp.exists():
-            tmp.unlink()
+        if winpath.exists(tmp):
+            winpath.remove(tmp)
 
 
 def login(session, config: dict, log_fn=None):
@@ -548,7 +584,8 @@ def upload_one_table(session, file_path, upload_page_url: str, login_url: str,
     headers2 = {"User-Agent": USER_AGENT, "X-Requested-With": "XMLHttpRequest"}
 
     file_path = Path(file_path)
-    with open(file_path, "rb") as f:
+    # 分卷文件路径可能超过 Windows 260 字符限制，open 需扩展长度前缀
+    with open(winpath.long_path(file_path), "rb") as f:
         file_data = {
             "main_page": "erp_products",
             "dongzuo": "add_cp_pl",
@@ -585,26 +622,19 @@ def upload_one_table(session, file_path, upload_page_url: str, login_url: str,
     raise RuntimeError(f"上传轮询超过 {max_polls} 次仍未完成")
 
 
-def save_upload_ids(target, uploaded: list) -> list[Path]:
-    """把上传获得的数据 ID 按主分类写入 txt 文件
+def _group_uploaded(target, uploaded: list) -> dict:
+    """按数据文件夹分组上传结果
 
-    参数:
-        target: 上传目标（文件夹或文件路径）
-        uploaded: [(文件路径, 数据ID), ...] 按上传顺序
+    返回 {文件夹: [(rank, 上传顺序, 数据ID), ...]}；rank: 0=主数据, 1=补充数据。
 
-    数据分配后的目录结构（每个主分类一个文件夹）:
-      {X}/main{X}*.xlsx      主数据（main 前缀）
-      {X}/{X}_supp*.xlsx     该主分类的补充数据
-      extra{N}/extra{N}*.xlsx 额外补充
-    -> 每个文件夹一个 数据ID.txt：主数据 ID 在最前（按 main 前缀识别），
-       其后为补充数据的 ID（按上传顺序，即分卷编号顺序）。
-
-    旧版结构兼容（*_split 文件夹）: {X}_补充_split/ 的 ID 归入 {X}_split/。
-
-    返回写入的 txt 文件路径列表。
+    识别规则（与数据分配/审核应用后的命名对应）：
+    - data_ 前缀剥离后以 main 开头 = 主数据表；
+    - 旧版结构（*_split 文件夹）: 补充数据文件夹 {X}_补充_split/ 归入
+      对应主数据文件夹 {X}_split/；主数据文件夹中的非补充文件为主数据；
+    - 其余为补充数据/额外补充。
     """
     target = Path(target)
-    # txt 所在文件夹 -> [(rank, 上传顺序, ID)]；rank: 0=主数据, 1=补充数据
+    # 文件夹 -> [(rank, 上传顺序, ID)]；rank: 0=主数据, 1=补充数据
     entries: dict[Path, list[tuple[int, int, str]]] = {}
 
     for order, (fp, pid) in enumerate(uploaded):
@@ -638,19 +668,114 @@ def save_upload_ids(target, uploaded: list) -> list[Path]:
             out_folder = group_folder
             rank = 1
         entries.setdefault(out_folder, []).append((rank, order, str(pid)))
+    return entries
+
+
+def save_upload_ids(target, uploaded: list) -> list[Path]:
+    """把上传获得的数据 ID 按主分类写入 txt 文件
+
+    参数:
+        target: 上传目标（文件夹或文件路径）
+        uploaded: [(文件路径, 数据ID), ...] 按上传顺序
+
+    数据分配后的目录结构（每个主分类一个文件夹）:
+      {X}/main{X}*.xlsx      主数据（main 前缀）
+      {X}/{X}_supp*.xlsx     该主分类的补充数据
+      extra{N}/extra{N}*.xlsx 额外补充
+    -> 每个文件夹一个 数据ID.txt：主数据 ID 在最前（按 main 前缀识别），
+       其后为补充数据的 ID（按上传顺序，即分卷编号顺序）。
+
+    旧版结构兼容（*_split 文件夹）: {X}_补充_split/ 的 ID 归入 {X}_split/。
+
+    返回写入的 txt 文件路径列表。
+    """
+    target = Path(target)
+    entries = _group_uploaded(target, uploaded)
 
     written = []
     for folder, items in entries.items():
         items.sort(key=lambda t: (t[0], t[1]))  # 主数据在前，同组按上传顺序
         txt = folder / ID_TXT_NAME
-        txt.write_text("\n".join(pid for _, _, pid in items) + "\n",
-                       encoding="utf-8")
+        # 网站文件夹路径可能超过 Windows 260 字符，写入用扩展长度前缀
+        with open(winpath.long_path(txt), "w", encoding="utf-8") as f:
+            f.write("\n".join(pid for _, _, pid in items) + "\n")
         written.append(txt)
     return written
 
 
+def update_info_data_ids(root, uploaded: list, log_fn=None):
+    """把上传返回的数据 ID 回写 网站信息.xlsx（主数据ID/补充数据ID 各一列）
+
+    按数据文件夹分组（与 数据ID.txt 相同规则），组内 ID 按主数据在前、
+    上传顺序（即分卷编号顺序）排列，主数据与补充数据分别以","连接写入
+    「主数据ID」「补充数据ID」两列。行匹配：表格行「网站（文件夹）」
+    （审核应用后为域名）或「域名」列等于数据文件夹名。
+
+    只记录本次上传成功的 ID（覆盖旧值，与 数据ID.txt 的覆盖语义一致）；
+    未找到 网站信息.xlsx 时静默跳过（返回 (None, 0)），上传不依赖信息表。
+
+    Args:
+        root: 上传目标根目录（网站信息.xlsx 在其中定位，可为任意上级目录）
+        uploaded: [(文件路径, 数据ID), ...] 按上传顺序
+        log_fn: 可选日志函数 fn(msg, level)
+
+    Returns:
+        (info_path, 更新行数)；无信息表/读取失败/无匹配行时更新行数为 0
+    """
+    from qmds.modules.web.services.site_info_generator import (
+        INFO_FILE_NAME,
+        _write_info_excel,
+        read_site_info_excel,
+    )
+    from qmds.modules.web.services.site_review import locate_info_file
+
+    info_path = locate_info_file(root)
+    if info_path is None:
+        return None, 0
+    try:
+        rows = read_site_info_excel(info_path)
+    except Exception as e:
+        if log_fn:
+            log_fn(f"读取 {INFO_FILE_NAME} 失败（数据ID未回写）: {e}", "warning")
+        return info_path, 0
+
+    # 数据文件夹名 -> {"main": [ID...], "supp": [ID...]}（组内主数据在前）
+    grouped: dict[str, dict[str, list[str]]] = {}
+    for folder, items in _group_uploaded(root, uploaded).items():
+        items.sort(key=lambda t: (t[0], t[1]))
+        grouped[folder.name] = {
+            "main": [pid for rank, _, pid in items if rank == 0],
+            "supp": [pid for rank, _, pid in items if rank == 1],
+        }
+
+    updated = 0
+    unmatched = set(grouped)
+    for row in rows:
+        # 「网站（文件夹）」优先（审核应用后同步为域名），「域名」列兜底
+        keys = (str(row.get("网站（文件夹）") or "").strip(),
+                str(row.get("域名") or "").strip())
+        for key in keys:
+            if key and key in unmatched:
+                row["主数据ID"] = ",".join(grouped[key]["main"])
+                row["补充数据ID"] = ",".join(grouped[key]["supp"])
+                unmatched.discard(key)
+                updated += 1
+                break
+    if unmatched and log_fn:
+        log_fn(f"数据ID未能回写 {INFO_FILE_NAME}（表格中未找到对应网站行）: "
+               + ", ".join(sorted(unmatched)), "warning")
+    if updated:
+        try:
+            _write_info_excel(info_path, rows)
+        except Exception as e:
+            if log_fn:
+                log_fn(f"回写 {INFO_FILE_NAME} 失败: {e}", "warning")
+            return info_path, 0
+    return info_path, updated
+
+
 def run_upload_task(task_id: str, target_path, config: dict | None = None):
-    """站群系统上传后台任务体：登录 -> 逐个上传 -> 数据ID保存到txt"""
+    """站群系统上传后台任务体：登录 -> 逐个上传 -> 数据ID保存到txt + 回写网站信息"""
     import requests
 
     def _log(msg, level="info"):
@@ -709,15 +834,27 @@ def run_upload_task(task_id: str, target_path, config: dict | None = None):
 
         # 数据 ID 按主分类保存到 txt（主数据与对应补充数据放在一起，主数据在前）
         written_txts: list[Path] = []
+        info_rows_updated = 0
         if uploaded:
             task_manager.update(task_id, progress=95,
                                 message=f"保存 {len(uploaded)} 个数据ID到 txt 文件...")
             written_txts = save_upload_ids(target_path, uploaded)
             for txt in written_txts:
                 _log(f"数据ID已保存: {txt.parent.name}/{txt.name}")
+            # 数据 ID 回写 网站信息.xlsx（主数据ID/补充数据ID 两列，存在时）
+            try:
+                info_path, info_rows_updated = update_info_data_ids(
+                    target_path, uploaded, _log)
+                if info_rows_updated:
+                    _log(f"数据ID已回写 {info_path.name}: {info_rows_updated} 行"
+                         "（主数据ID/补充数据ID）")
+            except Exception as e:
+                _log(f"数据ID回写 网站信息.xlsx 失败: {e}", "warning")
 
         summary = (f"完成: 上传 {len(uploaded)}/{len(files)} 个表格"
                    f"（失败 {failed}），数据ID已保存到 {len(written_txts)} 个 txt 文件")
+        if info_rows_updated:
+            summary += f"，{info_rows_updated} 行网站信息已回写数据ID"
         task_manager.update(task_id, status="completed", message=summary, progress=100)
         _log(summary)
 
@@ -738,7 +875,9 @@ def run_domain_upload_task(task_id: str, target_path, site_names: list,
     上传、补充数据表（data_*_supp_part*）后上传 —— ERP 要求先传主数据
     建立站点基础，再传补充数据。全部完成后在任务日志中按网站分组输出
     上传返回的数据 ID，并把各网站的数据 ID 写入其文件夹内的
-    数据ID.txt（主数据 ID 在最前）。
+    数据ID.txt（主数据 ID 在最前）；同时回写所选文件夹下的
+    网站信息.xlsx（存在时）：每行的「主数据ID」「补充数据ID」两列
+    分别记录本次上传的主数据/补充数据 ID（各逗号分隔）。
     """
     import requests
 
@@ -839,6 +978,16 @@ def run_domain_upload_task(task_id: str, target_path, site_names: list,
                     save_upload_ids(folder, site_uploaded)
                 except Exception as e:
                     _log(f"网站 {name}: 数据ID保存到 txt 失败: {e}", "warning")
+                # 数据 ID 回写 网站信息.xlsx（主数据ID/补充数据ID 两列，存在时）
+                try:
+                    info_path, n_rows = update_info_data_ids(
+                        root, site_uploaded, _log)
+                    if n_rows:
+                        _log(f"网站 {name}: 数据ID已回写 {info_path.name}"
+                             "（主数据ID/补充数据ID）")
+                except Exception as e:
+                    _log(f"网站 {name}: 数据ID回写 网站信息.xlsx 失败: {e}",
+                         "warning")
             site_ids.append((name, ids))
             _log(f"[{si}/{len(chosen)}] ✔ 网站 {name} 完成: "
                  f"上传 {len(site_uploaded)}/{len(tables)} 个表格"

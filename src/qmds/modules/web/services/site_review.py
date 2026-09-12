@@ -20,16 +20,23 @@
    重复应用（改域名后重新审核）时只更新标记，不重复加前缀（幂等）。
 """
 
+import os
 import re
 from datetime import datetime
 from pathlib import Path
 
-from qmds.modules.web.services.category_stats import INFO_FILE_NAME, STATS_FILE_NAME
+from qmds.modules.web.services.category_stats import (
+    INFO_FILE_NAME,
+    STATS_FILE_NAME,
+    read_stats_excel,
+)
 from qmds.modules.web.services.site_info_generator import (
     _write_info_excel,
     read_site_info_excel,
+    resolve_main_category,
 )
 from qmds.modules.web.task_manager import task_manager
+from qmds.utils import winpath
 from qmds.utils.logger import get_logger
 
 log = get_logger("web.site_review")
@@ -85,10 +92,15 @@ def collect_data_tables(site_folder) -> dict:
     folder = Path(site_folder)
     mains: list[Path] = []
     supps: list[Path] = []
-    if not folder.is_dir():
+    if not winpath.is_dir(folder):
         return {"main": [], "supp": []}
-    for p in folder.iterdir():
-        if not p.is_file() or p.suffix.lower() != ".xlsx":
+    # 数据表路径可能超过 Windows 260 字符（分类名很长时），
+    # 用 os.scandir + 扩展长度前缀枚举（Path.iterdir 对超长路径会漏文件）
+    with os.scandir(winpath.long_path(folder)) as it:
+        # folder / e.name 保持入参的相对/绝对路径形态
+        entries = [folder / e.name for e in it if e.is_file()]
+    for p in entries:
+        if p.suffix.lower() != ".xlsx":
             continue
         if p.name.startswith("~$"):
             continue
@@ -108,6 +120,20 @@ def is_site_applied(site_folder) -> bool:
                for group in tables.values() for p in group)
 
 
+def _walk_paths(folder) -> list[Path]:
+    """os.walk 枚举文件夹下所有条目（超长路径安全，返回普通路径）"""
+    folder = Path(folder)
+    top = winpath.long_path(folder)
+    out: list[Path] = []
+    for dirpath, _dirs, names in os.walk(top):
+        # relpath 还原相对/绝对形式（保持入参路径形态，不引入前缀）
+        rel = os.path.relpath(dirpath, top)
+        base = folder if rel == "." else folder / Path(rel)
+        for n in names:
+            out.append(base / n)
+    return out
+
+
 def locate_info_file(root):
     """定位所选文件夹下的 网站信息.xlsx（所选可以是其任意上级目录）
 
@@ -115,13 +141,13 @@ def locate_info_file(root):
     表格在其下的分配文件夹内）；多个时取路径最浅的。找不到返回 None。
     """
     root = Path(root)
-    if not root.is_dir():
+    if not winpath.is_dir(root):
         return None
     direct = root / INFO_FILE_NAME
-    if direct.is_file():
+    if winpath.is_file(direct):
         return direct
     try:
-        matches = [p for p in root.rglob(INFO_FILE_NAME) if p.is_file()]
+        matches = [p for p in _walk_paths(root) if p.name == INFO_FILE_NAME]
     except OSError:
         return None
     if not matches:
@@ -144,17 +170,24 @@ def locate_site_folder(root, name):
     # 防御：名称为空或含路径分隔符（防止越出 root）
     if not name or name in (".", "..") or "/" in name or "\\" in name:
         return None
-    if not root.is_dir():
+    if not winpath.is_dir(root):
         return None
     cand = root / name
-    if cand.is_dir():
+    if winpath.is_dir(cand):
         return cand
     if root.name == name:
         return root
-    # 深层嵌套：递归查找同名子文件夹
+    # 深层嵌套：递归查找同名子文件夹（os.walk，超长路径安全）
     try:
-        matches = [d for d in root.rglob("*")
-                   if d.is_dir() and d.name == name]
+        matches = []
+        top = winpath.long_path(root)
+        for dirpath, dirs, _names in os.walk(top):
+            # relpath 还原相对/绝对形式（保持入参路径形态）
+            rel = os.path.relpath(dirpath, top)
+            base = root if rel == "." else root / Path(rel)
+            for d in dirs:
+                if d == name:
+                    matches.append(base / d)
     except OSError:
         return None
     if not matches:
@@ -202,7 +235,8 @@ def apply_domain_to_site(site_folder, domain: str,
             # ERP 站群按整列一致的 域名_..._partN 识别目标站点与分卷
             # （老 BB 工具拆表输出的形态）；列中混有其他来源域名时
             # 服务器返回「表错了」。
-            df = pd.read_excel(path, engine="openpyxl")
+            # 数据表路径可能超过 Windows 260 字符，读写用扩展长度前缀
+            df = pd.read_excel(winpath.long_path(path), engine="openpyxl")
             if ORIGIN_COLUMN not in df.columns:
                 if log_fn:
                     log_fn(f"[{folder.name}] ⚠ {path.name} 缺少"
@@ -210,7 +244,7 @@ def apply_domain_to_site(site_folder, domain: str,
                            "warning")
             else:
                 df[ORIGIN_COLUMN] = marker
-                df.to_excel(path, index=False, engine="openpyxl")
+                df.to_excel(winpath.long_path(path), index=False, engine="openpyxl")
                 stats[kind] += 1
                 if log_fn:
                     log_fn(f"[{folder.name}] {path.name}: {ORIGIN_COLUMN} "
@@ -219,22 +253,47 @@ def apply_domain_to_site(site_folder, domain: str,
             # ── 表名加 data_ 前缀（幂等） ──
             if not path.name.startswith(DATA_PREFIX):
                 new_path = path.with_name(DATA_PREFIX + path.name)
-                if new_path.exists():
+                if winpath.exists(new_path):
                     raise FileExistsError(f"目标表名已存在: {new_path.name}")
-                path.rename(new_path)
+                winpath.rename(path, new_path)
                 stats["renamed"] += 1
             stats["markers"].append(marker)
 
     # ── 网站文件夹改名为域名（幂等） ──
     new_folder = folder.with_name(domain)
     if folder.name != domain:
-        if new_folder.exists():
+        if winpath.exists(new_folder):
             raise FileExistsError(f"目标文件夹已存在: {new_folder.name}")
-        folder.rename(new_folder)
+        winpath.rename(folder, new_folder)
         if log_fn:
             log_fn(f"[{folder.name}] 网站文件夹已改名为域名: {new_folder.name}")
     stats["folder"] = new_folder
     return stats
+
+
+def repair_row_main_category(site_folder, row) -> bool:
+    """把历史生成的「主类目」修复为表格原始分类值（含 ||| 层级分隔符）
+
+    旧版生成的主类目取自清洗后的文件夹名（||| 已丢失，如
+    "Toilets Toilet Tank Lids"）；从该网站的 分类统计.xlsx 反查原始分类值
+    （"Toilets|||Toilet Tank Lids"），非空且与当前值不同时覆盖。
+    返回是否修改（统计表缺失/读取失败/未能还原时不修改）。
+    """
+    folder = Path(site_folder)
+    stats_path = folder / STATS_FILE_NAME
+    if not winpath.is_file(stats_path):
+        return False
+    try:
+        stats = read_stats_excel(stats_path)
+    except Exception as e:
+        log.warning(f"[{folder.name}] 读取 {STATS_FILE_NAME} 修复主类目失败: {e}")
+        return False
+    resolved = resolve_main_category(folder, stats.get("categories") or [])
+    current = str(row.get("主类目") or "").strip()
+    if not resolved or resolved == current:
+        return False
+    row["主类目"] = resolved
+    return True
 
 
 def apply_site_review_task(task_id: str, folder, sites: list):

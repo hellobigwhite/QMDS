@@ -7,9 +7,13 @@
 「上传成功/已上传」（下图不完全 + 中途提前显示完成）。
 
 覆盖：
-- 完成判定兼容两种格式（带空格 / 无空格）；
+- 完成判定兼容三种格式：msg 含「完成」（one_dimg.php 实测）、
+  「成功-0 失败-0」（带空格）、「成功-0失败-0」（旧格式无空格）；
+- 无图可下时服务器首轮即返回「完成」→ 判定完成不误报失败；
 - 超过 400 轮仍继续下图直到完成（40k 商品的站点约需 800+ 轮）；
-- 连续无进展（剩余图片反复失败）如实返回失败，不再假成功；
+- 停滞时失败图片在容忍上限内（主数据100/补充数据300）→ 跳过并按成功返回；
+- 停滞时失败图片超过容忍上限 / 未设容忍上限 → 返回失败，不再假成功；
+- 短暂停滞（不足阈值）后恢复进展 → 不跳过，继续下图到全部完成；
 - 连续请求失败 / 无法解析进度时如实返回失败；
 - 异常终止保留数据断点（final_cs），重跑可续传；
 - 数据上传轮询达上限不再按成功返回且清除断点。
@@ -99,6 +103,7 @@ def run_upload(pages, **kwargs):
         start_cs=kwargs.pop("start_cs", "0"),
         breakpoint_callback=breakpoints.append,
         stop_callback=kwargs.pop("stop_callback", None),
+        max_img_failures=kwargs.pop("max_img_failures", None),
     )
     return result, logs, breakpoints
 
@@ -141,6 +146,67 @@ def test_images_complete_legacy_no_space_format(monkeypatch):
     assert any("图片处理完成" in m for m in logs)
 
 
+def test_images_complete_with_server_done_message(monkeypatch):
+    """one_dimg.php 实测格式：msg 含「完成」→ 判定全部完成（此前被误判为
+    无法解析进度，连续10轮后误报失败 —— 实际线上 8 个站点全部中招）"""
+    pages = {
+        "options-general.php": FakeResponse(404, ""),
+        "dan_duopsot.php": data_script(),
+        "one_dimg.php": [
+            json_resp({"msg": "成功-50 失败-0 执行时间:12秒"}),
+            json_resp({"msg": "成功-50 失败-0 执行时间:10秒"}),
+            json_resp({"msg": "完成"}),
+        ],
+    }
+    patch_env(monkeypatch, pages)
+    result, logs, _ = run_upload(pages)
+
+    assert result["success"] is True
+    assert "图片成功100张" in result["message"]
+    assert any("图片处理完成" in m for m in logs)
+    assert result["final_cs"] == "0"
+    # 不应出现「无法解析」误报
+    assert not any("无法解析" in m for m in logs)
+
+
+def test_images_nothing_to_download_done_immediately(monkeypatch):
+    """无图可下：服务器首轮即返回「完成」→ 直接判定完成（0张）不误报失败"""
+    pages = {
+        "options-general.php": FakeResponse(404, ""),
+        "dan_duopsot.php": data_script(),
+        "one_dimg.php": [json_resp({"msg": "完成"})],
+    }
+    patch_env(monkeypatch, pages)
+    result, logs, _ = run_upload(pages, max_img_failures=100)
+
+    assert result["success"] is True
+    assert "图片成功0张" in result["message"]
+    assert any("图片处理完成" in m for m in logs)
+    assert result["final_cs"] == "0"
+    # 只应请求一次 one_dimg（完成后立即结束）
+    assert not pages["one_dimg.php"]
+
+
+def test_images_done_message_with_failures_still_succeeds(monkeypatch):
+    """服务器返回「完成」时此前有失败轮次（已重试成功或服务器已跳过）：
+    仍按完成处理，如实报告失败次数"""
+    pages = {
+        "options-general.php": FakeResponse(404, ""),
+        "dan_duopsot.php": data_script(),
+        "one_dimg.php": [
+            json_resp({"msg": "成功-350 失败-2 执行时间:20秒"}),
+            json_resp({"msg": "成功-357 失败-0 执行时间:15秒"}),
+            json_resp({"msg": "完成"}),
+        ],
+    }
+    patch_env(monkeypatch, pages)
+    result, logs, _ = run_upload(pages, max_img_failures=100)
+
+    assert result["success"] is True
+    assert "图片成功707张" in result["message"]
+    assert "失败2次" in result["message"]
+
+
 def test_images_continue_past_400_rounds(monkeypatch):
     """超过旧 400 轮上限后继续下图直到完成（修复「下图不完全」）"""
     rounds = 500  # 500轮 x 50张 = 25000张，旧实现 400 轮即假成功
@@ -161,7 +227,7 @@ def test_images_continue_past_400_rounds(monkeypatch):
 
 
 def test_images_stall_aborts_honestly(monkeypatch):
-    """连续无进展（成功0张反复失败）如实返回失败，不再提前显示完成"""
+    """未设容忍上限（None）：下图停滞即如实返回失败，不再提前显示完成"""
     stall = IMG_STALL_ROUNDS + 10
     img_script = [json_resp({"msg": "成功-0 失败-50 执行时间:3秒"}) for _ in range(stall)]
     pages = {
@@ -180,6 +246,88 @@ def test_images_stall_aborts_honestly(monkeypatch):
     assert result["final_cs"] == "100"
     assert breakpoints[-1] == "100"
     assert not any("上传完成" in m for m in logs)
+
+
+def test_images_stall_within_tolerance_skips_and_succeeds(monkeypatch):
+    """主数据：停滞时反复失败图片50张 ≤ 容忍上限100 → 跳过并按成功返回"""
+    stall = IMG_STALL_ROUNDS + 10
+    img_script = [json_resp({"msg": "成功-0 失败-50 执行时间:3秒"}) for _ in range(stall)]
+    pages = {
+        "options-general.php": FakeResponse(404, ""),
+        "dan_duopsot.php": data_script("成功:100失败:0-重复0-名牌0已上传-{n}执行时间5秒"),
+        "one_dimg.php": img_script,
+    }
+    patch_env(monkeypatch, pages)
+    result, logs, _ = run_upload(pages, max_img_failures=100)
+
+    assert result["success"] is True
+    assert "跳过50张" in result["message"]
+    assert "容忍≤100" in result["message"]
+    # 成功返回：步骤完成，断点清零，继续执行下一步
+    assert result["final_cs"] == "0"
+    assert any("跳过 50 张" in m for m in logs)
+    assert any("继续下一步" in m for m in logs)
+
+
+def test_images_stall_at_tolerance_boundary_skips(monkeypatch):
+    """失败图片数恰好等于容忍上限（100 ≤ 100）→ 仍视为不超过，跳过并成功"""
+    stall = IMG_STALL_ROUNDS + 10
+    img_script = [json_resp({"msg": "成功-0 失败-100 执行时间:3秒"}) for _ in range(stall)]
+    pages = {
+        "options-general.php": FakeResponse(404, ""),
+        "dan_duopsot.php": data_script(),
+        "one_dimg.php": img_script,
+    }
+    patch_env(monkeypatch, pages)
+    result, logs, _ = run_upload(pages, max_img_failures=100)
+
+    assert result["success"] is True
+    assert "跳过100张" in result["message"]
+
+
+def test_images_stall_exceeds_tolerance_fails(monkeypatch):
+    """补充数据：停滞时反复失败图片350张 > 容忍上限300 → 返回失败，断点保留"""
+    stall = IMG_STALL_ROUNDS + 10
+    img_script = [json_resp({"msg": "成功-0 失败-350 执行时间:3秒"}) for _ in range(stall)]
+    pages = {
+        "options-general.php": FakeResponse(404, ""),
+        "dan_duopsot.php": data_script("成功:100失败:0-重复0-名牌0已上传-{n}执行时间5秒"),
+        "one_dimg.php": img_script,
+    }
+    patch_env(monkeypatch, pages)
+    result, logs, breakpoints = run_upload(pages, max_img_failures=300)
+
+    assert result["success"] is False
+    assert "超过容忍上限 300" in result["message"]
+    assert "剩余 350 张" in result["message"]
+    # 断点保留：重跑本步骤可继续尝试下图
+    assert result["final_cs"] == "100"
+    assert not any("继续下一步" in m for m in logs)
+
+
+def test_images_stall_recovers_without_skipping(monkeypatch):
+    """短暂停滞（不足阈值）后恢复进展 → 不跳过，继续下图到全部完成"""
+    img_script = []
+    # 30 轮停滞（< IMG_STALL_ROUNDS=50），尚未达到跳过判定阈值
+    img_script += [json_resp({"msg": "成功-0 失败-50 执行时间:3秒"}) for _ in range(30)]
+    # 恢复进展：此前失败的图片下载成功
+    img_script += [json_resp({"msg": "成功-50 失败-0 执行时间:10秒"})]
+    # 全部完成
+    img_script.append(json_resp({"msg": "成功-0 失败-0 执行时间:1秒"}))
+    pages = {
+        "options-general.php": FakeResponse(404, ""),
+        "dan_duopsot.php": data_script(),
+        "one_dimg.php": img_script,
+    }
+    patch_env(monkeypatch, pages)
+    result, logs, _ = run_upload(pages, max_img_failures=100)
+
+    assert result["success"] is True
+    assert "跳过" not in result["message"]
+    assert "图片成功50张" in result["message"]
+    assert any("图片处理完成" in m for m in logs)
+    # 全部响应都应被消费
+    assert not pages["one_dimg.php"]
 
 
 def test_images_request_errors_abort_honestly(monkeypatch):

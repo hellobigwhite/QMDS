@@ -39,13 +39,15 @@ DATA_MAX_ROUNDS = 800       # 数据上传轮询轮数上限（每轮约100条�
 
 # ── 批量下图（图片处理阶段）守护阈值 ──────────────────────────
 # one_dimg.php 每轮处理一批图片（约50张）并返回「成功-N 失败-M」，
-# 全部下图完成后返回「成功-0 失败-0」（旧 dimg.php 为无空格的
-# 「成功-0失败-0」）。此前按无空格子串判断完成，one_dimg.php 的带空格
-# 格式永远匹配不上，完成检测失效；且轮询固定 400 轮上限，跑满或连续
-# 请求失败后直接按成功返回 —— 站点图片没下图完毕就显示「上传成功/已上传」。
+# 全部处理完后返回 msg 含「完成」（实测：无图可下时首轮即返回「完成」）。
+# 旧 dimg.php 的完成格式是「成功-0失败-0」（one_dimg 带空格变体为
+# 「成功-0 失败-0」），IMG_PROGRESS_RE 正则兼容带/不带空格两种进度格式。
+# 此前按无空格子串判断完成导致检测失效，且固定 400 轮上限跑满后直接按
+# 成功返回 —— 站点图片没下图完毕就显示「上传成功/已上传」。
 IMG_PROGRESS_RE = re.compile(r"成功\s*-\s*(\d+)\s*失败\s*-\s*(\d+)")
 IMG_MAX_RETRIES = 10        # 连续请求失败/无有效响应次数上限（与旧实现一致，超过即中止）
-IMG_STALL_ROUNDS = 50       # 连续「成功0张」轮数上限：剩余图片反复下图失败
+IMG_STALL_ROUNDS = 50       # 连续「成功0张」轮数阈值：剩余图片反复下图失败，达到后
+                            # 按 max_img_failures 容忍上限决定跳过（继续下一步）还是失败
 IMG_UNKNOWN_ROUNDS = 10     # 连续无法解析进度的轮数上限（接口报错/格式变化）
 IMG_MAX_ROUNDS = 20000      # 绝对轮数上限（防服务器异常导致死循环，正常远达不到）
 
@@ -1200,7 +1202,8 @@ class SiteOperator:
         return '/cf-updata/plxztp.php?p=OFjToUDQ5mmtU7GB'
 
     def upload_data(self, domain: str, data_source_ids: str,
-                    progress_callback=None, start_cs="0", breakpoint_callback=None, stop_callback=None) -> dict:
+                    progress_callback=None, start_cs="0", breakpoint_callback=None, stop_callback=None,
+                    max_img_failures=None) -> dict:
         """上传数据到WordPress站点（无需登录）
 
         Args:
@@ -1210,6 +1213,11 @@ class SiteOperator:
             start_cs: 起始断点，默认"0"从头开始
             breakpoint_callback: 断点更新回调，用于实时保存断点
             stop_callback: 停止检查回调，返回True表示应停止
+            max_img_failures: 下图失败图片容忍上限。批量下图阶段剩余图片
+                连续 IMG_STALL_ROUNDS 轮反复下载失败时，失败图片数不超过
+                该值则跳过这些图片并按成功返回（继续执行下一步），超过
+                才返回失败。主数据传 100、补充数据传 300；None 表示
+                不容忍（下图停滞即失败）。
 
         Returns:
             {"success": bool, "message": str, "success_count": int, "failure_count": int, "final_cs": str}
@@ -1302,19 +1310,27 @@ class SiteOperator:
                             progress_callback("开始批量处理图片")
 
                         # ── 批量下图轮询（one_dimg.php 每轮处理一批图片）──
-                        # 完成判定用 IMG_PROGRESS_RE 正则解析（兼容「成功-0失败-0」
-                        # 与「成功-0 失败-0」两种格式）；不设固定轮数上限，仅以
-                        # 连续请求失败 / 连续无进展 / 连续无法解析 三类守护条件
-                        # 终止。异常终止时返回失败并保留数据断点 —— 重新执行本
+                        # 完成判定（两种服务器格式都支持）：
+                        #   1. msg 含「完成」—— one_dimg.php 实测完成信号（图片
+                        #      全部处理完，或无图可下时首轮即返回）；
+                        #   2. 「成功-0 失败-0」/「成功-0失败-0」—— 旧 dimg.php
+                        #      的完成格式（IMG_PROGRESS_RE 正则兼容带/不带空格）。
+                        # 不设固定轮数上限，仅以 连续请求失败 / 连续无进展 /
+                        # 连续无法解析 三类守护条件终止。剩余图片连续多轮反复
+                        # 下载失败时：失败数不超过 max_img_failures 容忍上限则
+                        # 跳过这些图片按成功返回（继续执行下一步），超过才返回
+                        # 失败。异常终止返回失败并保留数据断点 —— 重新执行本
                         # 步骤时数据校验秒级完成后，服务器会跳过已下载的图片
-                        # 继续下图剩余图片，不会重复下载。
+                        # 继续下图剩余图片。
                         img_retry = 0
                         img_rounds = 0
                         img_stall_rounds = 0
+                        img_stall_fail_max = 0
                         img_unknown_rounds = 0
                         img_ok_total = 0
                         img_fail_total = 0
                         img_done = False
+                        img_skipped = 0
                         img_abort_reason = ""
 
                         while img_rounds < IMG_MAX_ROUNDS:
@@ -1350,6 +1366,15 @@ class SiteOperator:
                             img_retry = 0
                             img_rounds += 1
                             img_msg = str(img_payload.get("msg", ""))
+                            if "完成" in img_msg:
+                                # 服务器明确返回「完成」：图片全部处理结束
+                                # （one_dimg.php 实测格式；无图可下时首轮即返回），
+                                # 服务器已自行跳过无法下载的图片
+                                img_done = True
+                                if progress_callback:
+                                    progress_callback(f"图片处理完成: 共{img_rounds}轮, "
+                                                      f"成功{img_ok_total}张, 失败{img_fail_total}次")
+                                break
                             m = IMG_PROGRESS_RE.search(img_msg)
                             if m is None:
                                 # 无法解析进度（接口报错/返回格式变化）：
@@ -1381,23 +1406,47 @@ class SiteOperator:
                                 progress_callback(f"图片处理: {img_msg}")
                             if ok_n > 0:
                                 img_stall_rounds = 0
+                                img_stall_fail_max = 0
                             else:
-                                # 本轮一张都没下图成功：剩余图片反复下载失败，
-                                # 继续轮询没有意义，达到阈值后终止并如实报告
+                                # 本轮一张都没下图成功：剩余图片反复下载失败
                                 img_stall_rounds += 1
+                                img_stall_fail_max = max(img_stall_fail_max, fail_n)
                                 if img_stall_rounds >= IMG_STALL_ROUNDS:
-                                    img_abort_reason = (f"连续 {img_stall_rounds} 轮下图无进展"
-                                                        f"（每轮成功0张, 最后失败{fail_n}张），"
-                                                        f"剩余图片反复下载失败")
+                                    # 反复重试后仍无进展：失败图片数不超过容忍
+                                    # 上限则跳过这些图片按成功返回（继续下一
+                                    # 步），超过容忍上限才返回失败
+                                    if (max_img_failures is not None
+                                            and img_stall_fail_max <= max_img_failures):
+                                        img_skipped = img_stall_fail_max
+                                        img_done = True
+                                        if progress_callback:
+                                            progress_callback(f"图片处理: 连续{img_stall_rounds}轮无进展，"
+                                                              f"跳过 {img_skipped} 张反复下载失败图片"
+                                                              f"（未超容忍上限 {max_img_failures}），继续下一步")
+                                        break
+                                    limit_note = (f"，超过容忍上限 {max_img_failures} 张"
+                                                  if max_img_failures is not None else "")
+                                    img_abort_reason = (f"连续 {img_stall_rounds} 轮下图无进展，"
+                                                        f"剩余 {img_stall_fail_max} 张图片反复下载失败{limit_note}")
                                     break
                             time.sleep(1)
                         else:
                             img_abort_reason = f"图片处理轮询达绝对上限 {IMG_MAX_ROUNDS} 轮仍未完成"
 
                         if img_done:
+                            # 下图阶段结束（服务器返回「完成」或「成功-0 失败-0」）。
+                            # 失败次数如实附在消息里（可能含后来重试成功的，也可能
+                            # 是服务器已跳过的失败图片）；停滞跳过时另行注明跳过数
+                            img_stats = f"图片成功{img_ok_total}张"
+                            if img_fail_total:
+                                img_stats += f", 失败{img_fail_total}次"
+                            if img_skipped:
+                                # 跳过了部分反复下载失败的图片（未超容忍上限），
+                                # 按成功返回继续执行下一步；这些图片保持未下载状态
+                                img_stats += f"/跳过{img_skipped}张反复失败图片(容忍≤{max_img_failures})"
                             return {"success": True,
                                     "message": (f"上传完成: 成功{success_count}, 失败{failure_count}, "
-                                                f"重复{repeat_count}, 图片成功{img_ok_total}张/失败{img_fail_total}张"),
+                                                f"重复{repeat_count}, {img_stats}"),
                                     "success_count": success_count, "failure_count": failure_count, "final_cs": "0"}
 
                         # 图片未下图完毕即中止：不能按成功返回（否则站点图片不全
@@ -1407,7 +1456,7 @@ class SiteOperator:
                             progress_callback(f"图片处理未完成: {img_abort_reason}")
                         log.error(f"[{domain}] 图片处理未完成: {img_abort_reason}")
                         return {"success": False,
-                                "message": (f"图片处理未完成（下图成功{img_ok_total}张, 失败{img_fail_total}张）: "
+                                "message": (f"图片处理未完成（下图成功{img_ok_total}张, 失败{img_fail_total}次）: "
                                             f"{img_abort_reason}；数据已上传，重新执行本步骤可继续下图剩余图片"),
                                 "success_count": success_count, "failure_count": failure_count, "final_cs": cs}
 

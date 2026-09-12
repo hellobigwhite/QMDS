@@ -155,6 +155,13 @@ IMAGE_MODELS = [
         "model_id": "doubao-seedream-4-5-251128",
         "label": "豆包 Seedream 4.5（火山方舟）",
         "desc": "火山方舟豆包文生图 4.5，需配置 ARK API Key",
+    },
+    {
+        "value": "Doubao-Seedream-5.0-pro",
+        "provider": "ark",
+        "model_id": "ep-20260912140936-6s7hv",
+        "label": "豆包 Seedream 5.0pro（火山方舟）",
+        "desc": "火山方舟豆包文生图 5.0pro，需配置 ARK API Key",
     }
 ]
 
@@ -206,6 +213,9 @@ DEFAULT_CONFIG = {
         "width": 200,   # 水印区域宽度（像素）
         "height": 60,   # 水印区域高度（像素）
     },
+    # 火山方舟是否走代理池。ark.cn-beijing.volces.com 是国内端点，
+    # 直连更快更稳；代理池里的海外代理反而容易连接失败。默认直连。
+    "ark_use_proxy": False,
 }
 
 
@@ -338,7 +348,10 @@ class ImageGenerator:
         import httpx
         proxy_dict = None
         proxy_url = None
-        if self.proxy_manager:
+        # 火山方舟为国内端点（ark.cn-beijing.volces.com），默认直连不走代理池；
+        # 海外代理访问国内端点反而易失败。配置 ark_use_proxy=True 可强制走代理。
+        use_proxy = bool(self.config.get("ark_use_proxy", False)) if self._provider == "ark" else True
+        if use_proxy and self.proxy_manager:
             proxy_dict = self.proxy_manager.get_proxy()
             if proxy_dict:
                 proxy_url = proxy_dict.get("http") or proxy_dict.get("https")
@@ -475,7 +488,8 @@ class ImageGenerator:
 
         本方法使用 AsyncOpenAI SDK 调用（base_url 指向 ark）。
         - 单 key（self.ark_api_key），不做 sticky key 轮换
-        - 仍走代理池（429/5xx/超时换代理）
+        - 默认直连（国内端点），配置 ark_use_proxy=True 时走代理池
+        - 429/5xx/超时/连接错误时重试（代理模式下换代理）
         - 400 类错误直接抛出
         """
         try:
@@ -527,17 +541,20 @@ class ImageGenerator:
                     log.error(f"火山方舟调用失败(不重试): {e}")
                     raise
 
-                # 429/5xx/超时：换proxy
+                # 429/5xx/超时/连接错误：换proxy重试（直连模式下仅重试）
                 if self._is_ip_ban_429(err_str):
                     if self.proxy_manager and proxy_dict:
                         self.proxy_manager.mark_bad_long(proxy_dict)
                     log.warning(f"IP级封锁429，代理 {proxy_label} 标记长期不可用(300s)，换代理重试: {err_str}")
-                else:
+                elif proxy_dict:
                     if self.proxy_manager and proxy_dict:
                         self.proxy_manager.mark_bad(proxy_dict)
                     log.warning(f"代理 {proxy_label} 报错，标记冷却60s，换代理重试: {err_str}")
+                else:
+                    log.warning(f"直连火山方舟失败，重试({proxy_attempts + 1}/{max_proxy_attempts}): {err_str}")
 
-                if self.proxy_manager and self.proxy_manager.available_count == 0:
+                # 仅在实际使用代理时才检查代理池是否耗尽
+                if proxy_dict and self.proxy_manager and self.proxy_manager.available_count == 0:
                     log.error("代理池已耗尽，无可用代理")
                     raise last_error
                 continue
