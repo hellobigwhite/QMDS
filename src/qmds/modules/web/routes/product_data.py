@@ -29,6 +29,7 @@ from qmds.modules.web.services.site_info_generator import (
     INFO_FILE_NAME,
     _write_info_excel,
     read_site_info_excel,
+    repair_row_major_category,
     run_batch_site_info_task,
 )
 from qmds.modules.web.services.site_review import (
@@ -891,7 +892,9 @@ def product_data_site_info_table():
         return jsonify({"ok": False, "error": f"读取 {INFO_FILE_NAME} 失败: {e}"})
 
     # 标记已应用审核的网站（数据表已加 data_ 前缀）+ 修复历史生成的主类目
-    # （还原为表格原始分类值，含 ||| 层级分隔符）
+    # （还原为表格原始分类值，含 ||| 层级分隔符）+ 补写网站大类
+    # （旧表没有该列；从数据表 自定义分类 列聚合，数据的自定义分类就是
+    # 网站的大类）
     # 定位：文件夹名列优先；未命中时回退用域名列（审核应用后文件夹
     # 已改名为域名，而 xlsx 行可能仍是旧文件夹名）
     repaired = 0
@@ -903,8 +906,9 @@ def product_data_site_info_table():
         if site_folder is not None:
             try:
                 repaired += 1 if repair_row_main_category(site_folder, row) else 0
+                repaired += 1 if repair_row_major_category(site_folder, row) else 0
             except Exception as e:
-                log.warning(f"修复主类目失败（{row.get('网站（文件夹）')}）: {e}")
+                log.warning(f"修复主类目/网站大类失败（{row.get('网站（文件夹）')}）: {e}")
 
     # 有修复时回写 网站信息.xlsx（表格被 Excel 占用等失败时仅本次显示生效）
     if repaired:

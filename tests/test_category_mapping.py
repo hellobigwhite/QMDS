@@ -79,11 +79,13 @@ def test_export_row_builds_cn_custom_category():
     assert _build_export_row(doc)["自定义分类"] == ""
 
 
-def test_export_row_fallback_to_collection_category():
-    """导出行构建：映射不出的 source_category 按所在集合大类映射，不透传英文
+def test_export_row_uniform_collection_category():
+    """导出行构建：自定义分类 = 集合大类（全表一致，一个网站只能有一个）
 
-    ERP 站群按站点中文分类树校验 自定义分类 列，英文原值会导致整表
-    上传失败（分类错了）。识别不出来的值一律回退到集合大类的中文名。
+    自定义分类的语义是网站大类（ERP 站群分类树的中文名）。同一份导出
+    数据分配出的网站，自定义分类 必须全表一致——一律取集合的一级分类，
+    不按各行 source_category 分别映射（否则脏值/跨类值会混进网站数据，
+    ERP 校验按站点分类树进行，混合值会导致整表上传失败）。
     """
     from qmds.db.product_db import _build_export_row
 
@@ -93,30 +95,17 @@ def test_export_row_fallback_to_collection_category():
         "source_domain": "example.com",
     }
 
-    # 未知的英文串（任何形态都查不到）-> 集合大类 animals_pet_supplies -> 动物
-    for unknown in ("mystery category", "some_unknown_value", "Animals & Pets"):
-        doc["source_category"] = unknown
-        row = _build_export_row(doc, fallback_category="animals_pet_supplies")
-        assert row["自定义分类"] == "动物", unknown
+    # 无论 source_category 是什么（标准/未知/空/其他大类），集合大类说了算
+    for src in ("animals pet supplies", "animals_pet_supplies", "mystery category",
+                "", "hardware", "arts entertainment"):
+        doc["source_category"] = src
+        row = _build_export_row(doc, collection_category="animals_pet_supplies")
+        assert row["自定义分类"] == "动物", src
 
-    # 空值同样按大类兜底（自定义分类 列始终有合法中文值）
-    doc["source_category"] = ""
-    assert _build_export_row(
-        doc, fallback_category="animals_pet_supplies")["自定义分类"] == "动物"
-
-    # 能识别的标准分类（即便不属于本集合大类）保持自身映射，不受兜底影响
-    doc["source_category"] = "hardware"
-    assert _build_export_row(
-        doc, fallback_category="animals_pet_supplies")["自定义分类"] == "五金"
-    doc["source_category"] = "arts entertainment"
-    assert _build_export_row(
-        doc, fallback_category="animals_pet_supplies")["自定义分类"] == "艺术与娱乐"
-
-    # 标准空格形式（本集合大类）正常映射，兜底不介入
-    doc["source_category"] = "animals pet supplies"
-    assert _build_export_row(
-        doc, fallback_category="animals_pet_supplies")["自定义分类"] == "动物"
-
-    # 其他大类的兜底同样生效
-    doc["source_category"] = "whatever"
-    assert _build_export_row(doc, fallback_category="hardware")["自定义分类"] == "五金"
+    # 其他集合大类同样全表一致
+    for src in ("hardware", "whatever", ""):
+        doc["source_category"] = src
+        assert _build_export_row(
+            doc, collection_category="hardware")["自定义分类"] == "五金"
+        assert _build_export_row(
+            doc, collection_category="arts_entertainment")["自定义分类"] == "艺术与娱乐"

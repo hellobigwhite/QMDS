@@ -136,7 +136,7 @@ EXPORT_COLUMNS = [
 
 
 def _build_export_row(doc: Dict[str, Any],
-                     fallback_category: str = "") -> Dict[str, Any]:
+                     collection_category: str = "") -> Dict[str, Any]:
     """将产品文档映射为 BB_Data_Tool 兼容的导出行
 
     映射规则（与 BB 清洗输出语义一致）：
@@ -146,18 +146,19 @@ def _build_export_row(doc: Dict[str, Any],
     - Categories     <- 分类
     - Images         <- 图片
     - cf_opingts     <- 变体
-    - 自定义分类      <- source_category 的英文简化名映射为中文一级分类名；
-                        映射不出来的（含空值）改为按 fallback_category
-                        （文档所在集合的一级分类）映射，保证该列始终是
-                        站群分类树认可的中文分类名，不透传英文原值
+    - 自定义分类      <- 网站大类 = 文档所在集合的一级分类（collection_category
+                        映射的中文名，如 动物/五金）。同一份导出数据分配出的
+                        网站自定义分类全表一致（一个网站的自定义分类只能有
+                        一个），不按各行 source_category 分别映射
     - 原站域名        <- source_domain
     - 分布网站识别    <- 固定 0
     - 语言           <- 固定 "en"
 
     Args:
         doc: 产品文档
-        fallback_category: 文档所在集合的一级分类（大类，如
-            animals_pet_supplies），source_category 无法映射时兜底
+        collection_category: 文档所在集合的一级分类（大类，如
+            animals_pet_supplies）；导出路径始终传入，直接调用（测试等）
+            未传时回退按 source_category 映射（旧行为）
     """
     from qmds.config.categories import get_cn_category_name
 
@@ -180,12 +181,13 @@ def _build_export_row(doc: Dict[str, Any],
 
     regular_price = max(_price_float(doc.get("原价")), _price_float(doc.get("折扣价")))
 
-    source_category = _as_str(doc.get("source_category"))
-    custom_category = get_cn_category_name(source_category) if source_category else ""
-    # 映射不出来的值（get_cn_category_name 原样返回 == 输入；空值返回 ""）
-    # -> 按所在集合的大类映射，避免英文原样透传进 自定义分类 列
-    if fallback_category and custom_category == source_category:
-        custom_category = get_cn_category_name(fallback_category)
+    if collection_category:
+        # 自定义分类 = 网站大类 = 集合的一级分类，全表一致
+        custom_category = get_cn_category_name(collection_category)
+    else:
+        source_category = _as_str(doc.get("source_category"))
+        custom_category = (get_cn_category_name(source_category)
+                           if source_category else "")
 
     return {
         "SKU": _as_str(doc.get("SKU")),
@@ -1341,9 +1343,9 @@ class ProductDBClient:
         exported_cat_processed = 0
         exported_optimized = 0
         for doc in products:
-            # 自定义分类 兜底：source_category 映射不出时按集合大类映射
+            # 自定义分类 = 网站大类 = 集合的一级分类（全表一致）
             row = _sanitize_export_row(
-                _build_export_row(doc, fallback_category=category))
+                _build_export_row(doc, collection_category=category))
             rows.append(row)
             if doc.get("category_process_status") == CATEGORY_STATUS_PROCESSED:
                 exported_cat_processed += 1
@@ -1452,9 +1454,9 @@ class ProductDBClient:
             cat_processed_cnt = 0
             optimized_cnt = 0
             for doc in docs:
-                # 自定义分类 兜底：source_category 映射不出时按集合大类映射
+                # 自定义分类 = 网站大类 = 集合的一级分类（全表一致）
                 row = _sanitize_export_row(
-                    _build_export_row(doc, fallback_category=category))
+                    _build_export_row(doc, collection_category=category))
                 all_rows.append(row)
                 if doc.get("category_process_status") == CATEGORY_STATUS_PROCESSED:
                     cat_processed_cnt += 1

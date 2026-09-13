@@ -74,10 +74,13 @@ except ImportError:
 
 # 网站信息输出表格（INFO_FILE_NAME = 网站信息.xlsx，从 category_stats 引入）
 # 的数据列：批量任务把所有网站汇总成一张表，每个网站一行。
+# 网站大类：该网站数据表「自定义分类」列的唯一值（数据的自定义分类就是
+# 网站的大类，即 ERP 站群分类树的中文名，如 动物/五金；一个网站只能有一个），
+# 见 resolve_site_major_category。
 # 主数据ID/补充数据ID：站群上传任务（site_uploader）把服务器返回的数据 ID
 # 按网站回写（各逗号分隔，主数据在前），供后续站群管理追溯数据分卷。
-INFO_COLUMNS = ("网站（文件夹）", "主类目", "域名", "标题", "描述", "主题", "地址",
-                "关键词", "产品数", "分类数", "模型", "生成时间",
+INFO_COLUMNS = ("网站（文件夹）", "主类目", "网站大类", "域名", "标题", "描述", "主题",
+                "地址", "关键词", "产品数", "分类数", "模型", "生成时间",
                 "主数据ID", "补充数据ID", "备注")
 
 # 输出 JSON 较短，4000 token 足够；重试时附加格式警告
@@ -307,6 +310,96 @@ def resolve_main_category(site_folder, categories) -> str:
         if any(n == key or n.startswith(f"{key}_part") for n in main_names):
             return cat
     return ""
+
+
+def resolve_site_major_category(site_folder, log_fn=None,
+                                stop_check=None) -> tuple:
+    """聚合网站数据表「自定义分类」列，得到网站大类
+
+    数据的自定义分类就是网站的大类（ERP 站群分类树的中文名，如 动物/五金）。
+    流式扫描该网站文件夹下所有数据表格（collect_stats_files 自动跳过
+    分类统计.xlsx / 网站信息.xlsx / ~$ 锁文件，兼容 data_ 前缀），按行数
+    聚合各自定义分类值；只读表头与该列，不加载整表。
+
+    Args:
+        site_folder: 网站数据文件夹（str/Path）
+        log_fn: 可选日志函数（单表读取失败时告警）
+        stop_check: 可选停止检查（返回 True 时抛 InterruptedError）
+
+    Returns:
+        (网站大类, 计数 dict)。网站大类为唯一值：正常情况一个网站的
+        数据全部来自同一份导出（自定义分类 全表一致），直接取该值；
+        出现多个值（历史英文透传残留等）时取行数最多者（行数相同取
+        字典序首位），调用方应通过日志告警。计数前各值先经
+        get_cn_category_name 映射（'animals pet supplies' 与 '动物'
+        合并计为 动物），避免同一大类的中英形态分裂成多值。
+        没有任何非空值时返回 ("", {})。
+    """
+    from openpyxl import load_workbook
+
+    from qmds.config.categories import get_cn_category_name
+
+    folder = Path(site_folder) if site_folder else None
+    if folder is None:
+        return "", {}
+    counts: dict = {}
+    for path in collect_stats_files(folder):
+        if stop_check is not None and stop_check():
+            raise InterruptedError()
+        try:
+            wb = load_workbook(winpath.long_path(path),
+                               read_only=True, data_only=True)
+        except Exception as e:
+            msg = f"[{folder.name}] 读取数据表失败，跳过（{path.name}）: {e}"
+            if log_fn:
+                log_fn(msg, "warning")
+            else:
+                log.warning(msg)
+            continue
+        try:
+            ws = wb.worksheets[0]
+            rows = ws.iter_rows(values_only=True)
+            header = next(rows, None)
+            header = list(header) if header else []
+            if "自定义分类" not in header:
+                continue  # 表中没有 自定义分类 列（旧格式数据），跳过
+            idx = header.index("自定义分类")
+            for row in rows:
+                if row is None:
+                    continue
+                val = row[idx] if idx < len(row) else None
+                sval = str(val).strip() if val is not None else ""
+                if sval:
+                    # 英文残留（旧版透传的 'animals pet supplies' 等）先映射
+                    # 为中文大类再计数，与中文值合并，避免分裂成多值
+                    key = get_cn_category_name(sval)
+                    counts[key] = counts.get(key, 0) + 1
+        finally:
+            wb.close()
+    if not counts:
+        return "", {}
+    # 一个网站的自定义分类只能有一个（同一份导出数据的分配，全表一致）；
+    # 出现多个值（历史残留）时取行数最多者，行数相同取字典序首位
+    ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return ordered[0][0], counts
+
+
+def repair_row_major_category(site_folder, row) -> bool:
+    """为网站信息行写入/刷新「网站大类」（聚合数据表 自定义分类 列）
+
+    旧版 网站信息.xlsx 没有网站大类列（读取时该列为空），从该网站的数据
+    表格聚合自定义分类值补写（数据的自定义分类就是网站的大类）。行已带
+    值但与当前聚合结果不同（如早期回填的混合值）时刷新为唯一值——该列
+    是派生数据，始终以数据表实际内容为准。
+    返回是否修改（无数据表/聚合为空/已一致时不修改）。
+    """
+    value, _counts = resolve_site_major_category(site_folder)
+    if not value:
+        return False
+    if str(row.get("网站大类") or "").strip() == value:
+        return False
+    row["网站大类"] = value
+    return True
 
 
 def _is_junk_category(name: str) -> bool:
@@ -632,6 +725,23 @@ def _process_site_folder(task_id: str, folder: Path, config: dict, api_key: str,
     main_cat = (resolve_main_category(folder, categories)
                 or _clean_main_category(folder.name))
 
+    # ── 网站大类：聚合数据表 自定义分类 列（数据的自定义分类就是网站的大类）──
+    major_cat, major_counts = resolve_site_major_category(
+        folder, log_fn=log_fn,
+        stop_check=lambda: task_manager.is_stopped(task_id))
+    if major_cat:
+        if len(major_counts) > 1:
+            # 一个网站的自定义分类只能有一个；多值说明数据表里有历史残留
+            detail = "，".join(f"{k}×{v}" for k, v in sorted(
+                major_counts.items(), key=lambda kv: (-kv[1], kv[0])))
+            log_fn(f"[{folder.name}] ⚠ 数据表 自定义分类 列存在多个值"
+                   f"（{detail}），网站大类取行数最多者: {major_cat}", "warning")
+        else:
+            log_fn(f"[{folder.name}] 网站大类: {major_cat}")
+    else:
+        log_fn(f"[{folder.name}] 未识别到网站大类（数据表 自定义分类 列均为空"
+               "或缺失）", "warning")
+
     # ── 创意方向（反模板化）：task_id 含时间戳，重跑批次方向组合会变化 ──
     direction = _site_creative_direction(f"{task_id}|{folder.name}|v{variant}")
 
@@ -656,6 +766,7 @@ def _process_site_folder(task_id: str, folder: Path, config: dict, api_key: str,
     row = {
         "网站（文件夹）": folder.name,
         "主类目": main_cat,
+        "网站大类": major_cat,
         "域名": info["domain"],
         "标题": info["title"],
         "描述": info["description"],
