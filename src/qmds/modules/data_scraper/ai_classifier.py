@@ -192,9 +192,9 @@ def _get_fallback_session() -> _requests.Session:
     return _fallback_session
 
 
-# 远程代理服务（第1级降级）
-_PROXY_SERVICE_URL = "http://66.154.112.62:8000/fetch"
-_PROXY_SERVICE_KEY = "change-me-please"
+# 远程代理服务（第1级降级）- 地址与 key 来自 settings（PROXY_SERVICE_URL / PROXY_SERVICE_KEY 可覆盖）
+_PROXY_SERVICE_URL = settings.proxy_service_url
+_PROXY_SERVICE_KEY = settings.proxy_service_key
 _PROXY_SERVICE_TIMEOUT = 60
 
 # 直连降级（第3级降级）- 限制并发避免本机 IP 被封

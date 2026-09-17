@@ -44,6 +44,10 @@ class Settings:
     # 代理文件
     proxies_file: Optional[Path] = None
 
+    # 远程代理服务（平台检测 meta.json 被拦截时的复检通道 / AI 抓取首页的第1级降级）
+    proxy_service_url: str = "http://66.154.112.62:8000/fetch"
+    proxy_service_key: str = "change-me-please"
+
     # 网站分类器
     niche_threshold: float = 0.7  # 主营类目占比阈值（≥此值为专一站）
 
@@ -113,6 +117,8 @@ class Settings:
                                            "https://agentrouter.org/v1"),
             agentrouter_model=os.getenv("AGENTROUTER_MODEL", ""),
             llm_model=os.getenv("LLM_MODEL", "mimo-v2.5"),
+            proxy_service_url=os.getenv("PROXY_SERVICE_URL", "http://66.154.112.62:8000/fetch"),
+            proxy_service_key=os.getenv("PROXY_SERVICE_KEY", "change-me-please"),
         )
 
 

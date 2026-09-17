@@ -11,6 +11,7 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
+from qmds.utils import cloudflare_client
 from qmds.utils.logger import get_logger
 
 log = get_logger("shopify_nav_parser")
@@ -65,12 +66,21 @@ def _extract_collection_handle(url: str) -> Optional[str]:
 
 def _fetch_soup(url: str, timeout: int = 15) -> Optional[BeautifulSoup]:
     headers = {"User-Agent": random.choice(USER_AGENTS)}
+    response = None
     try:
-        resp = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
-        if resp.status_code == 200:
-            return BeautifulSoup(resp.text, "html.parser")
+        response = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+        if response.status_code == 200:
+            return BeautifulSoup(response.text, "html.parser")
     except Exception as exc:
         log.warning(f"导航解析请求失败 {url}: {exc}")
+
+    # 被 Cloudflare 挑战拦截（403/429/5xx）或连接失败时，用 cloudscraper 兜底
+    blocked = response is None or response.status_code in (403, 429) or response.status_code >= 500
+    if blocked:
+        fallback = cloudflare_client.get(url, timeout=timeout)
+        if fallback is not None and fallback.status_code == 200 and fallback.text:
+            log.info(f"cloudscraper 兜底解析导航: {url}")
+            return BeautifulSoup(fallback.text, "html.parser")
     return None
 
 

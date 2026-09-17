@@ -272,41 +272,9 @@ class DataScraperModule:
         cleaned_urls, url_map = filter_urls(all_raw_urls)
         log.info(f"清洗去重后剩余 {len(cleaned_urls)} 个 URL，启动平台检测（{workers} 线程）")
 
-        # 多线程平台检测
-        detector = PlatformDetector(proxy_manager=self.http.proxy_manager)
-        detection_results: dict[str, dict] = {}
-        not_shopify_count = 0
-
-        def _detect_single(url: str) -> tuple[str, Optional[dict]]:
-            detect_url = url_map.get(url) or url
-            try:
-                result = detector.detect(detect_url, url_map=url_map)
-                if result and result.platform.value == "shopify":
-                    return url, {
-                        "platform": "Shopify",
-                        "product_count": result.product_count,
-                        "store_name": result.store_name,
-                        "currency": result.currency,
-                    }
-                return url, None
-            except Exception as e:
-                log.debug(f"检测失败 {url}: {e}")
-                return url, None
-
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {executor.submit(_detect_single, url): url for url in cleaned_urls}
-            done_count = 0
-            total_count = len(futures)
-            for future in as_completed(futures):
-                done_count += 1
-                url, result = future.result()
-                if result:
-                    detection_results[url] = result
-                    domain = extract_domain(url)
-                    log.info(f"[{done_count}/{total_count}] Shopify: {domain} ({result['product_count']} 商品)")
-                else:
-                    not_shopify_count += 1
-                    log.info(f"[{done_count}/{total_count}] 非 Shopify: {extract_domain(url)}")
+        # 多线程平台检测（含二轮复检，与 fetch_shopify_urls_by_keyword 共用同一逻辑）
+        detection_results = self._detect_platforms(cleaned_urls, url_map, workers)
+        not_shopify_count = len(cleaned_urls) - len(detection_results)
 
         # 构建最终结果（仅保留 Shopify 店铺）
         stores = []
@@ -722,7 +690,10 @@ class DataScraperModule:
                 # 二轮仍不确定则按非 Shopify 定案
                 outcomes[u] = None if o == INCONCLUSIVE else o
             recovered = sum(1 for o in retry_outcomes.values() if isinstance(o, dict))
+            still_inconclusive = sum(1 for o in retry_outcomes.values() if o == INCONCLUSIVE)
             log.info(f"二轮复检完成: 新增 Shopify {recovered} 个")
+            if still_inconclusive:
+                log.warning(f"二轮复检后仍有 {still_inconclusive} 个 URL 被拦截无法确认，本次按非 Shopify 跳过")
 
         for url, outcome in outcomes.items():
             if isinstance(outcome, dict):

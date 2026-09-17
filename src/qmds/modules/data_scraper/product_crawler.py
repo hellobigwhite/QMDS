@@ -11,12 +11,15 @@ from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import requests
+from requests.adapters import HTTPAdapter
 
 from qmds.config import settings
 from qmds.config.categories import normalize_subcategory
 from qmds.db.mongodb import MongoDBClient
 from qmds.db.product_db import ProductDBClient
+from qmds.modules.data_scraper import sitemap_fetcher
 from qmds.modules.data_scraper.shopify_nav_parser import parse_navigation
+from qmds.utils import cloudflare_client
 from qmds.utils.logger import get_logger
 from qmds.utils.proxy_manager import ProxyManager
 
@@ -28,6 +31,13 @@ MAX_PAGE_LIMIT = 100
 MAX_EMPTY_PAGES = 5
 PAGE_SLEEP_RANGE = (1.5, 3.5)
 SITE_COOLDOWN_RANGE = (6, 12)
+
+# ── Sitemap 兜底通道配置 ──────────────────────────────────
+# products.json 与 meta.json 的商品数上限：达到该值说明分页接口已无法
+# 覆盖全店商品（250 条/页 × 100 页），必须改用 sitemap 通道枚举商品。
+PRODUCTS_JSON_MAX_PRODUCTS = 25000
+# sitemap 通道逐商品取数时的并发数（每个商品一次请求，远高于分页模式）
+SITEMAP_FETCH_WORKERS = 8
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
@@ -108,43 +118,124 @@ def extract_prices(variants):
 
 
 class ProxyServiceClient:
-    """代理服务客户端 - 通过代理服务接口请求目标URL"""
+    """代理服务客户端 - 通过代理服务接口请求目标URL
 
-    BASE_URL = "http://66.154.112.62:8000/fetch"
-    API_KEY = "change-me-please"
+    地址与 key 来自 settings（环境变量 PROXY_SERVICE_URL / PROXY_SERVICE_KEY 可覆盖）。
+
+    内置熔断：连续失败达到阈值后进入冷却期，期间所有 fetch/fetch_bytes 立即返回
+    STATUS_SKIPPED 而不再等待 90 秒超时。sitemap 通道逐商品发起请求，没有熔断
+    会让整站耗时不可接受。
+    """
+
     TIMEOUT = 90
+    # 熔断中未发起请求的返回码（区别于 HTTP 状态码，调用方据此跳过退避等待）
+    STATUS_SKIPPED = -1
+
+    FAILURE_THRESHOLD = 3
+    COOLDOWN = 180.0
 
     def __init__(self):
+        self.base_url = settings.proxy_service_url
+        self.api_key = settings.proxy_service_key
         self._success = 0
         self._failure = 0
+        # 熔断状态
+        self._consecutive_failures = 0
+        self._down_until = 0.0
+        self._lock = threading.Lock()
+        self._last_stats_log = 0.0
 
-    def fetch(self, target_url: str) -> Tuple[Optional[dict], int]:
-        """通过代理服务请求目标URL"""
-        params = {"key": self.API_KEY, "url": target_url}
+    @property
+    def available(self) -> bool:
+        """熔断冷却是否已结束"""
+        return time.time() >= self._down_until
+
+    @staticmethod
+    def _is_service_level_failure(status: int) -> bool:
+        """判断是否属于代理服务自身的故障
+
+        0=超时/异常，5xx=服务端故障，403/429=服务限流，这些才计入熔断；
+        404/401 等是目标站点的响应，不应拖垮代理服务本身。
+        """
+        return status == 0 or status >= 500 or status in (403, 429)
+
+    def _record_failure(self, breaker: bool = True):
+        with self._lock:
+            self._failure += 1
+            if not breaker:
+                return
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self.FAILURE_THRESHOLD and time.time() >= self._down_until:
+                self._down_until = time.time() + self.COOLDOWN
+                log.warning(
+                    f"代理服务连续失败 {self._consecutive_failures} 次，熔断 {self.COOLDOWN:.0f} 秒"
+                )
+
+    def _record_success(self):
+        with self._lock:
+            self._success += 1
+            self._consecutive_failures = 0
+
+    def _get(self, target_url: str, timeout: Optional[int] = None) -> Tuple[Optional[requests.Response], int]:
+        """发起一次代理服务请求，返回 (响应, 状态码)；STATUS_SKIPPED 表示熔断中未发起"""
+        if not self.available:
+            return None, self.STATUS_SKIPPED
+        effective_timeout = timeout or self.TIMEOUT
+        params = {"key": self.api_key, "url": target_url}
         try:
-            resp = requests.get(self.BASE_URL, params=params, timeout=self.TIMEOUT)
-            if resp.status_code == 200:
-                ct = resp.headers.get("Content-Type", "")
-                if "json" in ct.lower():
-                    self._success += 1
-                    return resp.json(), 200
-            self._failure += 1
-            log.warning(f"代理服务请求失败 {target_url} | HTTP {resp.status_code}")
-            return None, resp.status_code
+            resp = requests.get(self.base_url, params=params, timeout=effective_timeout)
+            return resp, resp.status_code
         except requests.exceptions.Timeout:
-            self._failure += 1
-            log.warning(f"代理服务超时 {target_url} | timeout={self.TIMEOUT}s")
+            self._record_failure()
+            log.warning(f"代理服务超时 {target_url} | timeout={effective_timeout}s")
             return None, 0
         except Exception as e:
-            self._failure += 1
+            self._record_failure()
             log.warning(f"代理服务异常 {target_url}: {type(e).__name__}: {e}")
             return None, 0
 
-    def log_stats(self):
-        """输出统计信息"""
-        total = self._success + self._failure
-        rate = (self._success / total * 100) if total > 0 else 0
-        log.info(f"代理服务统计: 成功={self._success}, 失败={self._failure}, 成功率={rate:.1f}%")
+    def fetch(self, target_url: str) -> Tuple[Optional[dict], int]:
+        """通过代理服务请求目标URL（期望 JSON 响应）"""
+        resp, status = self._get(target_url)
+        if resp is None:
+            return None, status
+        if status == 200:
+            ct = resp.headers.get("Content-Type", "")
+            if "json" in ct.lower():
+                try:
+                    data = resp.json()
+                except ValueError:
+                    self._record_failure()
+                    log.warning(f"代理服务返回的 JSON 无法解析 {target_url}")
+                    return None, status
+                self._record_success()
+                return data, 200
+        self._record_failure(breaker=self._is_service_level_failure(status))
+        log.warning(f"代理服务请求失败 {target_url} | HTTP {status}")
+        return None, status
+
+    def fetch_bytes(self, target_url: str, timeout: Optional[int] = None) -> Tuple[Optional[bytes], int]:
+        """通过代理服务获取原始响应体（sitemap XML 等非 JSON 目标）"""
+        resp, status = self._get(target_url, timeout=timeout)
+        if resp is None:
+            return None, status
+        if status == 200 and resp.content:
+            self._record_success()
+            return resp.content, 200
+        self._record_failure(breaker=self._is_service_level_failure(status))
+        log.warning(f"代理服务获取原始内容失败 {target_url} | HTTP {status}")
+        return None, status
+
+    def log_stats(self, force: bool = False, min_interval: float = 60.0):
+        """输出统计信息（按时间节流，避免逐商品请求时刷屏）"""
+        now = time.time()
+        with self._lock:
+            if not force and now - self._last_stats_log < min_interval:
+                return
+            self._last_stats_log = now
+            total = self._success + self._failure
+            rate = (self._success / total * 100) if total > 0 else 0
+            log.info(f"代理服务统计: 成功={self._success}, 失败={self._failure}, 成功率={rate:.1f}%")
 
 
 class ProductCrawler:
@@ -153,6 +244,10 @@ class ProductCrawler:
     def __init__(self, currency_map: Dict[str, float], proxy_manager=None):
         self.currency_map = currency_map
         self.session = requests.Session()
+        # sitemap 通道会并发发起请求，放大连接池避免 "Connection pool is full" 告警
+        adapter = HTTPAdapter(pool_connections=16, pool_maxsize=16)
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
         self.session.headers.update({
             "User-Agent": random.choice(USER_AGENTS),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
@@ -174,7 +269,7 @@ class ProductCrawler:
     
     def close(self):
         """关闭会话释放资源"""
-        self.proxy_service.log_stats()
+        self.proxy_service.log_stats(force=True)
         if self.session:
             self.session.close()
     
@@ -190,17 +285,21 @@ class ProductCrawler:
             self.proxy_manager.mark_bad(proxy_dict, cooldown=cooldown)
     
     def fetch_json(self, url: str, timeout: int = REQUEST_TIMEOUT) -> Tuple[Optional[dict], int]:
-        """获取JSON数据（优先代理服务 → 本地代理池 → 直连降级）"""
+        """获取JSON数据
+
+        降级链：代理服务 → 本地代理池(3次) → 直连(仅429) → cloudscraper 兜底
+        """
         # 第一步：优先使用代理服务
         data, status = self.proxy_service.fetch(url)
-        self.proxy_service.log_stats()
         if status == 200 and data:
             return data, status
-        # 代理服务失败后等待3秒，避免触发频率限制
-        time.sleep(3)
+        # 代理服务失败后等待3秒，避免触发频率限制（熔断中未发起请求则无需等待）
+        if status != ProxyServiceClient.STATUS_SKIPPED:
+            time.sleep(3)
 
         # 第二步：降级到本地代理池（3次尝试）
         last_status = 0
+        cloudflare_blocked = False
         for attempt in range(3):
             proxy = self.get_next_proxy()
             try:
@@ -218,7 +317,10 @@ class ProductCrawler:
                         log.warning(f"429限流 {url} | 已尝试{attempt+1}个代理均被限流 | body={body}")
                     elif status in (403, 401):
                         log.warning(f"{status}拒绝 {url} | proxy={proxy}")
-                        return None, status
+                        last_status = status
+                        # 403 多为 Cloudflare 挑战页，交由第四步 cloudscraper 兜底
+                        cloudflare_blocked = status == 403
+                        break
                     else:
                         log.warning(f"HTTP {status} {url} | proxy={proxy} | body={body}")
                         return None, status
@@ -263,21 +365,298 @@ class ProductCrawler:
                     if "json" in ct.lower():
                         return response.json(), 200
                 log.warning(f"直连降级失败 {url} | HTTP {response.status_code}")
-                return None, response.status_code
             except Exception as e:
                 log.warning(f"直连降级失败 {url} | {type(e).__name__}: {e}")
-                return None, 0
+
+        # 第四步：cloudscraper 兜底（Cloudflare JS 挑战 / 代理通道全部被拒）
+        if cloudflare_blocked or last_status in (429, 0):
+            data = self._fetch_json_via_cloudscraper(url, timeout)
+            if data is not None:
+                return data, 200
 
         return None, last_status
-    
-    def fetch_currency(self, url: str) -> str:
-        """获取货币类型"""
+
+    def _fetch_json_via_cloudscraper(self, url: str, timeout: int = REQUEST_TIMEOUT) -> Optional[dict]:
+        """用 cloudscraper 直连兜底，绕过 Cloudflare 的 JS 挑战"""
+        if not cloudflare_client.is_available():
+            return None
+        response = cloudflare_client.get(url, timeout=timeout)
+        if response is None:
+            return None
+        ct = response.headers.get("Content-Type", "")
+        if response.status_code == 200 and "json" in ct.lower():
+            try:
+                data = response.json()
+            except ValueError:
+                log.warning(f"cloudscraper 响应无法解析为 JSON {url}")
+                return None
+            if isinstance(data, dict):
+                log.info(f"cloudscraper 兜底成功: {url}")
+                return data
+        log.debug(f"cloudscraper 兜底未命中 {url} | HTTP {response.status_code}")
+        return None
+
+    def fetch_bytes(self, url: str, timeout: int = REQUEST_TIMEOUT) -> Optional[bytes]:
+        """获取原始字节（sitemap XML 等非 JSON 目标）
+
+        顺序：cloudscraper 直连 → 代理服务 → 本地代理池。
+        sitemap 是静态文件，直连优先，可省去代理服务的额外一跳。
+        """
+        # 1. cloudscraper 直连（同时可绕 Cloudflare）
+        response = cloudflare_client.get(url, timeout=timeout)
+        if response is not None and response.status_code == 200 and response.content:
+            return response.content
+
+        # 2. 代理服务
+        content, status = self.proxy_service.fetch_bytes(url, timeout=timeout)
+        if status == 200 and content:
+            return content
+
+        # 3. 本地代理池
+        if self.proxy_manager:
+            proxy = self.get_next_proxy()
+            try:
+                response = self.session.get(url, timeout=timeout, proxies=proxy)
+                if response.status_code == 200 and response.content:
+                    return response.content
+                log.warning(f"sitemap 获取失败 {url} | HTTP {response.status_code} | proxy={proxy}")
+            except Exception as e:
+                self.mark_proxy_bad(proxy, cooldown=60.0)
+                log.warning(f"sitemap 获取异常 {url} | {type(e).__name__}: {e}")
+        return None
+
+    def fetch_text(self, url: str, timeout: int = REQUEST_TIMEOUT) -> str:
+        """获取文本内容（商品页 HTML 等）"""
+        content = self.fetch_bytes(url, timeout=timeout)
+        if not content:
+            return ""
+        try:
+            return content.decode("utf-8", errors="replace")
+        except Exception:
+            return ""
+
+    def fetch_meta(self, url: str) -> Optional[dict]:
+        """获取 Shopify /meta.json 原始内容（同时给出货币与商品总数）"""
         meta_url = f"{normalize_url(url)}/meta.json"
         data, status = self.fetch_json(meta_url, timeout=15)
         if status == 200 and isinstance(data, dict):
-            currency = data.get("currency", "USD")
+            return data
+        return None
+    
+    def fetch_currency(self, url: str) -> str:
+        """获取货币类型"""
+        meta = self.fetch_meta(url)
+        if meta:
+            currency = meta.get("currency", "USD")
             return str(currency).upper() if currency else "USD"
         return ""
+
+    @staticmethod
+    def _published_product_count(meta: Optional[dict]) -> int:
+        """读取 meta.json 中的全店商品数，缺失/非法时返回 0"""
+        if not isinstance(meta, dict):
+            return 0
+        try:
+            return int(meta.get("published_products_count") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def parse_product_record(self, product: dict, *, rate: float, currency: str, url: str,
+                             domain: str, category_label: Optional[str], category_fallback: str,
+                             source_category: str, subcategory_norm: str) -> Optional[Dict]:
+        """把 Shopify 商品对象转成入库记录
+
+        products.json 分页、导航集合、sitemap 三条通道共用同一套字段映射与过滤
+        规则，保证不同通道产出的数据完全一致。
+
+        Args:
+            category_label: 分类名优先值（导航模式的 level2）；None 时取 product_type
+            category_fallback: 分类名兜底值（一级分类名）
+
+        Returns:
+            记录字典；不符合过滤条件时返回 None
+        """
+        if not isinstance(product, dict):
+            return None
+
+        title = str(product.get("title") or "").strip()
+        desc = str(product.get("body_html") or "").strip()
+        if not title or not desc:
+            return None
+
+        image = extract_images(product.get("images", []) or [])
+        if not image:
+            return None
+
+        variants = product.get("variants", []) or []
+        sku, variant_str = extract_variant_info(variants, product.get("options", []) or [])
+        compare_at_price, price = extract_prices(variants)
+        original_price = convert_price(compare_at_price, rate)
+        discount_price = convert_price(price, rate)
+        price_value = discount_price if discount_price != "" else original_price
+        if price_value == "" or float(price_value) < 1:
+            return None
+
+        product_type = str(product.get("product_type") or "").strip()
+        return {
+            "product_id": str(product.get("id") or "").strip(),
+            "SKU": sku,
+            "标题": title,
+            "描述": desc,
+            "子描述": "",
+            "图片": image,
+            "原价": str(original_price) if original_price != "" else "",
+            "折扣价": discount_price,
+            "变体": variant_str,
+            "分类": category_label or product_type or category_fallback,
+            "currency": currency,
+            "source_url": url,
+            "source_domain": domain,
+            "source_category": source_category,
+            "source_subcategory": subcategory_norm,
+            "crawl_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "unique_key": product_unique_key(title),
+        }
+
+    # ── Sitemap 兜底通道 ──────────────────────────────────
+
+    def crawl_site_via_sitemap(self, url: str, category: str, currency: str, rate: float,
+                               progress_callback=None, stop_event: threading.Event = None,
+                               subcategory: str = "", reason: str = "") -> Dict:
+        """Sitemap 兜底通道：从 /sitemap.xml 枚举商品链接并逐个取数
+
+        仅在 products.json 不可用（被禁用/无响应）或全店商品数达到
+        products.json 上限（25000）时启用，其余情况仍走 products.json 分页通道。
+
+        Args:
+            currency: 已由 meta.json 确认的货币
+            rate: 该货币对 USD 的汇率
+            reason: 触发兜底的原因（用于日志与进度展示）
+        """
+        url = normalize_url(url)
+        domain = get_domain(url)
+        subcategory_norm = normalize_subcategory(subcategory)
+
+        def _progress(message: str):
+            if progress_callback:
+                progress_callback(message)
+
+        try:
+            log.info(f"[{domain}] 启用 sitemap 兜底通道（{reason}）")
+            _progress(f"[{domain}] sitemap 兜底通道（{reason}）")
+
+            product_urls = sitemap_fetcher.collect_product_urls(
+                url, self.fetch_bytes, stop_event=stop_event, progress_callback=_progress
+            )
+            if not product_urls:
+                log.warning(f"[{domain}] sitemap 未发现商品链接")
+                return {"success": False, "products": [], "count": 0,
+                        "error": "sitemap 未发现商品链接", "crawl_mode": "sitemap"}
+
+            total_urls = len(product_urls)
+            _progress(f"[{domain}] sitemap 发现 {total_urls} 个商品，开始取数")
+
+            all_products: List[dict] = []
+            seen_unique_keys = set()
+            done_count = 0
+            failed_count = 0
+
+            # 先探测一次 .json 端点：被禁用时全部改走商品页 JSON-LD，
+            # 避免每个商品都白等一轮失败重试
+            prefer_jsonld = False
+            if stop_event is None or not stop_event.is_set():
+                prefer_jsonld = self._json_endpoint_blocked(product_urls[0])
+
+            workers = max(1, min(SITEMAP_FETCH_WORKERS, total_urls))
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="sitemap_fetch") as executor:
+                futures = {
+                    executor.submit(self._fetch_sitemap_product, pu, prefer_jsonld): pu
+                    for pu in product_urls
+                }
+                for future in as_completed(futures):
+                    if stop_event is not None and stop_event.is_set():
+                        log.info(f"[{domain}] 收到停止信号，已取 {len(all_products)} 件")
+                        break
+                    done_count += 1
+                    try:
+                        product = future.result()
+                    except Exception:
+                        product = None
+                    if product is None:
+                        failed_count += 1
+                        continue
+
+                    record = self.parse_product_record(
+                        product, rate=rate, currency=currency, url=url, domain=domain,
+                        category_label=None, category_fallback=category,
+                        source_category=category, subcategory_norm=subcategory_norm,
+                    )
+                    if record is None:
+                        continue
+                    if record["unique_key"] in seen_unique_keys:
+                        continue
+                    seen_unique_keys.add(record["unique_key"])
+                    all_products.append(record)
+                    if len(all_products) % 200 == 0:
+                        _progress(
+                            f"[{domain}] sitemap 已取 {len(all_products)} 件"
+                            f"（进度 {done_count}/{total_urls}）"
+                        )
+
+            # 全部商品链接都取数失败：属于通道失败而非"无有效商品"，
+            # 否则会以 success=True 把站点标记为已爬取，永久丢失
+            if not all_products and failed_count == total_urls:
+                log.warning(f"[{domain}] sitemap 通道 {total_urls} 个商品全部取数失败")
+                return {"success": False, "products": [], "count": 0,
+                        "error": "sitemap 商品取数全部失败", "crawl_mode": "sitemap"}
+
+            log.info(f"[{domain}] sitemap 通道完成: {len(all_products)}/{total_urls} 件有效商品")
+            _progress(f"[{domain}] sitemap 完成: {len(all_products)} 件")
+            return {
+                "success": True,
+                "products": all_products,
+                "count": len(all_products),
+                "domain": domain,
+                "currency": currency,
+                "crawl_mode": "sitemap",
+            }
+        except Exception as e:
+            log.error(f"[{domain}] sitemap 通道异常: {e}")
+            return {"success": False, "products": [], "count": 0,
+                    "error": str(e), "crawl_mode": "sitemap"}
+
+    def _fetch_sitemap_product(self, product_url: str, prefer_jsonld: bool = False) -> Optional[dict]:
+        """取单个商品的数据
+
+        顺序：<商品链接>.json → 商品页 JSON-LD 兜底。
+        部分店铺会同时禁用 /products.json 与 /products/<handle>.json，
+        此时只能从商品页内嵌的 JSON-LD 取数。
+
+        Args:
+            prefer_jsonld: 已探测到 .json 端点被禁用，直接走商品页解析
+        """
+        if not prefer_jsonld:
+            data, _status = self.fetch_json(product_url.rstrip("/") + ".json", timeout=REQUEST_TIMEOUT)
+            if isinstance(data, dict):
+                product = data.get("product")
+                if isinstance(product, dict):
+                    return product
+                # 少数主题直接返回商品对象本身
+                if data.get("title"):
+                    return data
+
+        html = self.fetch_text(product_url)
+        if html:
+            return sitemap_fetcher.extract_jsonld_product(html)
+        return None
+
+    def _json_endpoint_blocked(self, product_url: str) -> bool:
+        """探测单个商品的 .json 端点是否被禁用"""
+        data, status = self.fetch_json(product_url.rstrip("/") + ".json", timeout=REQUEST_TIMEOUT)
+        blocked = not (isinstance(data, dict) and (data.get("product") or data.get("title")))
+        if blocked:
+            log.info(f".json 端点不可用（HTTP {status}），改从商品页 JSON-LD 取数: {product_url}")
+        return blocked
     
     def crawl_site(self, url: str, category: str, progress_callback=None,
                    stop_event: threading.Event = None, subcategory: str = "") -> Dict:
@@ -291,7 +670,13 @@ class ProductCrawler:
             subcategory: 二级分类名称（空字符串归入 "other"）
             
         Returns:
-            {"success": bool, "products": list, "count": int}
+            {"success": bool, "products": list, "count": int,
+             "crawl_mode": "sitemap"(仅兜底通道)}
+
+        通道选择：
+            - meta.json 商品数达到 products.json 上限 → sitemap 兜底
+            - products.json 不可用（403/非 JSON/无响应）→ sitemap 兜底
+            - 其余情况 → products.json 分页（含导航集合分页）
         """
         url = normalize_url(url)
         domain = get_domain(url)
@@ -304,16 +689,28 @@ class ProductCrawler:
             # 获取货币
             if progress_callback:
                 progress_callback(f"[{domain}] 获取货币...")
-            currency = self.fetch_currency(url)
-            if not currency:
+            meta = self.fetch_meta(url)
+            if not meta:
                 log.warning(f"[{domain}] 非 Shopify 站点（meta.json 无响应）")
                 return {"success": False, "products": [], "count": 0, "error": "非 Shopify 站点"}
+
+            currency = str(meta.get("currency") or "USD").upper()
             
             rate = self.currency_map.get(currency)
             if rate is None:
                 log.warning(f"[{domain}] 未找到汇率: {currency}")
                 return {"success": False, "products": [], "count": 0, "error": f"无汇率配置: {currency}"}
             
+            # 全店商品数达到 products.json 上限时，分页接口最多只能覆盖
+            # 200×MAX_PAGE_LIMIT 条，必然截断，直接改走 sitemap 通道
+            published_count = self._published_product_count(meta)
+            if published_count >= PRODUCTS_JSON_MAX_PRODUCTS:
+                return self.crawl_site_via_sitemap(
+                    url, category, currency, rate, progress_callback,
+                    stop_event=stop_event, subcategory=subcategory,
+                    reason=f"商品数 {published_count} 达到 products.json 上限 {PRODUCTS_JSON_MAX_PRODUCTS}",
+                )
+
             if progress_callback:
                 progress_callback(f"[{domain}] 汇率 OK: {currency}，开始爬取商品")
             
@@ -322,8 +719,12 @@ class ProductCrawler:
             probe_data, probe_code = self.fetch_json(probe_url, timeout=15)
             
             if probe_code != 200 or not isinstance(probe_data, dict):
-                log.warning(f"[{domain}] products.json 无响应")
-                return {"success": False, "products": [], "count": 0, "error": "products.json 无响应"}
+                log.warning(f"[{domain}] products.json 不可用，改用 sitemap 兜底通道")
+                return self.crawl_site_via_sitemap(
+                    url, category, currency, rate, progress_callback,
+                    stop_event=stop_event, subcategory=subcategory,
+                    reason=f"products.json 不可用 (HTTP {probe_code})",
+                )
             
             products_count = len(probe_data.get("products", []))
             if products_count == 0:
@@ -364,57 +765,17 @@ class ProductCrawler:
                 page_products = []
                 
                 for product in products:
-                    if not isinstance(product, dict):
+                    record = self.parse_product_record(
+                        product, rate=rate, currency=currency, url=url, domain=domain,
+                        category_label=None, category_fallback=category,
+                        source_category=category, subcategory_norm=subcategory_norm,
+                    )
+                    if record is None:
                         continue
-                    
-                    title = str(product.get("title") or "").strip()
-                    desc = str(product.get("body_html") or "").strip()
-                    if not title or not desc:
+                    if record["unique_key"] in seen_unique_keys:
                         continue
-                    
-                    images = product.get("images", []) or []
-                    variants = product.get("variants", []) or []
-                    options = product.get("options", []) or []
-                    product_type = str(product.get("product_type") or "").strip()
-                    
-                    image = extract_images(images)
-                    if not image:
-                        continue
-                    sku, variant_str = extract_variant_info(variants, options)
-                    compare_at_price, price = extract_prices(variants)
-                    original_price = convert_price(compare_at_price, rate)
-                    discount_price = convert_price(price, rate)
-                    price_value = discount_price if discount_price != "" else original_price
-                    
-                    if price_value == "" or float(price_value) < 1:
-                        continue
-                    
-                    product_id = str(product.get("id") or "").strip()
-                    unique_key = product_unique_key(title)
-                    
-                    if unique_key in seen_unique_keys:
-                        continue
-                    seen_unique_keys.add(unique_key)
-                    
-                    page_products.append({
-                        "product_id": product_id,
-                        "SKU": sku,
-                        "标题": title,
-                        "描述": desc,
-                        "子描述": "",
-                        "图片": image,
-                        "原价": str(original_price) if original_price != "" else "",
-                        "折扣价": discount_price,
-                        "变体": variant_str,
-                        "分类": product_type if product_type else category,
-                        "currency": currency,
-                        "source_url": url,
-                        "source_domain": domain,
-                        "source_category": category,
-                        "source_subcategory": subcategory_norm,
-                        "crawl_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "unique_key": unique_key,
-                    })
+                    seen_unique_keys.add(record["unique_key"])
+                    page_products.append(record)
                 
                 all_products.extend(page_products)
 
@@ -541,57 +902,18 @@ class ProductCrawler:
                     page_products = []
 
                     for product in products:
-                        if not isinstance(product, dict):
+                        record = self.parse_product_record(
+                            product, rate=rate, currency=currency, url=url, domain=domain,
+                            category_label=level2 or None, category_fallback=category,
+                            source_category=level1,
+                            subcategory_norm=override_sub or normalize_subcategory(level2),
+                        )
+                        if record is None:
                             continue
-
-                        title = str(product.get("title") or "").strip()
-                        desc = str(product.get("body_html") or "").strip()
-                        if not title or not desc:
+                        if record["unique_key"] in seen_unique_keys:
                             continue
-
-                        images = product.get("images", []) or []
-                        variants = product.get("variants", []) or []
-                        options = product.get("options", []) or []
-                        product_type = str(product.get("product_type") or "").strip()
-
-                        image = extract_images(images)
-                        if not image:
-                            continue
-                        sku, variant_str = extract_variant_info(variants, options)
-                        compare_at_price, price = extract_prices(variants)
-                        original_price = convert_price(compare_at_price, rate)
-                        discount_price = convert_price(price, rate)
-                        price_value = discount_price if discount_price != "" else original_price
-
-                        if price_value == "" or float(price_value) < 1:
-                            continue
-
-                        product_id = str(product.get("id") or "").strip()
-                        unique_key = product_unique_key(title)
-
-                        if unique_key in seen_unique_keys:
-                            continue
-                        seen_unique_keys.add(unique_key)
-
-                        page_products.append({
-                            "product_id": product_id,
-                            "SKU": sku,
-                            "标题": title,
-                            "描述": desc,
-                            "子描述": "",
-                            "图片": image,
-                            "原价": str(original_price) if original_price != "" else "",
-                            "折扣价": discount_price,
-                            "变体": variant_str,
-                            "分类": level2 if level2 else (product_type if product_type else category),
-                            "currency": currency,
-                            "source_url": url,
-                            "source_domain": domain,
-                            "source_category": level1,
-                            "source_subcategory": override_sub if override_sub else normalize_subcategory(level2),
-                            "crawl_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "unique_key": unique_key,
-                        })
+                        seen_unique_keys.add(record["unique_key"])
+                        page_products.append(record)
 
                     all_products.extend(page_products)
                     collection_saved += len(page_products)

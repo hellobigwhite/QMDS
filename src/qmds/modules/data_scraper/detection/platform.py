@@ -15,6 +15,7 @@ import requests
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from qmds.modules.data_scraper.models.schemas import Platform
+from qmds.utils import cloudflare_client
 from qmds.utils.logger import get_logger
 from qmds.utils.proxy_manager import ProxyManager
 
@@ -189,6 +190,20 @@ def _request_with_retry(url, proxy_manager=None, headers=None, timeout=15, max_r
     return None
 
 
+def _is_retryable_status(status_code: int) -> bool:
+    """403/429/5xx 表示被拦截或临时故障，不能作为"非该平台"的否定证据，应复检"""
+    return status_code in (403, 429) or status_code >= 500
+
+
+def _is_bare_version_text(text: str) -> bool:
+    """/static/version 应返回裸版本号；catch-all 重定向返回整页 HTML，不能据此判定 Magento"""
+    t = (text or "").strip()
+    if not t or len(t) > 64:
+        return False
+    lowered = t.lower()
+    return not lowered.startswith(("<!doctype", "<html"))
+
+
 class PlatformDetector:
     """电商平台检测器（完全仿照 YSQD）"""
 
@@ -197,6 +212,8 @@ class PlatformDetector:
         # 商品数据爬取使用的代理服务客户端（懒加载，meta.json 被 403 拦截时复检用）
         self._proxy_service = None
         self._proxy_service_failed = False
+        # cloudscraper 复检开关（Cloudflare JS 挑战兜底；测试中可关闭以避免真实请求）
+        self.cloudflare_fallback_enabled = True
         # 同域名互斥锁：避免并发检测轰击同一站点触发限流
         self._domain_locks = defaultdict(threading.Lock)
         self._locks_guard = threading.Lock()
@@ -232,7 +249,7 @@ class PlatformDetector:
         )
 
     def _detect_shopify_via_proxy_service(self, meta_url: str) -> Optional[DetectionResult]:
-        """meta.json 被反爬拦截（如 403）时，通过商品爬取使用的代理服务重新请求"""
+        """meta.json 被反爬拦截（403/429/5xx）时，通过商品爬取使用的代理服务重新请求"""
         client = self._get_proxy_service()
         if not client:
             return None
@@ -242,6 +259,28 @@ class PlatformDetector:
             log.info(f"代理服务复检成功确认 Shopify: {meta_url}")
             return self._shopify_result_from_meta(data, confidence=0.95)
         return None
+
+    def _detect_shopify_via_cloudscraper(self, meta_url: str) -> Optional[DetectionResult]:
+        """meta.json 被 Cloudflare 挑战拦截时，用 cloudscraper 解挑战后复检"""
+        if not self.cloudflare_fallback_enabled or not cloudflare_client.is_available():
+            return None
+        response = cloudflare_client.get(meta_url, timeout=20)
+        if response is None or response.status_code != 200:
+            return None
+        try:
+            data = response.json()
+        except ValueError:
+            return None
+        if isinstance(data, dict) and "published_products_count" in data:
+            log.info(f"cloudscraper 复检成功确认 Shopify: {meta_url}")
+            return self._shopify_result_from_meta(data, confidence=0.95)
+        return None
+
+    def _fetch_homepage_via_cloudscraper(self, url: str):
+        """首页被拦截/请求失败时用 cloudscraper 重取（解 Cloudflare JS 挑战）"""
+        if not self.cloudflare_fallback_enabled or not cloudflare_client.is_available():
+            return None
+        return cloudflare_client.get(url, timeout=20)
 
     @staticmethod
     def _matches_shopify_fingerprint(html: str, response=None) -> bool:
@@ -282,7 +321,8 @@ class PlatformDetector:
             with self._get_domain_lock(domain):
                 return self._detect_locked(url, url_map)
         except Exception:
-            return DetectionResult(platform=Platform.UNKNOWN)
+            # 未预见异常不构成平台否定证据，标记 inconclusive 交由上层复检
+            return DetectionResult(platform=Platform.UNKNOWN, inconclusive=True)
 
     def _detect_locked(self, url: str, url_map: dict) -> DetectionResult:
         headers = get_browser_headers()
@@ -294,7 +334,7 @@ class PlatformDetector:
             ("Shopify", f"{url}meta.json", lambda r: "published_products_count" in r.json(), 20, 3),
             ("WooCommerce", f"{url}wp-json/wc/v3/products?per_page=1", lambda r: isinstance(r.json(), list), 15, 2),
             ("Magento", f"{url}magento_version", lambda r: "Magento" in r.text, 15, 2),
-            ("Magento", f"{url}static/version", lambda r: r.status_code == 200, 15, 2),
+            ("Magento", f"{url}static/version", lambda r: _is_bare_version_text(r.text), 15, 2),
             ("BigCommerce", url, lambda r: "BigCommerce" in r.text, 15, 2),
         ]
 
@@ -317,12 +357,15 @@ class PlatformDetector:
                 result = self._to_result(platform_name, url, response)
                 result.page_text = self._fetch_page_text(url, headers)
                 return result
-            if platform_name == "Shopify" and response.status_code == 403:
+            if platform_name == "Shopify" and _is_retryable_status(response.status_code):
                 meta_json_blocked = True
 
-        # 2. meta.json 被 403 拦截 → 用商品爬取的代理服务重新请求
+        # 2. meta.json 被拦截（403/429/5xx）→ 代理服务复检 → cloudscraper 复检
         if meta_json_blocked:
-            result = self._detect_shopify_via_proxy_service(f"{url}meta.json")
+            meta_url = f"{url}meta.json"
+            result = self._detect_shopify_via_proxy_service(meta_url)
+            if result is None:
+                result = self._detect_shopify_via_cloudscraper(meta_url)
             if result:
                 result.page_text = self._fetch_page_text(url, headers)
                 return result
@@ -335,8 +378,18 @@ class PlatformDetector:
         except Exception:
             homepage_response = None
 
+        # 首页被拦截或请求失败时，用 cloudscraper 再试一次，避免因 Cloudflare
+        # 挑战而把 Shopify 站点误判为不确定
+        if homepage_response is None or _is_retryable_status(homepage_response.status_code):
+            fallback_response = self._fetch_homepage_via_cloudscraper(url)
+            if fallback_response is not None:
+                homepage_response = fallback_response
+
         page_text = ""
         if homepage_response is None:
+            network_failure = True
+        elif _is_retryable_status(homepage_response.status_code):
+            # 首页被拦截（403/429/5xx）时无法确认指纹，视为不确定而非否定
             network_failure = True
         elif homepage_response.status_code == 200:
             page_text = homepage_response.text
