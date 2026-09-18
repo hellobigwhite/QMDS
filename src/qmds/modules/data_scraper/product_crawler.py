@@ -21,7 +21,7 @@ from qmds.modules.data_scraper import sitemap_fetcher
 from qmds.modules.data_scraper.shopify_nav_parser import parse_navigation
 from qmds.utils import cloudflare_client
 from qmds.utils.logger import get_logger
-from qmds.utils.proxy_manager import ProxyManager
+from qmds.utils.proxy_manager import ProxyManager, is_account_level_failure
 
 log = get_logger("product_crawler")
 
@@ -133,6 +133,8 @@ class ProxyServiceClient:
 
     FAILURE_THRESHOLD = 3
     COOLDOWN = 180.0
+    # 反复失败说明服务不是偶发抖动，冷却时长逐步翻倍直到该上限
+    MAX_COOLDOWN = 1800.0
 
     def __init__(self):
         self.base_url = settings.proxy_service_url
@@ -142,6 +144,7 @@ class ProxyServiceClient:
         # 熔断状态
         self._consecutive_failures = 0
         self._down_until = 0.0
+        self._cooldown = self.COOLDOWN
         self._lock = threading.Lock()
         self._last_stats_log = 0.0
 
@@ -166,15 +169,17 @@ class ProxyServiceClient:
                 return
             self._consecutive_failures += 1
             if self._consecutive_failures >= self.FAILURE_THRESHOLD and time.time() >= self._down_until:
-                self._down_until = time.time() + self.COOLDOWN
+                self._down_until = time.time() + self._cooldown
                 log.warning(
-                    f"代理服务连续失败 {self._consecutive_failures} 次，熔断 {self.COOLDOWN:.0f} 秒"
+                    f"代理服务连续失败 {self._consecutive_failures} 次，熔断 {self._cooldown:.0f} 秒"
                 )
+                self._cooldown = min(self._cooldown * 2, self.MAX_COOLDOWN)
 
     def _record_success(self):
         with self._lock:
             self._success += 1
             self._consecutive_failures = 0
+            self._cooldown = self.COOLDOWN
 
     def _get(self, target_url: str, timeout: Optional[int] = None) -> Tuple[Optional[requests.Response], int]:
         """发起一次代理服务请求，返回 (响应, 状态码)；STATUS_SKIPPED 表示熔断中未发起"""
@@ -238,10 +243,29 @@ class ProxyServiceClient:
             log.info(f"代理服务统计: 成功={self._success}, 失败={self._failure}, 成功率={rate:.1f}%")
 
 
+_shared_proxy_service: Optional[ProxyServiceClient] = None
+_shared_proxy_service_lock = threading.Lock()
+
+
+def get_shared_proxy_service() -> ProxyServiceClient:
+    """进程内共享的代理服务客户端
+
+    create_crawler() 会为每个站点新建 ProductCrawler，如果 ProxyServiceClient
+    也跟着新建，它内部的连续失败熔断就无法跨站点生效——每个站点都要重吃一次
+    90 秒超时。这里做成进程级共享实例，让熔断真正起作用。
+    """
+    global _shared_proxy_service
+    if _shared_proxy_service is None:
+        with _shared_proxy_service_lock:
+            if _shared_proxy_service is None:
+                _shared_proxy_service = ProxyServiceClient()
+    return _shared_proxy_service
+
+
 class ProductCrawler:
     """产品数据爬取器"""
     
-    def __init__(self, currency_map: Dict[str, float], proxy_manager=None):
+    def __init__(self, currency_map: Dict[str, float], proxy_manager=None, proxy_service=None):
         self.currency_map = currency_map
         self.session = requests.Session()
         # sitemap 通道会并发发起请求，放大连接池避免 "Connection pool is full" 告警
@@ -264,8 +288,8 @@ class ProductCrawler:
         
         # 代理管理（支持标记坏代理 + 冷却轮换）
         self.proxy_manager = proxy_manager
-        # 代理服务客户端（优先使用）
-        self.proxy_service = ProxyServiceClient()
+        # 代理服务客户端（优先使用）；默认取进程级共享实例，让熔断跨站点生效
+        self.proxy_service = proxy_service or get_shared_proxy_service()
     
     def close(self):
         """关闭会话释放资源"""
@@ -283,6 +307,20 @@ class ProductCrawler:
         """标记代理为不可用（触发冷却）"""
         if self.proxy_manager and proxy_dict:
             self.proxy_manager.mark_bad(proxy_dict, cooldown=cooldown)
+
+    def _handle_proxy_failure(self, proxy: Optional[dict], error: Exception) -> bool:
+        """记录一次代理失败；返回 True 表示整池已熔断，调用方应停止换代理重试
+
+        402 欠费 / 407 认证失败是账号级故障，池内所有出口 IP 会同时失效，
+        逐个 mark_bad 只会白烧整个池子。
+        """
+        if not self.proxy_manager:
+            return False
+        if is_account_level_failure(error):
+            self.proxy_manager.disable_all(reason=str(error)[:120])
+            return True
+        self.mark_proxy_bad(proxy, cooldown=60.0)
+        return self.proxy_manager.is_pool_down
     
     def fetch_json(self, url: str, timeout: int = REQUEST_TIMEOUT) -> Tuple[Optional[dict], int]:
         """获取JSON数据
@@ -300,8 +338,14 @@ class ProductCrawler:
         # 第二步：降级到本地代理池（3次尝试）
         last_status = 0
         cloudflare_blocked = False
+        pool_unavailable = False
         for attempt in range(3):
             proxy = self.get_next_proxy()
+            if proxy is None:
+                # 代理池整体熔断（账号级故障）或已无可用代理，交给第三步直连
+                pool_unavailable = True
+                log.warning(f"本地代理池不可用，跳过代理重试 {url}")
+                break
             try:
                 response = self.session.get(url, timeout=timeout, proxies=proxy)
                 status = response.status_code
@@ -340,6 +384,16 @@ class ProductCrawler:
                 if attempt == 2:
                     log.warning(f"请求超时 {url} | proxy={proxy} | timeout={timeout}s")
                     return None, 0
+            except requests.exceptions.ProxyError as e:
+                # 402 欠费 / 407 认证失败：整池熔断，不再逐个换代理重试
+                if self._handle_proxy_failure(proxy, e):
+                    pool_unavailable = True
+                    log.warning(f"代理账号级故障，跳过剩余代理 {url} | {str(e)[:160]}")
+                    break
+                last_status = 0
+                if attempt == 2:
+                    log.warning(f"连接失败 {url} | proxy={proxy} | {e}")
+                    return None, 0
             except requests.exceptions.ConnectionError as e:
                 self.mark_proxy_bad(proxy, cooldown=60.0)
                 last_status = 0
@@ -356,8 +410,8 @@ class ProductCrawler:
                     return None, 0
             time.sleep(1)
 
-        # 第三步：直连降级（仅429时）
-        if last_status == 429:
+        # 第三步：直连降级（429 限流，或代理池整体不可用时）
+        if last_status == 429 or pool_unavailable:
             try:
                 response = self.session.get(url, timeout=timeout)
                 if response.status_code == 200:
@@ -415,13 +469,18 @@ class ProductCrawler:
         # 3. 本地代理池
         if self.proxy_manager:
             proxy = self.get_next_proxy()
+            if proxy is None:
+                log.warning(f"sitemap 本地代理池不可用，跳过代理 {url}")
+                return None
             try:
                 response = self.session.get(url, timeout=timeout, proxies=proxy)
                 if response.status_code == 200 and response.content:
                     return response.content
                 log.warning(f"sitemap 获取失败 {url} | HTTP {response.status_code} | proxy={proxy}")
             except Exception as e:
-                self.mark_proxy_bad(proxy, cooldown=60.0)
+                if self._handle_proxy_failure(proxy, e):
+                    log.warning(f"sitemap 代理账号级故障 {url} | {str(e)[:160]}")
+                    return None
                 log.warning(f"sitemap 获取异常 {url} | {type(e).__name__}: {e}")
         return None
 

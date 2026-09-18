@@ -8,7 +8,7 @@ from urllib3.util.retry import Retry
 
 from qmds.config import settings
 from qmds.core.exceptions import ProxyError, RateLimitError
-from qmds.utils.proxy_manager import ProxyManager
+from qmds.utils.proxy_manager import ProxyManager, is_account_level_failure
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -82,8 +82,12 @@ class HttpClient:
             resp.raise_for_status()
             return resp
         except requests.exceptions.ProxyError as e:
-            if proxy and self.proxy_manager:
-                self.proxy_manager.mark_bad(proxy)
+            if self.proxy_manager:
+                if is_account_level_failure(e):
+                    # 402 欠费 / 407 认证失败是账号级故障，池内所有 IP 同时失效
+                    self.proxy_manager.disable_all(reason=str(e)[:120])
+                elif proxy:
+                    self.proxy_manager.mark_bad(proxy)
             raise ProxyError(f"Proxy failed: {e}") from e
         except requests.exceptions.RequestException as e:
             raise ProxyError(f"Request failed: {e}") from e

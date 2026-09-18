@@ -61,6 +61,7 @@ from qmds.config.categories import (
     make_collection_prefix,
     parse_collection_prefix,
     normalize_subcategory,
+    is_adult_category,
     SHOPIFY_TO_GOOGLE_CATEGORY,
     DEFAULT_SUBCATEGORY,
 )
@@ -665,6 +666,8 @@ class ProductDBClient:
         有 source_category 用它覆盖，否则归入 Other）、
         source_category 下划线转空格、变体截断前2段属性并规范化；
         标题/描述命中品牌黑名单、描述为空或非空变体格式非法的数据直接判为 failed。
+        违禁词按一级分类取表：成人类目（mature/成人）跳过成人关键词，
+        武器/药品/赌博/假货等其他违禁词对所有类目一律生效。
         通过的商品 SKU 全部重新生成递增编号。
 
         Args:
@@ -677,7 +680,8 @@ class ProductDBClient:
             {"processed": 处理数量, "cleaned": 清洗后数量, "removed": 移除数量, "sku_generated": 生成SKU数量}
         """
         from qmds.modules.data_scraper.pipeline.filters import (
-            PLACEHOLDER_IMAGES, PROHIBITED_KEYWORDS, MIN_TITLE_LENGTH, MIN_PRICE, MAX_PRICE
+            PLACEHOLDER_IMAGES, ADULT_KEYWORDS, get_prohibited_keywords,
+            MIN_TITLE_LENGTH, MIN_PRICE, MAX_PRICE
         )
         from qmds.utils.language import is_non_english_text
         from qmds.utils.text_cleaner import (
@@ -694,6 +698,13 @@ class ProductDBClient:
 
         prefix = make_collection_prefix(category, subcategory)
         col = self.collection(category, subcategory)
+
+        # 违禁词表按一级分类取：成人类目跳过成人关键词（成人用品的标题/描述天然
+        # 含 lingerie / vibrator / adult 等词，属正常商品表述），
+        # 武器/药品/赌博/假货等关键词对成人类目照常生效。
+        prohibited_keywords = get_prohibited_keywords(category)
+        if is_adult_category(category):
+            log.info(f"[{prefix}] 成人类目：违禁词过滤跳过 {len(ADULT_KEYWORDS)} 个成人关键词")
 
         # 只查询未清洗的数据（除非强制清洗）
         if force:
@@ -815,9 +826,9 @@ class ProductDBClient:
                 stats["非英文"] += 1
                 continue
 
-            # ── 违禁词 ──
+            # ── 违禁词（成人类目已剔除成人关键词）──
             check_text = f"{title} {desc} {tags_str}".lower()
-            if any(kw in check_text for kw in PROHIBITED_KEYWORDS):
+            if any(kw in check_text for kw in prohibited_keywords):
                 stats["违禁词"] += 1
                 continue
 

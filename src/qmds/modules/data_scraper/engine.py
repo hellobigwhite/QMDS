@@ -13,6 +13,7 @@ import pandas as pd
 from pymongo import UpdateOne, InsertOne
 
 from qmds.config import settings
+from qmds.config.search_providers import SERIAL_SEARCH_PROVIDERS
 from qmds.core.base import ScrapeResult
 from qmds.db.mongodb import MongoDBClient
 from qmds.modules.data_scraper.discovery import GoogleShopifySearcher
@@ -436,24 +437,37 @@ class DataScraperModule:
                     log.info(f"[{t_name}] <<< 变体{variant_idx}完成: {query!r} -> {len(urls)} 个URL")
                     return variant_idx, query, urls
 
-                # 使用变体搜索专用线程池并发搜索
-                log.info(f"[{thread_name}] === 并发搜索 {len(variants)} 个变体 ===")
-                search_futures = {}
-                for i, q in enumerate(variants, 1):
-                    future = self.search_executor.submit(_search_variant, q, i)
-                    search_futures[future] = (i, q)
-                    log.info(f"[{thread_name}] 提交变体{i}到搜索线程池: {q!r}")
+                # 单线程平台（如 BrightData 只有 1 个 key）：变体串行搜索，
+                # 不提交到 6 线程搜索池，从源头避免并发打同一个 key 触发 429
+                if provider_name in SERIAL_SEARCH_PROVIDERS:
+                    log.info(f"[{thread_name}] === 串行搜索 {len(variants)} 个变体（{provider_name} 单线程模式）===")
+                    for i, q in enumerate(variants, 1):
+                        try:
+                            variant_idx, query, urls = _search_variant(q, i)
+                            all_raw_urls.extend(urls)
+                            variant_results[variant_idx] = {"query": query, "count": len(urls)}
+                            log.info(f"[{thread_name}] 变体{variant_idx}已完成，当前总URL数: {len(all_raw_urls)}")
+                        except Exception as e:
+                            log.warning(f"[{thread_name}] 变体{i}失败 {q}: {e}")
+                else:
+                    # 使用变体搜索专用线程池并发搜索
+                    log.info(f"[{thread_name}] === 并发搜索 {len(variants)} 个变体 ===")
+                    search_futures = {}
+                    for i, q in enumerate(variants, 1):
+                        future = self.search_executor.submit(_search_variant, q, i)
+                        search_futures[future] = (i, q)
+                        log.info(f"[{thread_name}] 提交变体{i}到搜索线程池: {q!r}")
 
-                log.info(f"[{thread_name}] 等待 {len(search_futures)} 个变体完成...")
-                for future in as_completed(search_futures):
-                    try:
-                        variant_idx, query, urls = future.result()
-                        all_raw_urls.extend(urls)
-                        variant_results[variant_idx] = {"query": query, "count": len(urls)}
-                        log.info(f"[{thread_name}] 变体{variant_idx}已完成，当前总URL数: {len(all_raw_urls)}")
-                    except Exception as e:
-                        i, q = search_futures[future]
-                        log.warning(f"[{thread_name}] 变体{i}失败 {q}: {e}")
+                    log.info(f"[{thread_name}] 等待 {len(search_futures)} 个变体完成...")
+                    for future in as_completed(search_futures):
+                        try:
+                            variant_idx, query, urls = future.result()
+                            all_raw_urls.extend(urls)
+                            variant_results[variant_idx] = {"query": query, "count": len(urls)}
+                            log.info(f"[{thread_name}] 变体{variant_idx}已完成，当前总URL数: {len(all_raw_urls)}")
+                        except Exception as e:
+                            i, q = search_futures[future]
+                            log.warning(f"[{thread_name}] 变体{i}失败 {q}: {e}")
 
                 # 输出变体汇总
                 for i, info in sorted(variant_results.items()):

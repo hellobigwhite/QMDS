@@ -16,6 +16,7 @@ from qmds.config.categories import (
     normalize_subcategory,
     parse_collection_prefix,
 )
+from qmds.config.search_providers import SERIAL_SEARCH_PROVIDERS
 from qmds.modules.web.db_helpers import get_mongo_db
 from qmds.modules.web.task_manager import make_progress_callback, task_manager
 from qmds.utils.http_client import HttpClient
@@ -87,10 +88,13 @@ def shopify_fetch_urls():
                         return
                     task_manager.add_log(task_id, "开始搜索...", "info")
 
+                    # 单线程平台（如 BrightData）：只开 1 个关键词线程，
+                    # 否则多个线程会排队抢同一把 provider 锁，白白占着线程
+                    keyword_workers = 1 if provider in SERIAL_SEARCH_PROVIDERS else 3
                     result = module.fetch_shopify_urls_by_keyword(
                         category=category, keyword=keyword,
                         max_pages=0, min_products=min_products,
-                        keyword_workers=3,
+                        keyword_workers=keyword_workers,
                         save_mongo=save_mongo, save_excel=save_excel,
                         provider_name=provider,
                         progress_callback=make_progress_callback(task_id),

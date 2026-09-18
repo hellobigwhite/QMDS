@@ -76,6 +76,14 @@ PROVIDER_CONFIGS = [
 ]
 
 
+# ── 并发策略 ──────────────────────────────────────────────
+
+# 只有一个 key、或平台侧对并发敏感（实测并发易触发 429）的搜索平台：
+# 调用方串行执行，并在 provider 内部加锁兜底，保证同一时刻只有一个请求。
+# 需要把某个平台也改成单线程时，把它的 name 加进来即可。
+SERIAL_SEARCH_PROVIDERS = {"brightdata"}
+
+
 # ── Key 池 ────────────────────────────────────────────────
 
 class KeyPool:
@@ -514,7 +522,15 @@ class BrightDataProvider(SearchProvider):
             return zone.strip(), token.strip()
         return "serp_api", key.strip()
 
+    # 单线程保证：关键词线程池 / 变体搜索线程池共用这一把锁，
+    # 同一时刻只有一个 BrightData 请求在途，避免并发打同一个 key 触发 429。
+    _request_lock = threading.Lock()
+
     def search(self, query: str, page: int = 1) -> list[str]:
+        with self._request_lock:
+            return self._search_serial(query, page)
+
+    def _search_serial(self, query: str, page: int = 1) -> list[str]:
         key = self.key_pool.get_key()
         if not key:
             return []

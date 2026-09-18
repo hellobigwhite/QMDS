@@ -1,4 +1,4 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% block content %}
 <div class="card">
     <h2>产品数据管理</h2>
@@ -97,7 +97,7 @@
 
 <div class="card" id="clean-section">
     <h2>数据清洗</h2>
-    <p class="text-muted mb-4">清洗 <code>{category}__{subcategory}</code> 中的原始数据，清洗后保存到 <code>{category}__{subcategory}</code>。清洗规则：过滤无效数据、违禁词处理、数据标准化。</p>
+    <p class="text-muted mb-4">清洗 <code>{category}__{subcategory}</code> 中的原始数据，清洗后保存到 <code>{category}__{subcategory}</code>。清洗规则：过滤无效数据、违禁词处理（成人类目跳过成人关键词）、数据标准化。</p>
     <form method="POST" action="/product-data/clean">
         <div style="margin-bottom: 12px;">
             <label for="clean_category">选择类目</label>

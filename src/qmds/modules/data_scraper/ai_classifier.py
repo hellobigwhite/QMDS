@@ -197,6 +197,14 @@ _PROXY_SERVICE_URL = settings.proxy_service_url
 _PROXY_SERVICE_KEY = settings.proxy_service_key
 _PROXY_SERVICE_TIMEOUT = 60
 
+# 远程代理服务熔断：该服务不可用时逐个域名重试会各等满 _PROXY_SERVICE_TIMEOUT 秒，
+# 连续失败达阈值后进入冷却期，冷却期内直接返回 None 走第2/3级降级。
+_PROXY_SERVICE_FAILURE_THRESHOLD = 3
+_PROXY_SERVICE_COOLDOWN = 300.0
+_proxy_service_lock = threading.Lock()
+_proxy_service_failures = 0
+_proxy_service_down_until = 0.0
+
 # 直连降级（第3级降级）- 限制并发避免本机 IP 被封
 _direct_semaphore = threading.Semaphore(5)
 _direct_session: Optional[_requests.Session] = None
@@ -214,21 +222,52 @@ def _get_direct_session() -> _requests.Session:
     return _direct_session
 
 
+def _record_proxy_service_failure():
+    """记录一次远程代理服务故障，达到阈值后熔断冷却"""
+    global _proxy_service_failures, _proxy_service_down_until
+    with _proxy_service_lock:
+        _proxy_service_failures += 1
+        if (_proxy_service_failures >= _PROXY_SERVICE_FAILURE_THRESHOLD
+                and time.time() >= _proxy_service_down_until):
+            _proxy_service_down_until = time.time() + _PROXY_SERVICE_COOLDOWN
+            log.warning(
+                f"远程代理服务连续失败 {_proxy_service_failures} 次，"
+                f"熔断 {_PROXY_SERVICE_COOLDOWN:.0f} 秒（期间直接走第2/3级降级）"
+            )
+
+
+def _record_proxy_service_success():
+    global _proxy_service_failures
+    with _proxy_service_lock:
+        _proxy_service_failures = 0
+
+
 def _proxy_service_fetch(url: str) -> Optional[_requests.Response]:
-    """通过远程代理服务请求 URL，返回 Response 或 None"""
+    """通过远程代理服务请求 URL，返回 Response 或 None
+
+    熔断冷却期内不再发起请求，避免每个域名都等满 60 秒超时。
+    """
+    with _proxy_service_lock:
+        if time.time() < _proxy_service_down_until:
+            return None
     try:
         resp = _requests.get(
             _PROXY_SERVICE_URL,
             params={"key": _PROXY_SERVICE_KEY, "url": url},
             timeout=_PROXY_SERVICE_TIMEOUT,
         )
-        if resp.status_code == 200 and len(resp.text) > 100:
-            return resp
-        log.debug(f"远程代理服务返回无效 {url}: status={resp.status_code} len={len(resp.text)}")
-        return None
     except Exception as e:
+        _record_proxy_service_failure()
         log.debug(f"远程代理服务失败 {url}: {type(e).__name__}: {e}")
         return None
+    if resp.status_code == 200 and len(resp.text) > 100:
+        _record_proxy_service_success()
+        return resp
+    # 服务端故障（5xx/403/429）计入熔断；其余状态码是目标站点响应，不该拖垮服务本身
+    if resp.status_code >= 500 or resp.status_code in (403, 429):
+        _record_proxy_service_failure()
+    log.debug(f"远程代理服务返回无效 {url}: status={resp.status_code} len={len(resp.text)}")
+    return None
 
 
 def _clean_html(text: str) -> str:
@@ -405,6 +444,10 @@ def fetch_page_info(domain: str, http_client=None, proxies=None, proxy_manager=N
             try:
                 return http_client.get(url, timeout=_timeout, verify=False)
             except RateLimitError:
+                return None
+            except ProxyError as e:
+                # 代理池不可用（如 402 欠费整池熔断）时不再中断降级链，交由第3级直连
+                log.info(f"本地代理池失败 {domain}，降级直连: {str(e)[:160]}")
                 return None
         else:
             try:

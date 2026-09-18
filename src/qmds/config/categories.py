@@ -387,6 +387,41 @@ OLD_TO_NEW_CATEGORY = {
 }
 
 
+# ── 成人类目（Mature）判定 ──────────────────────────────
+# 用途：商品清洗的违禁词过滤对成人类目跳过"成人关键词"——成人用品的标题/描述
+# 天然包含 lingerie / vibrator / adult toy 等词，这些词只在非成人类目下才判违禁。
+ADULT_CATEGORY_ALIASES = {
+    "mature",  # 标准简化名（SHOPIFY_CATEGORIES）
+    "adult",   # OLD_TO_NEW_CATEGORY 中的旧别名
+    "成人",     # 中文一级分类名（SHOPIFY_TO_CN_CATEGORY）
+    "772",     # CATEGORY_ID_MAP 中 Mature 的 Google Taxonomy ID
+    "13",      # 旧订单口径的成人类目编号（对应 order_db 的 "13": "成人"）
+}
+
+
+def is_adult_category(category) -> bool:
+    """判断一级分类是否属于成人（Mature）类目
+
+    输入先规范化（去首尾空白、转小写、空白/连字符统一为下划线）再判定，
+    因此 "Mature"、"adult"、"成人"、"mature " 以及历史别名都能识别。
+
+    示例:
+        is_adult_category("mature") -> True
+        is_adult_category("成人") -> True
+        is_adult_category("adult") -> True
+        is_adult_category("health_beauty") -> False
+        is_adult_category(None) -> False
+    """
+    if category is None:
+        return False
+    key = re.sub(r"[\s\-]+", "_", str(category).strip().lower())
+    if not key:
+        return False
+    if key in ADULT_CATEGORY_ALIASES:
+        return True
+    return OLD_TO_NEW_CATEGORY.get(key) == "mature"
+
+
 # ── 标准二级分类清单（与 ai_classifier.py build_prompt 一致）──────────
 # 每个一级分类的合法二级分类名（标准化后的小写+下划线形式）。
 # 三处共用唯一真相源：
