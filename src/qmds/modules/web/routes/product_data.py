@@ -796,6 +796,10 @@ def product_data_allocate():
         "custom_suffix": (request.form.get("split_custom_suffix") or "").strip(),
         "remove_source": request.form.get("split_remove_source") != "off",
     }
+    # 原站域名约束：每个主分类分到的补充数据中同一原站域名最多
+    # max_domain_count 条（默认 5000；0 表示不限制）
+    max_domain_count = _parse_portion_size(request.form.get("max_domain_count"),
+                                           5000, min_value=0)
     if split_options["suffix_mode"] not in ("none", "custom", "part"):
         split_options["suffix_mode"] = "none"
     if split_options["suffix_mode"] != "custom":
@@ -824,10 +828,12 @@ def product_data_allocate():
         task_id,
         lambda: run_allocation_task(task_id, file_path, main_categories,
                                     min_size, max_size, split_threshold,
-                                    split_options))
+                                    split_options, max_domain_count))
     msg = f"数据分配任务已启动: {filename}（{len(main_categories)} 个主分类）"
     if split_options["enabled"]:
         msg += f"，分配完成后将批量拆表（主数据不设上限，补充数据每份 {split_options['supp_rows_per_file']} 条）"
+    if max_domain_count and max_domain_count > 0:
+        msg += f"，补充数据中同一原站域名每份最多 {max_domain_count} 条"
     msg += "，拆表后自动统计每个网站数据的分类结构（分类统计.xlsx）"
     flash(msg, "info")
     return redirect(url_for("product_data.product_data_export"))

@@ -35,7 +35,7 @@
         </form>
 
         <div style="margin-top:10px;font-size:12px;color:#888;">
-            <b>阶段1</b>：并发抓取每个站点首页 HTML + <code>/collections.json</code>，提取 title/meta/nav/collection_titles，写回源文档 <code>page_info</code> 字段（三级降级：远程代理 → 本地代理池 → 直连）<br>
+            <b>阶段1</b>：并发抓取每个站点首页 HTML + <code>/collections.json</code>，提取 title/meta/nav/collection_titles，写回源文档 <code>page_info</code> 字段（降级链：远程代理 → 本地代理池 → 直连；本地代理池可用 .env 的 LOCAL_PROXY_POOL_ENABLED=0 关闭）<br>
             <b>阶段2</b>：调用 MiMo LLM 分类，将 <code>category</code>/<code>subcategory</code>/<code>ai_status</code> 写回源文档。处理：非英文站、黑五类、综合站、无法识别
         </div>
     </div>

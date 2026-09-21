@@ -7,7 +7,7 @@ import time
 import urllib3
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 from urllib.parse import urlparse
 
 import requests
@@ -229,7 +229,9 @@ class PlatformDetector:
         if self._proxy_service is None:
             try:
                 from qmds.modules.data_scraper.product_crawler import ProxyServiceClient
-                self._proxy_service = ProxyServiceClient()
+                # 平台检测关闭熔断：每个 URL 都真实请求远程代理，
+                # 避免连续失败进入冷却后把真实 Shopify 站点漏判。
+                self._proxy_service = ProxyServiceClient(breaker_enabled=False)
             except Exception as e:
                 log.warning(f"代理服务客户端初始化失败，已停用: {e}")
                 self._proxy_service_failed = True
@@ -248,17 +250,26 @@ class PlatformDetector:
             raw=data,
         )
 
-    def _detect_shopify_via_proxy_service(self, meta_url: str) -> Optional[DetectionResult]:
-        """meta.json 被反爬拦截（403/429/5xx）时，通过商品爬取使用的代理服务重新请求"""
+    def _detect_shopify_via_proxy_service(self, meta_url: str) -> Tuple[Optional[DetectionResult], int]:
+        """通过远程代理服务直接访问 meta.json（Shopify 判定首选路径）
+
+        返回 (result, status)：
+        - result 非 None：远程代理确认是 Shopify；
+        - status 为明确的 HTTP 码（404/403/5xx 等）：meta.json 不可访问 → 非 Shopify；
+        - status 为 0（超时）/ -1（熔断跳过）/ 客户端不可用：无法确定，
+          调用方应退回本地直连兜底，避免服务抖动时漏判真实 Shopify 站点。
+        """
         client = self._get_proxy_service()
         if not client:
-            return None
-        log.info(f"meta.json 被拦截，尝试代理服务复检: {meta_url}")
-        data, status = client.fetch(meta_url)
+            # STATUS_SKIPPED = -1
+            return None, -1
+        log.info(f"远程代理服务访问 meta.json: {meta_url}")
+        # 检测是高频批量场景，用固定 30s 超时避免单个站点拖慢整个批次
+        data, status = client.fetch(meta_url, timeout=30)
         if status == 200 and isinstance(data, dict) and "published_products_count" in data:
-            log.info(f"代理服务复检成功确认 Shopify: {meta_url}")
-            return self._shopify_result_from_meta(data, confidence=0.95)
-        return None
+            log.info(f"远程代理服务确认 Shopify: {meta_url}")
+            return self._shopify_result_from_meta(data, confidence=0.95), status
+        return None, status
 
     def _detect_shopify_via_cloudscraper(self, meta_url: str) -> Optional[DetectionResult]:
         """meta.json 被 Cloudflare 挑战拦截时，用 cloudscraper 解挑战后复检"""
@@ -328,93 +339,84 @@ class PlatformDetector:
         headers = get_browser_headers()
         network_failure = False
         meta_json_blocked = False
+        meta_url = f"{url}meta.json"
 
-        # 1. Shopify / WooCommerce / Magento / BigCommerce 检测
-        checks = [
-            ("Shopify", f"{url}meta.json", lambda r: "published_products_count" in r.json(), 20, 3),
-            ("WooCommerce", f"{url}wp-json/wc/v3/products?per_page=1", lambda r: isinstance(r.json(), list), 15, 2),
-            ("Magento", f"{url}magento_version", lambda r: "Magento" in r.text, 15, 2),
-            ("Magento", f"{url}static/version", lambda r: _is_bare_version_text(r.text), 15, 2),
-            ("BigCommerce", url, lambda r: "BigCommerce" in r.text, 15, 2),
-        ]
+        # 1. Shopify 判定：直接使用远程代理服务访问 meta.json（能访问即 Shopify）。
+        #    远程代理可绕过 Cloudflare / 地域拦截，命中率远高于本地直连，
+        #    因此作为首选，而不再是"本地失败后的复检"。
+        remote_result, remote_status = self._detect_shopify_via_proxy_service(meta_url)
+        if remote_result is not None:
+            remote_result.page_text = self._fetch_page_text(url, headers)
+            return remote_result
 
-        for platform_name, check_url, predicate, timeout, retries in checks:
-            try:
-                response = _request_with_retry(check_url, proxy_manager=self._proxy_manager,
-                                               headers=headers, timeout=timeout, max_retries=retries)
-            except Exception:
-                response = None
-            if response is None:
-                if platform_name == "Shopify":
-                    network_failure = True
-                continue
-            try:
-                matched = response.status_code == 200 and predicate(response)
-            except Exception:
-                # 200 但内容非预期（如返回 HTML 密码页导致 JSON 解析失败）
-                matched = False
-            if matched:
-                result = self._to_result(platform_name, url, response)
-                result.page_text = self._fetch_page_text(url, headers)
-                return result
-            if platform_name == "Shopify" and _is_retryable_status(response.status_code):
-                meta_json_blocked = True
+        # 2. 远程代理"无法确定"（超时=0 / 熔断跳过=-1 / 客户端不可用）时：
+        #    本地直连逐项检测兜底（Shopify 仍以 meta.json 为准，
+        #    另测 WooCommerce / Magento / BigCommerce）。
+        #    远程代理明确返回 4xx/5xx 等 HTTP 码时，其判定即为最终结果
+        #    （meta.json 无法访问 → 非 Shopify），不再重复本地检测，
+        #    避免每个非 Shopify 站点多花一轮直连请求。
+        if remote_status in (0, -1):
+            checks = [
+                ("Shopify", meta_url, lambda r: "published_products_count" in r.json(), 20, 3),
+                ("WooCommerce", f"{url}wp-json/wc/v3/products?per_page=1", lambda r: isinstance(r.json(), list), 15, 2),
+                ("Magento", f"{url}magento_version", lambda r: "Magento" in r.text, 15, 2),
+                ("Magento", f"{url}static/version", lambda r: _is_bare_version_text(r.text), 15, 2),
+                ("BigCommerce", url, lambda r: "BigCommerce" in r.text, 15, 2),
+            ]
 
-        # 2. meta.json 被拦截（403/429/5xx）→ 代理服务复检 → cloudscraper 复检
-        if meta_json_blocked:
-            meta_url = f"{url}meta.json"
-            result = self._detect_shopify_via_proxy_service(meta_url)
-            if result is None:
+            for platform_name, check_url, predicate, timeout, retries in checks:
+                try:
+                    response = _request_with_retry(check_url, proxy_manager=self._proxy_manager,
+                                                   headers=headers, timeout=timeout, max_retries=retries)
+                except Exception:
+                    response = None
+                if response is None:
+                    if platform_name == "Shopify":
+                        network_failure = True
+                    continue
+                try:
+                    matched = response.status_code == 200 and predicate(response)
+                except Exception:
+                    # 200 但内容非预期（如返回 HTML 密码页导致 JSON 解析失败）
+                    matched = False
+                if matched:
+                    result = self._to_result(platform_name, url, response)
+                    result.page_text = self._fetch_page_text(url, headers)
+                    return result
+                if platform_name == "Shopify" and _is_retryable_status(response.status_code):
+                    meta_json_blocked = True
+
+            # 3. meta.json 被本地拦截（403/429/5xx）→ cloudscraper 复检
+            if meta_json_blocked:
                 result = self._detect_shopify_via_cloudscraper(meta_url)
-            if result:
-                result.page_text = self._fetch_page_text(url, headers)
-                return result
+                if result:
+                    result.page_text = self._fetch_page_text(url, headers)
+                    return result
 
-        # 3. 首页 HTML / 响应头 Shopify 特征兜底（第二判据）
-        homepage_response = None
-        try:
-            homepage_response = _request_with_retry(url, proxy_manager=self._proxy_manager,
-                                                    headers=headers, timeout=15)
-        except Exception:
-            homepage_response = None
-
-        # 首页被拦截或请求失败时，用 cloudscraper 再试一次，避免因 Cloudflare
-        # 挑战而把 Shopify 站点误判为不确定
-        if homepage_response is None or _is_retryable_status(homepage_response.status_code):
-            fallback_response = self._fetch_homepage_via_cloudscraper(url)
-            if fallback_response is not None:
-                homepage_response = fallback_response
-
+        # 4. Shopify 只以 meta.json 为判断标准。
+        # 不使用首页 HTML、响应头等弱特征，避免把非 Shopify 站点误判为 Shopify。
         page_text = ""
-        if homepage_response is None:
-            network_failure = True
-        elif _is_retryable_status(homepage_response.status_code):
-            # 首页被拦截（403/429/5xx）时无法确认指纹，视为不确定而非否定
-            network_failure = True
-        elif homepage_response.status_code == 200:
-            page_text = homepage_response.text
-            if self._matches_shopify_fingerprint(page_text, homepage_response):
-                log.info(f"通过首页特征识别为 Shopify: {url}")
-                result = DetectionResult(platform=Platform.SHOPIFY, confidence=0.85)
-                result.page_text = page_text
-                return result
 
-        # 4. myshopify URL 回退
+        # 5. myshopify URL 回退（同样优先走远程代理服务，失败再本地直连）
         myshopify_url = url_map.get(url.rstrip("/"))
         if myshopify_url:
             if not myshopify_url.endswith("/"):
                 myshopify_url += "/"
-            try:
-                response = _request_with_retry(f"{myshopify_url}meta.json", proxy_manager=self._proxy_manager,
-                                               headers=headers, timeout=15)
-                if response and response.status_code == 200 and "published_products_count" in response.json():
-                    result = self._to_result("Shopify", myshopify_url, response)
-                    result.page_text = self._fetch_page_text(myshopify_url, headers)
-                    return result
-            except Exception:
-                pass
+            myshopify_meta_url = f"{myshopify_url}meta.json"
+            myshopify_result, _ = self._detect_shopify_via_proxy_service(myshopify_meta_url)
+            if myshopify_result is None:
+                try:
+                    response = _request_with_retry(myshopify_meta_url, proxy_manager=self._proxy_manager,
+                                                   headers=headers, timeout=15)
+                    if response and response.status_code == 200 and "published_products_count" in response.json():
+                        myshopify_result = self._to_result("Shopify", myshopify_url, response)
+                except Exception:
+                    pass
+            if myshopify_result:
+                myshopify_result.page_text = self._fetch_page_text(myshopify_url, headers)
+                return myshopify_result
 
-        # 5. 通用电商指标（已排除 Shopify 后才判定；命中仅说明是其他电商平台）
+        # 6. 通用电商指标（已排除 Shopify 后才判定；命中仅说明是其他电商平台）
         if page_text:
             html_content = page_text.lower()
             if any(indicator in html_content for indicator in GENERIC_ECOMMERCE_INDICATORS):

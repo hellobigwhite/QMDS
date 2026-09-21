@@ -74,9 +74,9 @@
 
 <div class="card">
     <h2>📊 数据分配</h2>
-    <p class="text-muted mb-4">选择导出后的表格，先获取表格中的分类及产品数量，勾选可作为主分类的类目：主分类数据将单独成主数据表（main+分类名命名）。去除主分类后的剩余数据将打包成若干份补充表（每份约 4~5 万条），其中数量超过拆分阈值的大分类会拆分后均匀分配到每一份补充表（不会整类分给单一主分类），其余小分类整类分配，每个主分类获得一份补充表。每个主分类一个数据文件夹：主数据表（main 开头）与补充数据表（分类名_supp，不含中文）放在同一文件夹，额外补充放入 extra 文件夹，全部输出到原表格同目录下的分配文件夹。分配完成后自动统计每个网站（主分类文件夹）的分类结构，在该文件夹生成 <code>分类统计.xlsx</code>（供 AI 生成网站信息使用）。</p>
+    <p class="text-muted mb-4">选择导出后的表格，先获取表格中的分类及产品数量，勾选可作为主分类的类目：主分类数据将单独成主数据表（main+分类名命名）。去除主分类后的剩余数据将打包成若干份补充表（每份约 4~5 万条），其中数量超过拆分阈值的大分类会拆分后均匀分配到每一份补充表（不会整类分给单一主分类），其余小分类整类分配，每个主分类获得一份补充表。每个主分类一个数据文件夹：主数据表（main 开头）与补充数据表（分类名_supp，不含中文）放在同一文件夹，额外补充放入 extra 文件夹，全部输出到原表格同目录下的分配文件夹。补充数据分配时保证：每个主分类分到的补充数据中，同一「原站域名」的条数不超过设定上限（默认 5000，超限时自动增加补充份数）。分配完成后自动统计每个网站（主分类文件夹）的分类结构，在该文件夹生成 <code>分类统计.xlsx</code>（供 AI 生成网站信息使用）。</p>
     <form id="allocForm" method="POST" action="/product-data/allocate">
-        <div style="display: grid; grid-template-columns: 2fr 2fr 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+        <div style="display: grid; grid-template-columns: 2fr 2fr 1fr 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px;">
             <div>
                 <label for="alloc_folder">选择文件夹</label>
                 <select id="alloc_folder" name="folder" style="width:100%;" required>
@@ -100,6 +100,10 @@
             <div>
                 <label for="alloc_split">大分类拆分阈值</label>
                 <input type="number" id="alloc_split" name="split_threshold" value="3000" min="0" style="width:100%;" title="数量超过该值的分类将拆分后均匀分配到各补充表，不会整类分给单一主分类">
+            </div>
+            <div>
+                <label for="alloc_domain_max">同域名每份最多条数</label>
+                <input type="number" id="alloc_domain_max" name="max_domain_count" value="5000" min="0" style="width:100%;" title="每个主分类分到的补充数据中，同一「原站域名」的条数上限；超限时自动增加补充份数（0 = 不限制）">
             </div>
         </div>
         <div style="margin-bottom: 12px; display: flex; align-items: center; gap: 12px;">
@@ -970,6 +974,12 @@ function updateAllocSummary() {
                 html += '<span style="color:#10b981;">✓ 每份补充在 ' + minSize.toLocaleString() +
                         ' ~ ' + maxSize.toLocaleString() + ' 条目标范围内</span>';
             }
+            // 原站域名约束预览
+            var domainMax = parseInt(document.getElementById('alloc_domain_max').value, 10) || 0;
+            if (domainMax > 0) {
+                html += '<br>原站域名约束: 每个主分类的补充数据中同一「原站域名」最多 ' +
+                        domainMax.toLocaleString() + ' 条（超限时自动增加补充份数）';
+            }
             // 批量拆表预览
             var splitEnabledEl = document.getElementById('split_enabled');
             if (splitEnabledEl && splitEnabledEl.checked) {
@@ -1018,7 +1028,7 @@ document.addEventListener('DOMContentLoaded', function() {
     if (arFetchBtn) arFetchBtn.addEventListener('click', fetchAgentrouterModels);
     var searchInput = document.getElementById('alloc-search');
     if (searchInput) searchInput.addEventListener('input', allocFilterList);
-    ['alloc_min', 'alloc_max', 'alloc_split', 'supp_rows_per_file'].forEach(function(id) {
+    ['alloc_min', 'alloc_max', 'alloc_split', 'alloc_domain_max', 'supp_rows_per_file'].forEach(function(id) {
         var el = document.getElementById(id);
         if (el) el.addEventListener('input', updateAllocSummary);
     });

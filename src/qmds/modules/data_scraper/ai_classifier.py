@@ -37,6 +37,7 @@ from qmds.config.llm_models import (
 )
 from qmds.core.exceptions import ProxyError, RateLimitError
 from qmds.utils.logger import get_logger
+from qmds.utils.proxy_probe import ban_local_pool, is_local_pool_banned
 
 log = get_logger("ai_classifier")
 
@@ -199,11 +200,17 @@ _PROXY_SERVICE_TIMEOUT = 60
 
 # 远程代理服务熔断：该服务不可用时逐个域名重试会各等满 _PROXY_SERVICE_TIMEOUT 秒，
 # 连续失败达阈值后进入冷却期，冷却期内直接返回 None 走第2/3级降级。
+# 冷却 10 秒：服务恢复后很快就能重新走回远程代理，减少直连降级时间。
 _PROXY_SERVICE_FAILURE_THRESHOLD = 3
-_PROXY_SERVICE_COOLDOWN = 300.0
+_PROXY_SERVICE_COOLDOWN = 10.0
 _proxy_service_lock = threading.Lock()
 _proxy_service_failures = 0
 _proxy_service_down_until = 0.0
+
+# 本地代理池开关（settings.local_proxy_pool_enabled，默认关闭）
+# 关闭时第2级本地代理池整级跳过，链路变为「远程代理服务 → 直连」，
+# 不再因整池 429 / 欠费逐域名刷日志并白等重试。
+_LOCAL_PROXY_POOL_ENABLED = settings.local_proxy_pool_enabled
 
 # 直连降级（第3级降级）- 限制并发避免本机 IP 被封
 _direct_semaphore = threading.Semaphore(5)
@@ -296,14 +303,16 @@ def fetch_and_clean(domain: str, http_client=None) -> str:
 
     Args:
         domain: 店铺域名（不含 scheme）
-        http_client: QMDS HttpClient 实例（走代理）；为 None 时用 requests 直连
+        http_client: QMDS HttpClient 实例（走本地代理池）；
+                     本地代理池关闭（settings.local_proxy_pool_enabled=False）时忽略该参数，
+                     改用 requests 直连。
 
     Returns:
         清洗后的首页文本（最多 2000 字符），失败返回空字符串
     """
     try:
         url = f"https://{domain}/"
-        if http_client is not None:
+        if http_client is not None and _LOCAL_PROXY_POOL_ENABLED:
             resp = http_client.get(url, timeout=10)
             if resp.status_code != 200:
                 return ""
@@ -413,9 +422,12 @@ def fetch_page_info(domain: str, http_client=None, proxies=None, proxy_manager=N
     首页请求采用三级降级策略：
     - 第1级：远程代理服务（66.154.112.62:8000）- 独立 IP，不被 Cloudflare 限流
     - 第2级：本地代理池（proxies.txt / HttpClient）- 数据中心 IP，可能被 429
+      （settings.local_proxy_pool_enabled=False 时整级跳过，见下方说明）
     - 第3级：直连本机 IP - 限流 5 并发，避免被封
 
-    /collections.json 只走第2级（本地代理），失败即跳过，不降级。
+    本地代理池开关（LOCAL_PROXY_POOL_ENABLED，默认关闭）：
+    - 开启：链路为「远程代理 → 本地代理池 → 直连」，/collections.json 只走本地代理池，失败即跳过
+    - 关闭：链路为「远程代理 → 直连」，/collections.json 与首页同链路（远程代理 → 直连）
 
     Args:
         domain: 店铺域名（不含 scheme）
@@ -439,15 +451,25 @@ def fetch_page_info(domain: str, http_client=None, proxies=None, proxy_manager=N
     _fallback = _get_fallback_session()
 
     def _do_get_proxy(url):
-        """通过本地代理池请求，429/异常返回 None"""
+        """通过本地代理池请求，429/异常返回 None
+
+        本地代理池已关闭，或检测到不可用已被禁止（进程级）时直接返回 None，
+        调用方随即进入第3级直连，不产生任何代理请求与日志。
+        """
+        if not _LOCAL_PROXY_POOL_ENABLED or is_local_pool_banned():
+            return None
         if http_client is not None:
             try:
                 return http_client.get(url, timeout=_timeout, verify=False)
-            except RateLimitError:
+            except RateLimitError as e:
+                # 429 限流说明本地代理对目标不可用：直接禁止整池，不进入冷却
+                ban_local_pool(f"{domain} 429 限流")
+                log.info(f"本地代理 429 限流 {domain}，已禁止本地代理，降级直连: {str(e)[:120]}")
                 return None
             except ProxyError as e:
-                # 代理池不可用（如 402 欠费整池熔断）时不再中断降级链，交由第3级直连
-                log.info(f"本地代理池失败 {domain}，降级直连: {str(e)[:160]}")
+                # 代理池不可用（402 欠费 / 429 重试耗尽等）：直接禁止整池，不进入冷却
+                ban_local_pool(f"{domain} 本地代理请求失败")
+                log.info(f"本地代理池失败 {domain}，已禁止本地代理，降级直连: {str(e)[:160]}")
                 return None
         else:
             try:
@@ -511,11 +533,16 @@ def fetch_page_info(domain: str, http_client=None, proxies=None, proxy_manager=N
     # 2. 复用同一份 HTML 清洗为 homepage_content（不重复请求首页）
     page_info["homepage_content"] = _clean_html(raw_html) if raw_html else ""
 
-    # 3. 请求 /collections.json -- 只走本地代理池，不降级
+    # 3. 请求 /collections.json
+    #    本地代理池开启时只走第2级（失败即跳过，不降级）；
+    #    关闭时与首页同链路，走「远程代理服务 → 直连」。
     try:
-        resp = _do_get_proxy(f"{base}/collections.json?limit=100")
-        if resp and resp.status_code == 429:
-            _mark_proxy_bad()
+        if _LOCAL_PROXY_POOL_ENABLED:
+            resp = _do_get_proxy(f"{base}/collections.json?limit=100")
+            if resp and resp.status_code == 429:
+                _mark_proxy_bad()
+        else:
+            resp = _do_get_with_fallback(f"{base}/collections.json?limit=100")
         text = resp.text if resp and resp.status_code == 200 else ""
         if text and '"collections"' in text:
             data = json.loads(text)

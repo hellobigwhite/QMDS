@@ -67,6 +67,13 @@ PROVIDER_CONFIGS = [
         timeout=30,
     ),
     ProviderConfig(
+        name="serper",
+        keys_file="serper_keys.txt",
+        base_url="https://google.serper.dev/search",
+        method="POST",
+        timeout=30,
+    ),
+    ProviderConfig(
         name="brightdata",
         keys_file="brightdata_keys.txt",
         base_url="https://api.brightdata.com/request",
@@ -600,6 +607,51 @@ class BrightDataProvider(SearchProvider):
 
 
 
+# ── Serper ────────────────────────────────────────────────
+
+class SerperProvider(SearchProvider):
+    """Serper Google SERP API
+
+    通过 https://google.serper.dev/search POST 请求获取 Google 搜索结果。
+    key 通过 X-API-KEY 请求头鉴权，请求体 {"q": query, "page": page}，
+    响应 organic 数组的每项含 link 字段即搜索结果 URL。
+    """
+
+    def search(self, query: str, page: int = 1) -> list[str]:
+        key = self.key_pool.get_key()
+        if not key:
+            return []
+        headers = {
+            "X-API-KEY": key,
+            "Content-Type": "application/json",
+        }
+        payload = {"q": query, "page": page}
+        try:
+            resp = requests.post(self.config.base_url, headers=headers, json=payload,
+                                 timeout=self.config.timeout,
+                                 proxies={"http": None, "https": None})
+            if resp.status_code in (401, 402, 403):
+                self.key_pool.mark_exhausted(key)
+                raise ScrapeProviderError(f"{resp.status_code} key 无效或额度用完")
+            if resp.status_code == 429:
+                time.sleep(3)
+                raise ScrapeProviderError("429 限速")
+            resp.raise_for_status()
+            data = resp.json()
+            urls = []
+            seen: set[str] = set()
+            for item in data.get("organic", []):
+                if not isinstance(item, dict):
+                    continue
+                link = str(item.get("link") or item.get("url") or "").strip()
+                if link.startswith("http") and link not in seen:
+                    seen.add(link)
+                    urls.append(link.rstrip("/"))
+            return urls
+        except requests.exceptions.RequestException as e:
+            raise ScrapeProviderError(f"请求失败: {e}")
+
+
 # ── 提供者工厂 ────────────────────────────────────────────
 
 PROVIDER_CLASSES = {
@@ -608,6 +660,7 @@ PROVIDER_CLASSES = {
     "crawlbase": CrawlbaseProvider,
     "bestproxy": BestProxyProvider,
     "exa": ExaProvider,
+    "serper": SerperProvider,
     "brightdata": BrightDataProvider,
 }
 

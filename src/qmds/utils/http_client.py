@@ -9,6 +9,7 @@ from urllib3.util.retry import Retry
 from qmds.config import settings
 from qmds.core.exceptions import ProxyError, RateLimitError
 from qmds.utils.proxy_manager import ProxyManager, is_account_level_failure
+from qmds.utils.proxy_probe import ban_local_pool, is_local_pool_banned
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -62,7 +63,12 @@ class HttpClient:
     ) -> requests.Response:
         headers = self.get_headers()
         headers.update(kwargs.pop("headers", {}))
-        proxy = self.proxy_manager.get_proxy() if self.proxy_manager else None
+        # 本地代理池已被禁止（进程级，检测到不可用后直接禁止）：即使持有
+        # proxy_manager 也直接走直连，不再取代理、不再重试
+        if self.proxy_manager and is_local_pool_banned():
+            proxy = None
+        else:
+            proxy = self.proxy_manager.get_proxy() if self.proxy_manager else None
         effective_timeout = timeout or settings.request_timeout
 
         try:
@@ -76,8 +82,11 @@ class HttpClient:
                 **kwargs,
             )
             if resp.status_code == 429:
-                if self.proxy_manager:
+                if proxy and self.proxy_manager:
                     self.proxy_manager.mark_bad(proxy)
+                # 429 说明本地代理对目标不可用：直接禁止整池，不进入冷却
+                if proxy:
+                    ban_local_pool(f"HTTP 429 Too Many Requests: {url}")
                 raise RateLimitError(f"429 Too Many Requests: {url}")
             resp.raise_for_status()
             return resp
@@ -85,11 +94,16 @@ class HttpClient:
             if self.proxy_manager:
                 if is_account_level_failure(e):
                     # 402 欠费 / 407 认证失败是账号级故障，池内所有 IP 同时失效
-                    self.proxy_manager.disable_all(reason=str(e)[:120])
+                    ban_local_pool(f"账号级故障: {str(e)[:120]}")
                 elif proxy:
                     self.proxy_manager.mark_bad(proxy)
             raise ProxyError(f"Proxy failed: {e}") from e
         except requests.exceptions.RequestException as e:
+            msg = str(e)
+            # urllib3 重试耗尽（如 "too many 429 error responses"）说明本地代理
+            # 对目标不可用：直接禁止整池，不进入冷却
+            if proxy and "429" in msg:
+                ban_local_pool(f"429 重试耗尽: {msg[:120]}")
             raise ProxyError(f"Request failed: {e}") from e
 
     def get(self, url: str, **kwargs) -> requests.Response:

@@ -8,6 +8,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    """读取布尔型环境变量（1/true/yes/on 视为 True）"""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on", "y")
+
+
 @dataclass
 class Settings:
     # 项目路径
@@ -44,6 +52,12 @@ class Settings:
     # 代理文件
     proxies_file: Optional[Path] = None
 
+    # 本地代理池总开关（proxies.txt / HttpClient）
+    # 默认关闭：抓取降级链不再经过本地代理池这一级，直接「远程代理服务 → 直连」，
+    # 避免整池 429 / 欠费时逐域名刷屏日志并白等重试。
+    # 需要恢复时在 .env 里设置 LOCAL_PROXY_POOL_ENABLED=1。
+    local_proxy_pool_enabled: bool = False
+
     # 远程代理服务（平台检测 meta.json 被拦截时的复检通道 / AI 抓取首页的第1级降级）
     proxy_service_url: str = "http://66.154.112.62:8000/fetch"
     proxy_service_key: str = "change-me-please"
@@ -77,10 +91,26 @@ class Settings:
                 self.proxies_file = path
 
     def load_proxies(self) -> list[str]:
-        """从 proxies.txt 加载代理，支持两种格式：
+        """加载本地代理池（proxies.txt），返回探测后确认可用的代理
+
+        总开关 local_proxy_pool_enabled=False 时直接返回空列表（本地代理完全关闭）。
+
+        开启时会对每个代理做一次轻量可用性探测（结果缓存 300 秒）：
+        - 有可用代理：返回可用列表，调用方正常使用本地代理；
+        - 全部不可用：返回空列表，调用方（Google 搜索 / 平台检测 / HttpClient 等）
+          自动关闭本地代理，改走各自的降级链（远程代理服务 → 直连 / cloudscraper）。
+
+        支持两种格式：
         1. http://user:pass@ip:port  （已格式化，直接使用）
         2. ip:port:user:pass         （自动转换）
         """
+        if not self.local_proxy_pool_enabled:
+            return []
+        # 检测到本地代理不可用已被禁止（进程级）：直接返回空，不再尝试
+        from qmds.utils.proxy_probe import is_local_pool_banned
+
+        if is_local_pool_banned():
+            return []
         if not self.proxies_file or not self.proxies_file.exists():
             return []
         lines = self.proxies_file.read_text(encoding="utf-8").strip().splitlines()
@@ -98,7 +128,15 @@ class Settings:
             if len(parts) == 4:
                 ip, port, user, pw = parts
                 result.append(f"http://{user}:{pw}@{ip}:{port}")
-        return result
+        if not result:
+            return []
+
+        # 开启时先探测可用性：全部不可用则返回空列表（自动关闭本地代理）
+        from qmds.utils.proxy_probe import cached_probe
+
+        target = os.getenv("PROXY_PROBE_TARGET") or None
+        kwargs = {} if not target else {"target": target}
+        return cached_probe(result, **kwargs)
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -119,6 +157,7 @@ class Settings:
             llm_model=os.getenv("LLM_MODEL", "mimo-v2.5"),
             proxy_service_url=os.getenv("PROXY_SERVICE_URL", "http://66.154.112.62:8000/fetch"),
             proxy_service_key=os.getenv("PROXY_SERVICE_KEY", "change-me-please"),
+            local_proxy_pool_enabled=_env_bool("LOCAL_PROXY_POOL_ENABLED", False),
         )
 
 

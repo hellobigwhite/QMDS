@@ -22,11 +22,18 @@ from qmds.modules.data_scraper.shopify_nav_parser import parse_navigation
 from qmds.utils import cloudflare_client
 from qmds.utils.logger import get_logger
 from qmds.utils.proxy_manager import ProxyManager, is_account_level_failure
+from qmds.utils.proxy_probe import ban_local_pool, is_local_pool_banned
 
 log = get_logger("product_crawler")
 
 # 请求配置
 REQUEST_TIMEOUT = 25
+
+# 本地代理池开关（settings.local_proxy_pool_enabled，默认关闭）
+# 关闭时降级链不再经过本地代理池：
+#   fetch_json  -> 代理服务 -> 直连 -> cloudscraper 兜底
+#   fetch_bytes -> cloudscraper 直连 -> 代理服务 -> 直连
+_LOCAL_PROXY_POOL_ENABLED = settings.local_proxy_pool_enabled
 MAX_PAGE_LIMIT = 100
 MAX_EMPTY_PAGES = 5
 PAGE_SLEEP_RANGE = (1.5, 3.5)
@@ -37,7 +44,14 @@ SITE_COOLDOWN_RANGE = (6, 12)
 # 覆盖全店商品（250 条/页 × 100 页），必须改用 sitemap 通道枚举商品。
 PRODUCTS_JSON_MAX_PRODUCTS = 25000
 # sitemap 通道逐商品取数时的并发数（每个商品一次请求，远高于分页模式）
-SITEMAP_FETCH_WORKERS = 8
+SITEMAP_FETCH_WORKERS = 16
+# 429 限流按域退避（指数退避，秒）：商店对单站并发敏感，命中 429 后暂停
+# 该域所有取数请求，等冷却结束再继续，避免 16 个线程空耗整条降级链
+SITEMAP_429_COOLDOWN = 30.0
+SITEMAP_429_MAX_COOLDOWN = 300.0
+# 进程级站点并发上限：多个分类任务同时跑时（每任务最多 10 站），限制
+# 全局同时在爬的站点总数，避免把目标站点/出口 IP 打到 429
+MAX_CONCURRENT_SITES = 12
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
@@ -132,13 +146,16 @@ class ProxyServiceClient:
     STATUS_SKIPPED = -1
 
     FAILURE_THRESHOLD = 3
-    COOLDOWN = 180.0
-    # 反复失败说明服务不是偶发抖动，冷却时长逐步翻倍直到该上限
-    MAX_COOLDOWN = 1800.0
+    # 冷却固定 10 秒：服务恢复后很快就能重新走回远程代理，不再指数翻倍
+    COOLDOWN = 10.0
+    MAX_COOLDOWN = 10.0
 
-    def __init__(self):
+    def __init__(self, breaker_enabled: bool = True):
         self.base_url = settings.proxy_service_url
         self.api_key = settings.proxy_service_key
+        # 熔断开关：平台检测等场景传 False 关闭熔断（每个请求都真实发起，
+        # 不再因连续失败进入冷却跳过）；商品抓取等保留默认开启。
+        self._breaker_enabled = breaker_enabled
         self._success = 0
         self._failure = 0
         # 熔断状态
@@ -150,7 +167,9 @@ class ProxyServiceClient:
 
     @property
     def available(self) -> bool:
-        """熔断冷却是否已结束"""
+        """熔断冷却是否已结束；熔断关闭时恒为 True"""
+        if not self._breaker_enabled:
+            return True
         return time.time() >= self._down_until
 
     @staticmethod
@@ -165,7 +184,7 @@ class ProxyServiceClient:
     def _record_failure(self, breaker: bool = True):
         with self._lock:
             self._failure += 1
-            if not breaker:
+            if not breaker or not self._breaker_enabled:
                 return
             self._consecutive_failures += 1
             if self._consecutive_failures >= self.FAILURE_THRESHOLD and time.time() >= self._down_until:
@@ -199,9 +218,13 @@ class ProxyServiceClient:
             log.warning(f"代理服务异常 {target_url}: {type(e).__name__}: {e}")
             return None, 0
 
-    def fetch(self, target_url: str) -> Tuple[Optional[dict], int]:
-        """通过代理服务请求目标URL（期望 JSON 响应）"""
-        resp, status = self._get(target_url)
+    def fetch(self, target_url: str, timeout: Optional[int] = None) -> Tuple[Optional[dict], int]:
+        """通过代理服务请求目标URL（期望 JSON 响应）
+
+        timeout 可覆盖默认 90 秒：平台检测等高频批量场景传较短超时，
+        避免单个超时站点拖慢整个批次。
+        """
+        resp, status = self._get(target_url, timeout=timeout)
         if resp is None:
             return None, status
         if status == 200:
@@ -262,6 +285,11 @@ def get_shared_proxy_service() -> ProxyServiceClient:
     return _shared_proxy_service
 
 
+# 进程级站点并发名额：crawl_category 的每个站点在 _crawl_single_site 中
+# acquire/release，多个分类任务（各自最多 workers 个站点）共享同一上限
+_site_concurrency = threading.BoundedSemaphore(MAX_CONCURRENT_SITES)
+
+
 class ProductCrawler:
     """产品数据爬取器"""
     
@@ -269,7 +297,8 @@ class ProductCrawler:
         self.currency_map = currency_map
         self.session = requests.Session()
         # sitemap 通道会并发发起请求，放大连接池避免 "Connection pool is full" 告警
-        adapter = HTTPAdapter(pool_connections=16, pool_maxsize=16)
+        # （连接池容量与 SITEMAP_FETCH_WORKERS 匹配：每线程可能同时占多个连接）
+        adapter = HTTPAdapter(pool_connections=32, pool_maxsize=32)
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
         self.session.headers.update({
@@ -290,6 +319,11 @@ class ProductCrawler:
         self.proxy_manager = proxy_manager
         # 代理服务客户端（优先使用）；默认取进程级共享实例，让熔断跨站点生效
         self.proxy_service = proxy_service or get_shared_proxy_service()
+
+        # 429 限流按域退避状态（sitemap 通道逐商品取数时使用）
+        self._domain_throttled_until: Dict[str, float] = {}
+        self._domain_429_count: Dict[str, int] = {}
+        self._throttle_lock = threading.Lock()
     
     def close(self):
         """关闭会话释放资源"""
@@ -309,23 +343,63 @@ class ProductCrawler:
             self.proxy_manager.mark_bad(proxy_dict, cooldown=cooldown)
 
     def _handle_proxy_failure(self, proxy: Optional[dict], error: Exception) -> bool:
-        """记录一次代理失败；返回 True 表示整池已熔断，调用方应停止换代理重试
+        """记录一次代理失败；返回 True 表示本地代理池已被禁止，调用方应停止换代理重试
 
         402 欠费 / 407 认证失败是账号级故障，池内所有出口 IP 会同时失效，
-        逐个 mark_bad 只会白烧整个池子。
+        逐个 mark_bad 只会白烧整个池子；检测到不可用后直接禁止整池（进程级），
+        不进入冷却，本次进程内不再使用本地代理。
         """
         if not self.proxy_manager:
             return False
         if is_account_level_failure(error):
-            self.proxy_manager.disable_all(reason=str(error)[:120])
+            ban_local_pool(f"账号级故障: {str(error)[:120]}")
             return True
         self.mark_proxy_bad(proxy, cooldown=60.0)
-        return self.proxy_manager.is_pool_down
-    
+        return is_local_pool_banned()
+
+    # ── 429 限流按域退避（sitemap 通道）───────────────────
+
+    def _throttle_domain(self, domain: str):
+        """记录一次 429，按指数退避设置该域冷却期"""
+        with self._throttle_lock:
+            count = self._domain_429_count.get(domain, 0) + 1
+            self._domain_429_count[domain] = count
+            cooldown = min(SITEMAP_429_COOLDOWN * (2 ** (count - 1)), SITEMAP_429_MAX_COOLDOWN)
+            self._domain_throttled_until[domain] = time.time() + cooldown
+        log.warning(f"[{domain}] 收到 429，退避 {cooldown:.0f} 秒（第 {count} 次）")
+
+    def _domain_unthrottle(self, domain: str):
+        """一次成功取数后清零该域 429 计数（冷却期已过不再延长）"""
+        with self._throttle_lock:
+            self._domain_429_count[domain] = 0
+
+    def _wait_if_throttled(self, domain: str, stop_event: threading.Event = None):
+        """若该域处于 429 冷却期，等待冷却结束（分片睡眠，停止信号可打断）"""
+        while True:
+            with self._throttle_lock:
+                until = self._domain_throttled_until.get(domain, 0.0)
+            remaining = until - time.time()
+            if remaining <= 0:
+                return
+            if stop_event is not None and stop_event.is_set():
+                return
+            time.sleep(min(remaining, 1.0))
+
+    @staticmethod
+    def _acquire_site_slot(stop_event: threading.Event = None) -> bool:
+        """等待一个站点并发名额（进程级，可被停止信号打断）；失败返回 False"""
+        while True:
+            if stop_event is not None and stop_event.is_set():
+                return False
+            if _site_concurrency.acquire(timeout=1.0):
+                return True
+
     def fetch_json(self, url: str, timeout: int = REQUEST_TIMEOUT) -> Tuple[Optional[dict], int]:
         """获取JSON数据
 
-        降级链：代理服务 → 本地代理池(3次) → 直连(仅429) → cloudscraper 兜底
+        降级链：代理服务 → 本地代理池(3次) → 直连(仅429/池不可用) → cloudscraper 兜底
+        本地代理池关闭（settings.local_proxy_pool_enabled=False）时跳过第2步，
+        等价于：代理服务 → 直连 → cloudscraper 兜底。
         """
         # 第一步：优先使用代理服务
         data, status = self.proxy_service.fetch(url)
@@ -340,6 +414,14 @@ class ProductCrawler:
         cloudflare_blocked = False
         pool_unavailable = False
         for attempt in range(3):
+            if not _LOCAL_PROXY_POOL_ENABLED:
+                # 本地代理池已关闭：不取代理、不发请求，直接进入第三步直连
+                pool_unavailable = True
+                break
+            if is_local_pool_banned():
+                # 检测到本地代理不可用已被禁止（进程级）：不再取代理
+                pool_unavailable = True
+                break
             proxy = self.get_next_proxy()
             if proxy is None:
                 # 代理池整体熔断（账号级故障）或已无可用代理，交给第三步直连
@@ -358,7 +440,9 @@ class ProductCrawler:
                         last_status = 429
                         if attempt < 2:
                             continue  # 换下一个代理重试，不立即返回
-                        log.warning(f"429限流 {url} | 已尝试{attempt+1}个代理均被限流 | body={body}")
+                        # 3 个代理均被 429 限流：本地代理对目标不可用，直接禁止整池
+                        ban_local_pool(f"{url} 连续 429 限流")
+                        log.warning(f"429限流 {url} | 已尝试{attempt+1}个代理均被限流，已禁止本地代理 | body={body}")
                     elif status in (403, 401):
                         log.warning(f"{status}拒绝 {url} | proxy={proxy}")
                         last_status = status
@@ -410,15 +494,24 @@ class ProductCrawler:
                     return None, 0
             time.sleep(1)
 
-        # 第三步：直连降级（429 限流，或代理池整体不可用时）
+        # 第三步：直连降级（429 限流，或代理池整体不可用/已关闭时）
         if last_status == 429 or pool_unavailable:
             try:
                 response = self.session.get(url, timeout=timeout)
-                if response.status_code == 200:
+                code = response.status_code
+                if code == 200:
                     ct = response.headers.get("Content-Type", "")
                     if "json" in ct.lower():
                         return response.json(), 200
-                log.warning(f"直连降级失败 {url} | HTTP {response.status_code}")
+                    log.warning(f"直连降级非JSON响应 {url} | ct={ct}")
+                else:
+                    log.warning(f"直连降级失败 {url} | HTTP {code}")
+                    if code == 403:
+                        # 403 多为 Cloudflare 挑战页，交由第四步 cloudscraper 兜底
+                        cloudflare_blocked = True
+                    if code != 429:
+                        # 记录真实状态码：404/410 等确定性结果直接返回，不再白跑一次 cloudscraper
+                        last_status = code
             except Exception as e:
                 log.warning(f"直连降级失败 {url} | {type(e).__name__}: {e}")
 
@@ -450,23 +543,46 @@ class ProductCrawler:
         log.debug(f"cloudscraper 兜底未命中 {url} | HTTP {response.status_code}")
         return None
 
-    def fetch_bytes(self, url: str, timeout: int = REQUEST_TIMEOUT) -> Optional[bytes]:
+    def fetch_bytes(self, url: str, timeout: int = REQUEST_TIMEOUT,
+                     status_holder: Optional[list] = None) -> Optional[bytes]:
         """获取原始字节（sitemap XML 等非 JSON 目标）
 
         顺序：cloudscraper 直连 → 代理服务 → 本地代理池。
         sitemap 是静态文件，直连优先，可省去代理服务的额外一跳。
+        本地代理池关闭（settings.local_proxy_pool_enabled=False）时末级改为直连兜底。
+
+        Args:
+            status_holder: 可选列表，每级降级的 HTTP 状态码会追加进去（供调用方
+                识别 429 限流等信号；sitemap 通道用它做按域退避）
         """
+        def _note(status: int):
+            if status_holder is not None:
+                status_holder.append(status)
+
         # 1. cloudscraper 直连（同时可绕 Cloudflare）
         response = cloudflare_client.get(url, timeout=timeout)
-        if response is not None and response.status_code == 200 and response.content:
-            return response.content
+        if response is not None:
+            _note(response.status_code)
+            if response.status_code == 200 and response.content:
+                return response.content
 
         # 2. 代理服务
         content, status = self.proxy_service.fetch_bytes(url, timeout=timeout)
+        _note(status)
         if status == 200 and content:
             return content
 
-        # 3. 本地代理池
+        # 3. 本地代理池（关闭或已被禁止时改为直连兜底，避免整级缺失）
+        if not _LOCAL_PROXY_POOL_ENABLED or is_local_pool_banned():
+            try:
+                response = self.session.get(url, timeout=timeout)
+                _note(response.status_code)
+                if response.status_code == 200 and response.content:
+                    return response.content
+                log.warning(f"sitemap 直连获取失败 {url} | HTTP {response.status_code}")
+            except Exception as e:
+                log.warning(f"sitemap 直连获取异常 {url} | {type(e).__name__}: {e}")
+            return None
         if self.proxy_manager:
             proxy = self.get_next_proxy()
             if proxy is None:
@@ -474,6 +590,7 @@ class ProductCrawler:
                 return None
             try:
                 response = self.session.get(url, timeout=timeout, proxies=proxy)
+                _note(response.status_code)
                 if response.status_code == 200 and response.content:
                     return response.content
                 log.warning(f"sitemap 获取失败 {url} | HTTP {response.status_code} | proxy={proxy}")
@@ -484,9 +601,10 @@ class ProductCrawler:
                 log.warning(f"sitemap 获取异常 {url} | {type(e).__name__}: {e}")
         return None
 
-    def fetch_text(self, url: str, timeout: int = REQUEST_TIMEOUT) -> str:
+    def fetch_text(self, url: str, timeout: int = REQUEST_TIMEOUT,
+                    status_holder: Optional[list] = None) -> str:
         """获取文本内容（商品页 HTML 等）"""
-        content = self.fetch_bytes(url, timeout=timeout)
+        content = self.fetch_bytes(url, timeout=timeout, status_holder=status_holder)
         if not content:
             return ""
         try:
@@ -605,7 +723,8 @@ class ProductCrawler:
             _progress(f"[{domain}] sitemap 兜底通道（{reason}）")
 
             product_urls = sitemap_fetcher.collect_product_urls(
-                url, self.fetch_bytes, stop_event=stop_event, progress_callback=_progress
+                url, self.fetch_bytes, stop_event=stop_event, progress_callback=_progress,
+                workers=sitemap_fetcher.SITEMAP_DISCOVER_WORKERS,
             )
             if not product_urls:
                 log.warning(f"[{domain}] sitemap 未发现商品链接")
@@ -629,7 +748,7 @@ class ProductCrawler:
             workers = max(1, min(SITEMAP_FETCH_WORKERS, total_urls))
             with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="sitemap_fetch") as executor:
                 futures = {
-                    executor.submit(self._fetch_sitemap_product, pu, prefer_jsonld): pu
+                    executor.submit(self._fetch_sitemap_product, pu, prefer_jsonld, stop_event): pu
                     for pu in product_urls
                 }
                 for future in as_completed(futures):
@@ -684,28 +803,44 @@ class ProductCrawler:
             return {"success": False, "products": [], "count": 0,
                     "error": str(e), "crawl_mode": "sitemap"}
 
-    def _fetch_sitemap_product(self, product_url: str, prefer_jsonld: bool = False) -> Optional[dict]:
+    def _fetch_sitemap_product(self, product_url: str, prefer_jsonld: bool = False,
+                               stop_event: threading.Event = None) -> Optional[dict]:
         """取单个商品的数据
 
         顺序：<商品链接>.json → 商品页 JSON-LD 兜底。
         部分店铺会同时禁用 /products.json 与 /products/<handle>.json，
         此时只能从商品页内嵌的 JSON-LD 取数。
 
+        429 限流处理：请求前若该域处于冷却期则等待；请求中命中 429 则记录
+        指数退避，后续取数请求暂停该域，避免整站 16 个线程空耗降级链。
+
         Args:
             prefer_jsonld: 已探测到 .json 端点被禁用，直接走商品页解析
+            stop_event: 可选停止信号（冷却等待期间可被打断）
         """
+        domain = get_domain(product_url)
+        self._wait_if_throttled(domain, stop_event)
+
         if not prefer_jsonld:
-            data, _status = self.fetch_json(product_url.rstrip("/") + ".json", timeout=REQUEST_TIMEOUT)
+            data, status = self.fetch_json(product_url.rstrip("/") + ".json", timeout=REQUEST_TIMEOUT)
+            if status == 429:
+                self._throttle_domain(domain)
             if isinstance(data, dict):
                 product = data.get("product")
                 if isinstance(product, dict):
+                    self._domain_unthrottle(domain)
                     return product
                 # 少数主题直接返回商品对象本身
                 if data.get("title"):
+                    self._domain_unthrottle(domain)
                     return data
 
-        html = self.fetch_text(product_url)
+        status_holder: List[int] = []
+        html = self.fetch_text(product_url, status_holder=status_holder)
+        if 429 in status_holder:
+            self._throttle_domain(domain)
         if html:
+            self._domain_unthrottle(domain)
             return sitemap_fetcher.extract_jsonld_product(html)
         return None
 
@@ -1035,6 +1170,11 @@ class ProductCrawler:
             log.info(f"[{site_index}/{total_sites}] 跳过（已停止）: {domain}")
             return {"success": False, "saved": 0, "url": url, "domain": domain, "error": "任务已停止", "stopped": True}
 
+        # 进程级站点并发名额：多个分类任务同时跑时限制全局并发站点数
+        if not self._acquire_site_slot(stop_event):
+            log.info(f"[{site_index}/{total_sites}] 跳过（等待并发名额时被停止）: {domain}")
+            return {"success": False, "saved": 0, "url": url, "domain": domain, "error": "任务已停止", "stopped": True}
+
         crawler = create_crawler()
         product_db = ProductDBClient()
         try:
@@ -1069,6 +1209,7 @@ class ProductCrawler:
                 progress_callback(f"[{site_index}/{total_sites}] 失败: {domain} ({e})")
             return {"success": False, "saved": 0, "url": url, "domain": domain, "error": str(e), "stopped": bool(stop_event and stop_event.is_set())}
         finally:
+            _site_concurrency.release()
             crawler.close()
             product_db.close()
 
@@ -1358,6 +1499,12 @@ def create_crawler() -> ProductCrawler:
         currency_map = {"USD": 1.0, "EUR": 0.92, "GBP": 0.79, "CAD": 1.36, "AUD": 1.53}
     
     # 加载代理配置（ProxyManager 自动转换格式 + 支持标记坏代理 + 冷却轮换）
-    proxy_manager = ProxyManager.from_settings()
+    # 本地代理池关闭、或探测后无可用代理（load_proxies 内部完成探测）时不再创建，
+    # 爬取器整条链路都不会取代理，改走「代理服务 → 直连 → cloudscraper」降级链
+    proxy_manager = (
+        ProxyManager.from_settings()
+        if (_LOCAL_PROXY_POOL_ENABLED and settings.load_proxies())
+        else None
+    )
 
     return ProductCrawler(currency_map=currency_map, proxy_manager=proxy_manager)

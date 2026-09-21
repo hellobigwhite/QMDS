@@ -916,9 +916,13 @@ class MongoDBClient:
                 "$or": [
                     {"page_info": {"$exists": False}},
                     {"page_info": {}},
-                    {"page_info.homepage_content": {"$in": ["", None]}},
-                    {"page_info.title": {"$in": ["", None]}},
-                    {"page_info.nav_categories": {"$in": [[], None]}},
+                    {
+                        "$and": [
+                            {"page_info.homepage_content": {"$in": ["", None]}},
+                            {"page_info.title": {"$in": ["", None]}},
+                            {"page_info.nav_categories": {"$in": [[], None]}},
+                        ]
+                    },
                 ],
             },
             {"url": 1, "domain": 1, "_id": 0},

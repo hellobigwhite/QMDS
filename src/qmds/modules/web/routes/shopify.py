@@ -486,7 +486,7 @@ def shopify_filter_categories():
                                 if processed_in_round % 10 == 0 or processed_in_round == batch_size:
                                     task_manager.update(
                                         task_id,
-                                        progress=int(total_processed / grand_total * 100) if grand_total else 100,
+                                        progress=min(100, int(total_processed / grand_total * 100)) if grand_total else 100,
                                         current=total_processed, total=grand_total,
                                         message=f"轮{round_num}/{max_rounds} [{processed_in_round}/{batch_size}] 成功 {total_success}, 空 {total_empty}",
                                     )
@@ -507,7 +507,7 @@ def shopify_filter_categories():
                                 )
                             break
 
-                    summary = f"完成: 总计 {grand_total}, 成功 {total_success}, 信息为空 {total_empty}"
+                    summary = f"完成: 总计 {grand_total}, 成功 {total_success}, 信息为空 {grand_total - total_success}"
                     task_manager.update(task_id, status="completed", message=summary, progress=100)
                     task_manager.add_log(task_id, summary, "info")
                 except Exception as e:

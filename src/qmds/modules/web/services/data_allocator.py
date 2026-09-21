@@ -10,6 +10,9 @@
        （不会整类分给单一主分类，每份分得 floor(n/P) 或 ceil(n/P) 条）；
      * 其余小分类保持整类不拆散，LPT 贪心装箱；
      * 每份补充表目标约 4~5 万条，尽量均衡；
+   - 补充数据受原站域名约束：每个主分类分到的补充数据中，同一
+     「原站域名」的条数不超过上限（默认 5000）。超限时自动增加补充
+     份数，大分类按域名拆分到多份，小分类装箱时避开域名已饱和的份；
    - 每个主分类分配一份补充表，多余的份作为额外补充（extra）输出；
 4. 全部表格写入原表格同目录下的 {原文件名}_分配_{时间戳} 文件夹，
    每个主分类一个数据文件夹（以分类命名）：主数据表 main{分类名}.xlsx 与
@@ -110,7 +113,9 @@ def count_excel_categories(filepath: Path):
 
 
 def _pack_portions(remaining_counts: dict, portion_count: int,
-                   split_threshold: int) -> list[dict]:
+                   split_threshold: int,
+                   category_domains: dict | None = None,
+                   max_domain_count: int | None = None) -> list[dict]:
     """把剩余分类打包进 portion_count 份补充表，尽量均衡
 
     - 数量 <= split_threshold 的小分类保持整类不拆散（LPT 贪心装箱）；
@@ -119,8 +124,21 @@ def _pack_portions(remaining_counts: dict, portion_count: int,
       余下的零头优先补到当前总量最少的份。
       同一分类会以分片形式出现在多份中，不会整类分给单一一份。
 
-    返回按总量降序排列的 [{categories: {名: 数}, total: int}, ...]。
+    可选的原站域名约束（category_domains 与 max_domain_count 同时提供时生效）：
+    - category_domains: {分类: {原站域名: 数量}}，键与 remaining_counts 一致；
+    - 每份补充表中同一「原站域名」的条数不超过 max_domain_count；
+    - 单个分类内某域名数量超过上限时该分类按域名拆分到多份；
+    - 小分类整类装箱时若放入会超过任一份的域名上限则改放下一可行的份，
+      所有份都放不下时新增一份（份数随之增加）。
+
+    返回按总量降序排列的 [{categories, domains, cat_domains, total}, ...]；
+    未启用域名约束时返回 [{categories, total}, ...]（与旧行为一致）。
     """
+    if category_domains is not None and max_domain_count and max_domain_count > 0:
+        return _pack_portions_domain_aware(remaining_counts, portion_count,
+                                           split_threshold, category_domains,
+                                           max_domain_count)
+
     portions: list[dict] = [{"categories": {}, "total": 0} for _ in range(portion_count)]
 
     # 1) 小分类：LPT 贪心（数量降序），每次放入当前总量最少的份
@@ -152,9 +170,98 @@ def _pack_portions(remaining_counts: dict, portion_count: int,
     return portions
 
 
+def _pack_portions_domain_aware(remaining_counts: dict, portion_count: int,
+                                split_threshold: int,
+                                category_domains: dict,
+                                max_domain_count: int) -> list[dict]:
+    """原站域名约束版装箱：每份补充表中同一「原站域名」不超过 max_domain_count 条
+
+    - 大分类（数量 > split_threshold，或某域名数量 > max_domain_count）按域名
+      拆分：每个域名依次分到总量最少的份，每份该域名不超过上限；
+    - 小分类整类装箱：优先放入总量最少且放入后所有域名都不超上限的份，
+      所有份都放不下时新增一份。
+
+    返回按总量降序排列的
+    [{categories: {名: 数}, cat_domains: {名: {域名: 数}}, domains: {域名: 数},
+      total: int}, ...]。
+    """
+    portions: list[dict] = [
+        {"categories": {}, "cat_domains": {}, "domains": {}, "total": 0}
+        for _ in range(portion_count)]
+
+    def dom_dist_of(cat):
+        """分类的域名分布；category_domains 缺该分类时整类记入空域名"""
+        dist = category_domains.get(cat)
+        if dist:
+            return {str(d): int(n) for d, n in dist.items() if int(n) > 0}
+        return {"": int(remaining_counts[cat])}
+
+    def fits(portion, dist):
+        for dom, n in dist.items():
+            if portion["domains"].get(dom, 0) + n > max_domain_count:
+                return False
+        return True
+
+    def place(portion, cat, dist):
+        """把整个分类的域名分布放入一份（小分类整类装箱用）"""
+        for dom, n in dist.items():
+            portion["domains"][dom] = portion["domains"].get(dom, 0) + n
+        portion["categories"][cat] = sum(dist.values())
+        portion["cat_domains"][cat] = dict(dist)
+        portion["total"] += sum(dist.values())
+
+    def new_portion() -> int:
+        portions.append({"categories": {}, "cat_domains": {}, "domains": {},
+                         "total": 0})
+        return len(portions) - 1
+
+    # 分类：大分类 = 数量超阈值，或某域名数量超上限（整类放不下时必须拆）
+    smalls: list[tuple[str, int, dict]] = []
+    larges: list[tuple[str, int, dict]] = []
+    for cat, cnt in remaining_counts.items():
+        dist = dom_dist_of(cat)
+        if cnt > split_threshold or any(n > max_domain_count for n in dist.values()):
+            larges.append((cat, cnt, dist))
+        else:
+            smalls.append((cat, cnt, dist))
+
+    # 1) 大分类：按域名拆分到各份，每份该域名不超过上限（不重不漏）
+    for cat, cnt, dist in sorted(larges, key=lambda x: (-x[1], x[0])):
+        for dom, dcnt in dist.items():
+            remaining = dcnt
+            while remaining > 0:
+                candidates = [i for i in range(len(portions))
+                              if portions[i]["domains"].get(dom, 0) < max_domain_count]
+                if not candidates:
+                    candidates = [new_portion()]
+                i = min(candidates, key=lambda j: (portions[j]["total"], j))
+                take = min(remaining,
+                           max_domain_count - portions[i]["domains"].get(dom, 0))
+                portions[i]["domains"][dom] = portions[i]["domains"].get(dom, 0) + take
+                cd = portions[i]["cat_domains"].setdefault(cat, {})
+                cd[dom] = cd.get(dom, 0) + take
+                portions[i]["categories"][cat] = portions[i]["categories"].get(cat, 0) + take
+                portions[i]["total"] += take
+                remaining -= take
+
+    # 2) 小分类：整类装箱，优先放入总量最少且不超域名上限的份
+    for cat, cnt, dist in sorted(smalls, key=lambda x: (-x[1], x[0])):
+        feasible = [i for i in range(len(portions)) if fits(portions[i], dist)]
+        if not feasible:
+            feasible = [new_portion()]
+        i = min(feasible, key=lambda j: (portions[j]["total"], j))
+        place(portions[i], cat, dist)
+
+    portions = [p for p in portions if p["total"] > 0]
+    portions.sort(key=lambda p: (-p["total"], sorted(p["categories"])[:1]))
+    return portions
+
+
 def plan_allocation(category_counts: dict, main_categories: list,
                     min_size: int = 40000, max_size: int = 50000,
-                    split_threshold: int = DEFAULT_SPLIT_THRESHOLD) -> dict:
+                    split_threshold: int = DEFAULT_SPLIT_THRESHOLD,
+                    category_domains: dict | None = None,
+                    max_domain_count: int | None = None) -> dict:
     """计算数据分配方案（纯函数）
 
     参数:
@@ -164,6 +271,11 @@ def plan_allocation(category_counts: dict, main_categories: list,
         split_threshold: 大分类拆分阈值。数量超过该值的分类将按比例均匀
             拆分到每一份补充表（不整类分给单一主分类）；数量 <= 该值的
             分类保持整类不拆散。
+        category_domains: {分类: {原站域名: 数量}}。与 max_domain_count
+            同时提供时启用原站域名约束；为 None 时约束不生效。
+        max_domain_count: 原站域名约束上限——每个主分类分到的补充数据中，
+            同一「原站域名」的条数不超过该值（默认 5000）。超限时自动
+            增加补充份数（大分类按域名拆分，小分类装箱避开饱和的份）。
 
     返回:
         {
@@ -172,13 +284,19 @@ def plan_allocation(category_counts: dict, main_categories: list,
             "portion_count": 补充表份数,
             "target_size": 每份目标条数（约）,
             "portions": [{categories: {名: 数}, total}] 按总量降序
-                        （大分类以分片形式出现在多份中）,
+                        （大分类以分片形式出现在多份中；启用域名约束时
+                         每份还含 domains / cat_domains 字段）,
             "split_categories": [{category, count}] 将被拆分的大分类,
             "split_threshold": 拆分阈值,
+            "domain_limit": {"enabled": bool, "max": int|None},
             "warnings": [提示文本, ...],
         }
     """
     warnings: list[str] = []
+    # 原站域名约束：category_domains（{分类: {原站域名: 数量}}）与
+    # max_domain_count 同时提供时生效（默认 5000，0 表示不限制）
+    domain_aware = (category_domains is not None
+                    and max_domain_count and max_domain_count > 0)
 
     main_set = set()
     mains: list[tuple[str, int]] = []
@@ -209,16 +327,44 @@ def plan_allocation(category_counts: dict, main_categories: list,
         # 份数规则：至少每个主分类一份；数据多于 max_size×份数时增加份数，
         # 保证每份目标条数不超过 max_size。
         portion_count = max(len(mains), math.ceil(remaining_total / max_size), 1)
-        portions = _pack_portions(remaining_counts, portion_count, split_threshold)
-        target_size = round(remaining_total / portion_count)
+        if domain_aware:
+            # 域名约束的份数下限：任一域名的剩余总量每份最多 max_domain_count 条
+            domain_totals: Counter = Counter()
+            for cat, dist in category_domains.items():
+                if cat in main_set:
+                    continue
+                if dist:
+                    for dom, n in dist.items():
+                        domain_totals[str(dom)] += int(n)
+                else:
+                    domain_totals[""] += int(category_counts.get(cat, 0))
+            need = math.ceil(max(domain_totals.values(), default=0) / max_domain_count)
+            if need > portion_count:
+                warnings.append(
+                    f"原站域名约束：同一补充表中同一原站域名最多 {max_domain_count} 条，"
+                    f"补充表份数由 {portion_count} 增至 {need}")
+                portion_count = need
+        portions = _pack_portions(remaining_counts, portion_count, split_threshold,
+                                  category_domains, max_domain_count)
+        portion_count = len(portions)
+        target_size = round(remaining_total / portion_count) if portion_count else 0
 
-        # 将被拆分的大分类（只有 1 份时无处可拆，不列出）
+        # 将被拆分的大分类（只有 1 份时无处可拆，不列出）；
+        # 域名约束下，某域名数量超过上限的分类也按域名拆分
         if portion_count > 1:
+            if domain_aware:
+                split_candidates = []
+                for c, n in remaining_counts.items():
+                    dist = category_domains.get(c) or {"": n}
+                    if n > split_threshold or any(
+                            int(dc) > max_domain_count for dc in dist.values()):
+                        split_candidates.append((c, n))
+            else:
+                split_candidates = [(c, n) for c, n in remaining_counts.items()
+                                    if n > split_threshold]
             split_categories = [
                 {"category": c, "count": n}
-                for c, n in sorted(
-                    ((c, n) for c, n in remaining_counts.items() if n > split_threshold),
-                    key=lambda x: (-x[1], x[0]))
+                for c, n in sorted(split_candidates, key=lambda x: (-x[1], x[0]))
             ]
 
         if target_size < min_size:
@@ -237,6 +383,11 @@ def plan_allocation(category_counts: dict, main_categories: list,
     else:
         warnings.append("去除主分类后没有剩余数据，将只生成主分类表格")
 
+    if domain_aware and remaining_total > 0:
+        warnings.append(
+            f"原站域名约束：每个主分类的补充数据中同一原站域名最多 "
+            f"{max_domain_count} 条（超限时已自动增加补充份数）")
+
     return {
         "main_tables": [{"category": c, "count": n} for c, n in mains],
         "remaining_total": remaining_total,
@@ -245,6 +396,10 @@ def plan_allocation(category_counts: dict, main_categories: list,
         "portions": portions,
         "split_categories": split_categories,
         "split_threshold": split_threshold,
+        "domain_limit": {
+            "enabled": domain_aware,
+            "max": max_domain_count if domain_aware else None,
+        },
         "warnings": warnings,
     }
 
@@ -252,7 +407,8 @@ def plan_allocation(category_counts: dict, main_categories: list,
 def run_allocation_task(task_id: str, file_path: Path, main_categories: list,
                         min_size: int = 40000, max_size: int = 50000,
                         split_threshold: int = DEFAULT_SPLIT_THRESHOLD,
-                        split_options: dict | None = None):
+                        split_options: dict | None = None,
+                        max_domain_count: int | None = None):
     """数据分配后台任务体：读取表格 -> 计算方案 -> 写出主分类表与补充表
     -> 统计各网站数据文件夹的分类结构
 
@@ -274,6 +430,13 @@ def run_allocation_task(task_id: str, file_path: Path, main_categories: list,
         remove_source: 拆分后删除原表格（默认 True）
     拆分在各自文件夹内进行，文件名
     {表格名}_part{N}_{随机字母}{时间戳}.xlsx，与 BB 工具一致。
+
+    原站域名约束（max_domain_count，默认 None 不生效；网页端默认 5000）：
+    每个主分类分到的补充数据中，同一「原站域名」的条数不超过
+    max_domain_count。超限时自动增加补充份数：大分类按域名拆分到多份，
+    小分类装箱时避开域名已饱和的份（见 _pack_portions_domain_aware），
+    补充表按 (分类, 原站域名) 分片截取行，不重不漏。主数据表不受此约束；
+    表格缺少「原站域名」列时约束不生效并告警。
 
     分配（含拆表）完成后对每个主分类数据文件夹（= 每个网站，
     含主数据表与补充数据表）汇总分类及产品数，生成该文件夹下的
@@ -304,8 +467,25 @@ def run_allocation_task(task_id: str, file_path: Path, main_categories: list,
         counts = Counter(cat_values)
         category_counts = dict(counts)  # 含 ""（空分类），其数据参与补充分配
 
+        # 原站域名约束：每个主分类的补充数据中同一原站域名最多 max_domain_count 条
+        category_domains = None
+        domain_col = "原站域名" if "原站域名" in df.columns else None
+        if max_domain_count and max_domain_count > 0:
+            if domain_col is None:
+                _log("表格中未找到「原站域名」列，原站域名数量约束不生效", "warning")
+            else:
+                dom_values = df[domain_col].fillna("").astype(str).str.strip()
+                key_df = pd.DataFrame({"__c": cat_values, "__d": dom_values})
+                category_domains = {}
+                for (c, d), idx in key_df.groupby(["__c", "__d"],
+                                                  sort=False).indices.items():
+                    category_domains.setdefault(c, {})[d] = len(idx)
+                _log(f"原站域名约束：每个主分类的补充数据中同一原站域名最多 "
+                     f"{max_domain_count} 条")
+
         plan = plan_allocation(category_counts, main_categories,
-                               min_size, max_size, split_threshold)
+                               min_size, max_size, split_threshold,
+                               category_domains, max_domain_count)
 
         main_tables = plan["main_tables"]
         portions = plan["portions"]
@@ -339,9 +519,37 @@ def run_allocation_task(task_id: str, file_path: Path, main_categories: list,
         # 分类 -> 行位置索引；大分类拆分时按分片依次截取连续行，保证不重不漏
         groups = df.groupby(cat_values, sort=False).indices
         cursors: dict = {}
+        # 原站域名约束生效时: (分类, 原站域名) -> 行位置索引，按域名分片截取
+        dom_groups: dict = {}
+        dom_cursors: dict = {}
+        if category_domains is not None and domain_col is not None:
+            key_df = pd.DataFrame({"__c": cat_values, "__d": dom_values})
+            dom_groups = {
+                k: v.tolist()
+                for k, v in key_df.groupby(["__c", "__d"], sort=False).indices.items()
+            }
 
         def take_portion_rows(portion):
-            """按分片取出一份补充表的行（同一分类的多份分片按原表顺序依次截取）"""
+            """按分片取出一份补充表的行
+
+            原站域名约束生效时按 (分类, 原站域名) 分片：每份取到该域名
+            指定条数，各份之间不重不漏；否则按原表顺序依次截取。
+            """
+            if "cat_domains" in portion:
+                idxs = []
+                for cat, breakdown in portion["cat_domains"].items():
+                    for dom, n in breakdown.items():
+                        if n <= 0:
+                            continue
+                        arr = dom_groups.get((cat, dom))
+                        if arr is None:
+                            continue
+                        start = dom_cursors.get((cat, dom), 0)
+                        take = arr[start:start + n]
+                        dom_cursors[(cat, dom)] = start + len(take)
+                        idxs.extend(take)
+                idxs.sort()
+                return df.iloc[idxs] if idxs else df.iloc[0:0]
             idxs = []
             for cat, chunk in portion["categories"].items():
                 arr = groups.get(cat)
@@ -427,7 +635,11 @@ def run_allocation_task(task_id: str, file_path: Path, main_categories: list,
             sub.to_excel(winpath.long_path(path), index=False, engine="openpyxl")
             done += 1
             task_manager.update(task_id, progress=int(done / total_steps * 100))
-            _log(f"{desc}: {path.relative_to(out_dir)}（{len(sub)} 条，{len(portion['categories'])} 个分类）")
+            dom_note = ""
+            if "domains" in portion and portion["domains"]:
+                dom_note = f"，同域名最多 {max(portion['domains'].values())} 条"
+            _log(f"{desc}: {path.relative_to(out_dir)}（{len(sub)} 条，"
+                 f"{len(portion['categories'])} 个分类{dom_note}）")
             # 补充数据按每份行数拆分
             written.append((path, supp_rows_per_file, len(sub), folder))
 
@@ -513,14 +725,17 @@ def run_allocation_task(task_id: str, file_path: Path, main_categories: list,
         split_note = "，已批量拆表" + ("，原表格已删除" if remove_source else "")             if split_enabled and written else ""
         stats_note = (f"，已生成 {stats_written} 份网站分类统计（{STATS_FILE_NAME}）"
                       if stats_written else "")
+        domain_note = (f"，同域名每份上限 {max_domain_count} 条"
+                       if category_domains is not None else "")
         summary = (f"完成: 共生成 {file_count} 个表格，分属 {folder_count} 个数据文件夹"
-                   f"（主数据与对应补充数据同文件夹）{split_note}{stats_note}"
+                   f"（主数据与对应补充数据同文件夹）{split_note}{stats_note}{domain_note}"
                    f" -> {out_dir.name}")
         task_manager.update(task_id, status="completed", message=summary, progress=100)
         _log(f"任务完成: 共生成 {file_count} 个表格（主数据 {len(main_tables)} + "
              f"补充 {len(portions)}），{folder_count} 个数据文件夹"
              + split_note
              + stats_note
+             + domain_note
              + f"，输出目录: {out_dir}")
 
     except Exception as e:

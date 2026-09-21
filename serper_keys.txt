@@ -1,0 +1,9 @@
+# Serper API Keys（每行一个 key，开头为注释跳过）
+# 额度用完自动跳过，切换下一个 key
+# 获取地址: https://serper.dev/
+# 示例: abc123def456
+0771bd72f71c567c5ff75dd2aa4d27eead05bac9
+0549a816592fa053cff63c28fcc14b8361c40d71
+e01553a25ba9928f20254dbc308c928bb08ced07
+cdfa33bb0456a8fc4b9e472498f1c6a3937319c0
+502ba1abff4f02ca83cb2212e283564ec183bb86

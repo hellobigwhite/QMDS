@@ -18,6 +18,8 @@
 import gzip
 import json
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, List, Optional
 from urllib.parse import urlparse
 
@@ -31,6 +33,8 @@ log = get_logger("sitemap_fetcher")
 SITEMAP_TIMEOUT = 20
 # 单个店铺最多解析多少个子 sitemap（防失控）
 MAX_SITEMAPS = 200
+# 解析子 sitemap 的并发数（发现阶段原为串行，大店 100+ 个子 sitemap 会拖到十几分钟）
+SITEMAP_DISCOVER_WORKERS = 8
 # 单个店铺最多发现多少商品链接（防失控）
 MAX_PRODUCT_URLS = 60000
 
@@ -179,29 +183,64 @@ def extract_product_urls(sitemap_url: str, fetcher: Callable) -> List[str]:
 
 
 def collect_product_urls(base_url: str, fetcher: Callable, *, stop_event=None,
-                         progress_callback=None) -> List[str]:
-    """发现并汇总一个店铺的全部商品链接（去重）"""
+                         progress_callback=None, workers: int = SITEMAP_DISCOVER_WORKERS) -> List[str]:
+    """发现并汇总一个店铺的全部商品链接（去重，子 sitemap 并发解析）
+
+    Args:
+        base_url: 店铺根 URL（如 https://store.com）
+        fetcher: 传输回调 (url, timeout) -> Optional[bytes]
+        stop_event: 可选停止信号
+        progress_callback: 进度回调（线程安全，由调用方保证）
+        workers: 解析子 sitemap 的并发数（默认 SITEMAP_DISCOVER_WORKERS）
+    """
     sitemaps = discover_product_sitemaps(base_url, fetcher, stop_event=stop_event)
     if not sitemaps:
         return []
 
+    total_sitemaps = len(sitemaps)
     urls: List[str] = []
     seen = set()
-    for idx, sitemap_url in enumerate(sitemaps, 1):
-        if stop_event is not None and stop_event.is_set():
-            break
+    lock = threading.Lock()
+    done = 0
+
+    def _parse_one(sitemap_url: str) -> List[str]:
+        """解析单个子 sitemap，返回新增商品链接（共享 seen 去重）"""
+        nonlocal done
+        found: List[str] = []
+        hit_limit = False
         for url in extract_product_urls(sitemap_url, fetcher):
-            if url in seen:
+            with lock:
+                if url in seen:
+                    continue
+                seen.add(url)
+                found.append(url)
+                hit_limit = len(seen) >= MAX_PRODUCT_URLS
+            if hit_limit:
+                break
+        with lock:
+            done += 1
+            if progress_callback and (done % 5 == 0 or done == total_sitemaps):
+                progress_callback(f"[sitemap] 已解析 {done}/{total_sitemaps} 个 sitemap，累计 {len(seen)} 个商品链接")
+        return found
+
+    max_workers = max(1, min(workers, total_sitemaps))
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="sitemap_discover") as executor:
+        futures = [executor.submit(_parse_one, sm) for sm in sitemaps]
+        for future in as_completed(futures):
+            if stop_event is not None and stop_event.is_set():
+                log.info(f"收到停止信号，已累计 {len(seen)} 个商品链接: {base_url}")
+                break
+            try:
+                found = future.result()
+            except Exception:
                 continue
-            seen.add(url)
-            urls.append(url)
-            if len(urls) >= MAX_PRODUCT_URLS:
-                log.warning(f"商品链接数达到上限 {MAX_PRODUCT_URLS}，停止发现: {base_url}")
-                if progress_callback:
-                    progress_callback(f"[sitemap] 商品链接达到上限 {MAX_PRODUCT_URLS}")
-                return urls
-        if progress_callback and (idx % 5 == 0 or idx == len(sitemaps)):
-            progress_callback(f"[sitemap] 已解析 {idx}/{len(sitemaps)} 个 sitemap，累计 {len(urls)} 个商品链接")
+            if found:
+                urls.extend(found)
+                if len(urls) >= MAX_PRODUCT_URLS:
+                    log.warning(f"商品链接数达到上限 {MAX_PRODUCT_URLS}，停止发现: {base_url}")
+                    if progress_callback:
+                        progress_callback(f"[sitemap] 商品链接达到上限 {MAX_PRODUCT_URLS}")
+                    break
 
     log.info(f"sitemap 发现 {len(urls)} 个商品链接: {base_url}")
     return urls

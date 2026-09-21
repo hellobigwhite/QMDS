@@ -49,6 +49,20 @@ def make_df(categories):
     return pd.DataFrame(rows, columns=EXPORT_COLUMNS)
 
 
+def make_df_domains(items):
+    """按 [(分类, 数量, 原站域名)] 生成测试数据（SKU 全局唯一，同一分类
+    可带多个域名，用于原站域名约束测试）"""
+    rows = []
+    for i, (cat, count, domain) in enumerate(items):
+        for j in range(count):
+            rows.append({"SKU": f"S{i}-{j}", "Name": f"P{i}-{j}",
+                         "Description": "d", "Regular price": 9.9,
+                         "Categories": cat, "Images": "", "cf_opingts": "",
+                         "自定义分类": "", "原站域名": domain,
+                         "分布网站识别": 0, "语言": "en"})
+    return pd.DataFrame(rows, columns=EXPORT_COLUMNS)
+
+
 # ── 文件名清理 ─────────────────────────────
 
 def test_sanitize_filename():
@@ -255,6 +269,91 @@ def test_plan_allocation_empty_portions_filtered():
     assert plan["portion_count"] == 1
     assert plan["portions"][0]["total"] == 500
     assert any("低于最少目标" in w for w in plan["warnings"])
+
+
+# ── 原站域名约束（同一主分类的补充数据中同一域名 <= 上限） ─────────────
+
+def test_plan_allocation_domain_limit_basic():
+    """大分类某域名超过上限：按域名拆分到多份，每份该域名不超上限"""
+    counts = {"Main A": 100, "Hardware": 8000, "small": 200}
+    domains = {"Hardware": {"example.com": 8000},
+               "small": {"other.com": 200}}
+    plan = plan_allocation(counts, ["Main A"], 40000, 50000,
+                           category_domains=domains, max_domain_count=5000)
+
+    assert plan["domain_limit"] == {"enabled": True, "max": 5000}
+    # 8000 条 example.com / 上限 5000 -> 份数由 1 增至 2
+    assert plan["portion_count"] == 2
+    for p in plan["portions"]:
+        assert p["domains"].get("example.com", 0) <= 5000
+    # 总量守恒
+    assert sum(p["total"] for p in plan["portions"]) == 8200
+    # Hardware 拆分到 2 份（5000 + 3000），不重不漏
+    frags = [p["categories"].get("Hardware", 0) for p in plan["portions"]]
+    assert sorted(frags) == [3000, 5000]
+    # 小分类整类保留
+    small_in = [p for p in plan["portions"] if "small" in p["categories"]]
+    assert len(small_in) == 1
+    assert small_in[0]["categories"]["small"] == 200
+    assert any("份数由 1 增至 2" in w for w in plan["warnings"])
+
+
+def test_plan_allocation_domain_limit_bumps_portions():
+    """单一域名总量超过上限：自动增加补充份数"""
+    counts = {"Main A": 100}
+    counts.update({f"c{i}": 1000 for i in range(12)})  # 12000 条，全部 example.com
+    domains = {f"c{i}": {"example.com": 1000} for i in range(12)}
+    plan = plan_allocation(counts, ["Main A"], 40000, 50000,
+                           category_domains=domains, max_domain_count=5000)
+
+    # ceil(12000 / 5000) = 3 份
+    assert plan["portion_count"] == 3
+    for p in plan["portions"]:
+        assert p["domains"].get("example.com", 0) <= 5000
+    assert sum(p["total"] for p in plan["portions"]) == 12000
+    assert any("份数由 1 增至 3" in w for w in plan["warnings"])
+    # 小分类整类保留（每个分类只出现在一份中）
+    all_assigned = [c for p in plan["portions"] for c in p["categories"]]
+    assert len(all_assigned) == 12
+    assert set(all_assigned) == {f"c{i}" for i in range(12)}
+
+
+def test_plan_allocation_domain_limit_mixed_domains():
+    """多域名混合：每份各域名都不超过上限（含正好等于上限），数据不丢"""
+    counts = {"Main A": 100,
+              "Hardware": 6000,   # example 5000 + homary 1000
+              "Tools": 4000,      # 全部 homary
+              "small": 300}       # third.com
+    domains = {
+        "Hardware": {"example.com": 5000, "homary.com": 1000},
+        "Tools": {"homary.com": 4000},
+        "small": {"third.com": 300},
+    }
+    plan = plan_allocation(counts, ["Main A"], 40000, 50000,
+                           category_domains=domains, max_domain_count=5000)
+
+    for p in plan["portions"]:
+        for dom, n in p["domains"].items():
+            assert n <= 5000, (dom, n)
+    assert sum(p["total"] for p in plan["portions"]) == 6000 + 4000 + 300
+    for cat in ("Hardware", "Tools", "small"):
+        frags = [p["categories"].get(cat, 0) for p in plan["portions"]]
+        assert sum(frags) == counts[cat]
+    # 只有 1 份时也能满足上限（example.com / homary.com 各恰好 5000）
+    assert plan["portion_count"] == 1
+
+
+def test_plan_allocation_domain_limit_disabled_by_default():
+    """不传 category_domains 时保持旧行为：无域名字段、份数与总量不变"""
+    counts = {"Main A": 100, "Hardware": 8000, "small": 200}
+    plan = plan_allocation(counts, ["Main A"], 40000, 50000)
+
+    assert plan["domain_limit"] == {"enabled": False, "max": None}
+    assert all("domains" not in p and "cat_domains" not in p
+               for p in plan["portions"])
+    assert plan["portion_count"] == 1
+    assert sum(p["total"] for p in plan["portions"]) == 8200
+    assert not any("原站域名" in w for w in plan["warnings"])
 
 
 # ── Excel 读取与完整任务 ─────────────────────────────
@@ -540,3 +639,113 @@ def test_run_allocation_task_generates_stats(workdir):
     # 日志包含统计完成记录
     logs = [e.get("message", "") for e in task_manager.get_logs(task_id)]
     assert any("网站分类统计完成: Main_One" in m for m in logs)
+
+
+# ── 原站域名约束端到端（补充数据中同一域名 <= 上限，数据不重不漏） ─────
+
+def test_run_allocation_task_domain_limit(workdir):
+    """单一域名大量数据：自动增加补充份数，每份该域名不超上限"""
+    from qmds.modules.web.task_manager import task_manager
+
+    items = [("Main One", 100, "example.com")]
+    items += [(f"cat{i}", 2000, "example.com") for i in range(6)]  # 12000 条
+    df = make_df_domains(items)
+    fp = workdir / "export_domain.xlsx"
+    df.to_excel(fp, index=False, engine="openpyxl")
+
+    task_id = "test_alloc_domain"
+    task_manager.create(task_id, "data_allocate", "test")
+    run_allocation_task(task_id, fp, ["Main One"], 40000, 50000, 1000,
+                        max_domain_count=5000)
+
+    task = task_manager.get(task_id)
+    assert task["status"] == "completed", task_manager.get_logs(task_id)
+
+    out_dir = next(d for d in workdir.iterdir() if d.is_dir()
+                   and d.name.startswith("export_domain_分配_"))
+    # 12000 条 example.com / 上限 5000 -> 3 份（1 主分类补充 + 2 extra），每份 4000
+    folders = {d.name for d in out_dir.iterdir() if d.is_dir()}
+    assert folders == {"Main_One", "extra1", "extra2"}, folders
+
+    main_df = pd.read_excel(out_dir / "Main_One" / "mainMain_One.xlsx",
+                            engine="openpyxl")
+    assert len(main_df) == 100
+
+    supp_files = [out_dir / "Main_One" / "Main_One_supp.xlsx",
+                  out_dir / "extra1" / "extra1.xlsx",
+                  out_dir / "extra2" / "extra2.xlsx"]
+    seen = set(main_df["SKU"])
+    for p in supp_files:
+        assert p.exists(), p
+        sub = pd.read_excel(p, engine="openpyxl")
+        assert (sub["原站域名"] == "example.com").all()
+        assert len(sub) <= 5000
+        for sku in sub["SKU"]:
+            assert sku not in seen  # 数据不重复
+            seen.add(sku)
+    assert len(seen) == len(df)  # 数据不丢失
+
+    logs = [e.get("message", "") for e in task_manager.get_logs(task_id)]
+    assert any("原站域名约束" in m for m in logs)
+    assert any("同域名最多 4000 条" in m for m in logs)
+
+
+def test_run_allocation_task_domain_limit_mixed(workdir):
+    """多域名混合：大分类按域名拆分，每份各域名均不超上限"""
+    from qmds.modules.web.task_manager import task_manager
+
+    # Hardware 8000 条（example 5000 + homary 3000），> 阈值 -> 按域名拆分
+    items = [("Main One", 50, "example.com"),
+             ("Hardware", 5000, "example.com"),
+             ("Hardware", 3000, "homary.com"),
+             ("small", 200, "third.com")]
+    df = make_df_domains(items)
+    fp = workdir / "export_domain_mixed.xlsx"
+    df.to_excel(fp, index=False, engine="openpyxl")
+
+    task_id = "test_alloc_domain_mixed"
+    task_manager.create(task_id, "data_allocate", "test")
+    run_allocation_task(task_id, fp, ["Main One"], 40000, 50000, 3000,
+                        max_domain_count=5000)
+
+    task = task_manager.get(task_id)
+    assert task["status"] == "completed", task_manager.get_logs(task_id)
+
+    out_dir = next(d for d in workdir.iterdir() if d.is_dir()
+                   and d.name.startswith("export_domain_mixed_分配_"))
+    supp = pd.read_excel(out_dir / "Main_One" / "Main_One_supp.xlsx",
+                         engine="openpyxl")
+    counts = supp["原站域名"].value_counts().to_dict()
+    assert counts["example.com"] == 5000
+    assert counts["homary.com"] == 3000
+    assert counts["third.com"] == 200
+    assert all(n <= 5000 for n in counts.values())
+    assert len(supp) == 8200
+    # 与主数据一起不重不漏
+    main_df = pd.read_excel(out_dir / "Main_One" / "mainMain_One.xlsx",
+                            engine="openpyxl")
+    seen = set(main_df["SKU"]) | set(supp["SKU"])
+    assert len(seen) == len(df)
+
+
+def test_run_allocation_task_domain_limit_without_column(workdir):
+    """表格无「原站域名」列：约束不生效但任务正常完成并告警"""
+    from qmds.modules.web.task_manager import task_manager
+
+    rows = []
+    for i in range(10):
+        for j in range(100):
+            rows.append({"SKU": f"S{i}-{j}", "Name": f"P{i}-{j}",
+                         "Categories": f"cat{i}"})
+    df = pd.DataFrame(rows)
+    fp = workdir / "no_domain.xlsx"
+    df.to_excel(fp, index=False, engine="openpyxl")
+
+    task_id = "test_alloc_nodomain"
+    task_manager.create(task_id, "data_allocate", "test")
+    run_allocation_task(task_id, fp, ["cat0"], 40000, 50000, 1000,
+                        max_domain_count=5000)
+
+    assert task_manager.get(task_id)["status"] == "completed"
+    logs = [e.get("message", "") for e in task_manager.get_logs(task_id)]
+    assert any("未找到「原站域名」列" in m for m in logs)

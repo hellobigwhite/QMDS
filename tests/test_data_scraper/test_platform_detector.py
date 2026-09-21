@@ -90,16 +90,16 @@ class TestDetectInconclusive:
         result = make_detector().detect("https://blocked-shop.com")
         assert result.inconclusive is True
 
-    def test_homepage_403_is_inconclusive(self, monkeypatch):
-        """meta.json 404 + 首页 403：无法确认，应可复检而非直接否定"""
+    def test_meta_json_404_is_definitive_negative(self, monkeypatch):
+        """只使用 meta.json：meta.json 404 即确认不是 Shopify"""
         patch_responses(
             monkeypatch,
             {"meta.json": FakeResponse(404)},
             homepage=FakeResponse(403),
         )
-        result = make_detector().detect("https://blocked-shop.com")
+        result = make_detector().detect("https://not-shopify.com")
         assert result.platform == Platform.UNKNOWN
-        assert result.inconclusive is True
+        assert result.inconclusive is False
 
     def test_unexpected_exception_is_inconclusive(self):
         """detect() 内部未预见异常不构成否定证据"""
@@ -132,8 +132,8 @@ class TestDetectPositive:
         assert result.confidence == 1.0
         assert result.inconclusive is False
 
-    def test_homepage_fingerprint_confirms_shopify(self, monkeypatch):
-        """meta.json 404 但首页含 Shopify 指纹：兜底判据生效"""
+    def test_homepage_fingerprint_does_not_confirm_shopify(self, monkeypatch):
+        """只使用 meta.json：首页 Shopify 指纹不能单独确认"""
         shopify_html = '<html><script src="https://cdn.shopify.com/s/files/x.js"></script></html>'
         patch_responses(
             monkeypatch,
@@ -141,8 +141,8 @@ class TestDetectPositive:
             homepage=FakeResponse(200, text=shopify_html),
         )
         result = make_detector().detect("https://fingerprint-shop.com")
-        assert result.platform == Platform.SHOPIFY
-        assert result.confidence == 0.85
+        assert result.platform == Platform.UNKNOWN
+        assert result.inconclusive is False
 
 
 class TestMagentoFalsePositive:

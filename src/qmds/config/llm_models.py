@@ -51,6 +51,14 @@ LLM_MODELS = [
         "desc": "火山方舟 DeepSeek-V4-Flash 文本模型，需配置 ARK API Key",
     },
     {
+        "value": "deepseek-v4-flash",
+        "provider": "ark",
+        "model_id": "deepseek-v4-flash",
+        "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
+        "label": "火山方舟 DeepSeek-V4-Flash coding 版",
+        "desc": "火山方舟 DeepSeek-V4-Flash 文本模型",
+    },
+    {
         "value": "ark-ep-20260822151540",
         "provider": "ark",
         "model_id": "ep-20260822151540-9zcdd",
