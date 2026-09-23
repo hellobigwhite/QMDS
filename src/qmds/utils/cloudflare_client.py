@@ -18,6 +18,7 @@ import threading
 from typing import Optional
 
 import requests
+from requests.adapters import HTTPAdapter
 
 from qmds.utils.logger import get_logger
 
@@ -75,6 +76,11 @@ def get_scraper():
                         "Accept-Encoding": "gzip, deflate, br",
                         "Connection": "keep-alive",
                     })
+                    # 高并发直连（sitemap 逐商品、平台检测）需要更大的连接池，
+                    # 默认 pool_maxsize=10 会频繁弃连重建，拖慢批量请求
+                    adapter = HTTPAdapter(pool_connections=32, pool_maxsize=32)
+                    scraper.mount("https://", adapter)
+                    scraper.mount("http://", adapter)
                     _scraper = scraper
                     log.info("cloudscraper 已启用（Cloudflare 挑战兜底通道）")
                 except Exception as exc:  # pragma: no cover - 初始化异常

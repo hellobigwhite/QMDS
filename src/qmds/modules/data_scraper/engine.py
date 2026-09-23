@@ -48,8 +48,6 @@ class DataScraperModule:
         self._executor: Optional[ThreadPoolExecutor] = None
         # 变体搜索专用线程池（独立，避免资源竞争）
         self._search_executor: Optional[ThreadPoolExecutor] = None
-        # 平台检测专用线程池（独立，避免死锁）
-        self._detect_executor: Optional[ThreadPoolExecutor] = None
         self._lock = threading.Lock()
         
         if pm:
@@ -83,19 +81,6 @@ class DataScraperModule:
                     log.info("变体搜索线程池已创建: 6 线程")
         return self._search_executor
 
-    @property
-    def detect_executor(self) -> ThreadPoolExecutor:
-        """获取平台检测专用线程池（独立，避免死锁）"""
-        if self._detect_executor is None:
-            with self._lock:
-                if self._detect_executor is None:
-                    self._detect_executor = ThreadPoolExecutor(
-                        max_workers=10,
-                        thread_name_prefix="qmds_detect"
-                    )
-                    log.info("平台检测线程池已创建: 10 线程")
-        return self._detect_executor
-
     def shutdown(self):
         """关闭线程池"""
         if self._executor:
@@ -106,10 +91,6 @@ class DataScraperModule:
             self._search_executor.shutdown(wait=True)
             self._search_executor = None
             log.info("变体搜索线程池已关闭")
-        if self._detect_executor:
-            self._detect_executor.shutdown(wait=True)
-            self._detect_executor = None
-            log.info("平台检测线程池已关闭")
 
     def __del__(self):
         """析构时关闭线程池"""
@@ -217,7 +198,7 @@ class DataScraperModule:
             return None
 
     def fetch_shopify_urls(self, category: str, keyword: str, max_pages: int = 0, min_products: int = 0,
-                          workers: int = 10, save_mongo: bool = False, save_excel: bool = False,
+                          workers: int = 16, save_mongo: bool = False, save_excel: bool = False,
                           provider_name: str = "") -> dict:
         """按类目搜索店铺 URL（搜索 → 清洗 → 平台检测 → 存储）
 
@@ -329,7 +310,7 @@ class DataScraperModule:
         return result
 
     def fetch_shopify_urls_by_keyword(self, category: str, keyword: str, max_pages: int = 0,
-                                       min_products: int = 0, workers: int = 10,
+                                       min_products: int = 0, workers: int = 16,
                                        keyword_workers: int = 1,
                                        save_mongo: bool = True, save_excel: bool = False,
                                        provider_name: str = "", progress_callback=None) -> dict:
@@ -648,7 +629,7 @@ class DataScraperModule:
         return domains
 
     def _detect_platforms(self, urls: list[str], url_map: dict, workers: int) -> dict[str, dict]:
-        """多线程平台检测（使用全局线程池，网络失败的不确定结果二轮复检）"""
+        """多线程平台检测（workers 并发生效；不确定结果二轮复检）"""
         detection_results: dict[str, dict] = {}
         INCONCLUSIVE = "__inconclusive__"  # 网络失败/被拦截，无法确认
 
@@ -674,20 +655,22 @@ class DataScraperModule:
 
         def _run_pass(pending_urls: list[str]) -> dict[str, object]:
             results: dict[str, object] = {}
-            futures = {self.detect_executor.submit(_detect_single, u): u for u in pending_urls}
-            done_count = 0
-            total = len(futures)
-            for future in as_completed(futures):
-                done_count += 1
-                url, outcome = future.result()
-                results[url] = outcome
-                domain = extract_domain(url)
-                if isinstance(outcome, dict):
-                    log.info(f"[{done_count}/{total}] Shopify: {domain} ({outcome['product_count']} 商品)")
-                elif outcome == INCONCLUSIVE:
-                    log.info(f"[{done_count}/{total}] 不确定(网络失败/拦截): {domain}")
-                else:
-                    log.info(f"[{done_count}/{total}] 非 Shopify: {domain}")
+            max_workers = max(1, min(workers, 32))
+            with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="qmds_detect") as executor:
+                futures = {executor.submit(_detect_single, u): u for u in pending_urls}
+                done_count = 0
+                total = len(futures)
+                for future in as_completed(futures):
+                    done_count += 1
+                    url, outcome = future.result()
+                    results[url] = outcome
+                    domain = extract_domain(url)
+                    if isinstance(outcome, dict):
+                        log.info(f"[{done_count}/{total}] Shopify: {domain} ({outcome['product_count']} 商品)")
+                    elif outcome == INCONCLUSIVE:
+                        log.info(f"[{done_count}/{total}] 不确定(网络失败/拦截): {domain}")
+                    else:
+                        log.info(f"[{done_count}/{total}] 非 Shopify: {domain}")
             return results
 
         # 第一轮全量检测

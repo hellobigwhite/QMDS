@@ -68,13 +68,14 @@ def make_crawler(monkeypatch, *, meta, probe, page_sleep=True):
     """
     crawler = ProductCrawler(currency_map={"USD": 1.0})
     monkeypatch.setattr(crawler, "fetch_meta", lambda url: meta)
-    monkeypatch.setattr(crawler, "fetch_json", lambda url, timeout=25: probe(url))
+    monkeypatch.setattr(crawler, "fetch_json",
+                        lambda url, timeout=25, direct_first=False: probe(url))
     if page_sleep:
         monkeypatch.setattr(product_crawler, "PAGE_SLEEP_RANGE", (0, 0))
     calls = {}
 
     def fake_sitemap(url, category, currency, rate, progress_callback=None,
-                     stop_event=None, subcategory="", reason=""):
+                     stop_event=None, subcategory="", reason="", flush_callback=None):
         calls["reason"] = reason
         calls["currency"] = currency
         return {"success": True, "products": [], "count": 0, "crawl_mode": "sitemap"}
@@ -297,8 +298,9 @@ class TestCrawlSiteViaSitemap:
         monkeypatch.setattr(sitemap_fetcher, "collect_product_urls",
                             lambda *a, **k: ["https://demo.com/products/alpha",
                                              "https://demo.com/products/beta"])
-        monkeypatch.setattr(crawler, "fetch_json", lambda url, timeout=25: json_result)
-        monkeypatch.setattr(crawler, "fetch_text", lambda url, timeout=25: html)
+        monkeypatch.setattr(crawler, "fetch_json",
+                            lambda url, timeout=25, direct_first=False: json_result)
+        monkeypatch.setattr(crawler, "fetch_text", lambda url, timeout=25, status_holder=None: html)
         return crawler
 
     def test_jsonld_channel_dedupes_by_title(self, monkeypatch):
@@ -330,6 +332,66 @@ class TestCrawlSiteViaSitemap:
         assert "未发现商品链接" in result["error"]
 
 
+class TestSitemap429Retry:
+    """429 限流下的单商品取数：冷却重试 + 代理抢救，不轻易丢商品"""
+
+    def _crawler(self, monkeypatch):
+        crawler = ProductCrawler(currency_map={"USD": 1.0})
+        # 冷却等待与限速等待在测试里立即返回
+        monkeypatch.setattr(crawler, "_wait_if_throttled", lambda *a, **k: None)
+        monkeypatch.setattr(crawler, "_domain_pace_delay", lambda domain: 0.0)
+        return crawler
+
+    def test_double_429_rescued_via_proxy(self, monkeypatch):
+        """直连两次 429 后经代理（不同出口 IP）抢救商品"""
+        crawler = self._crawler(monkeypatch)
+        calls = []
+
+        def fake_fetch_json(url, timeout=25, direct_first=False):
+            calls.append(direct_first)
+            if direct_first:
+                return None, 429
+            return {"product": {"title": "Widget", "variants": [], "options": []}}, 200
+
+        monkeypatch.setattr(crawler, "fetch_json", fake_fetch_json)
+        product = crawler._fetch_sitemap_product("https://demo.com/products/w")
+        assert product is not None
+        assert product["title"] == "Widget"
+        # 直连 429 → 冷却后重试直连 429 → 代理抢救
+        assert calls == [True, True, False]
+
+    def test_429_retry_success_after_cooldown(self, monkeypatch):
+        """首次 429、冷却重试成功：商品不丢，无需代理"""
+        crawler = self._crawler(monkeypatch)
+        calls = []
+
+        def fake_fetch_json(url, timeout=25, direct_first=False):
+            calls.append(direct_first)
+            if len(calls) == 1:
+                return None, 429
+            return {"product": {"title": "Widget", "variants": [], "options": []}}, 200
+
+        monkeypatch.setattr(crawler, "fetch_json", fake_fetch_json)
+        product = crawler._fetch_sitemap_product("https://demo.com/products/w")
+        assert product is not None
+        assert product["title"] == "Widget"
+        assert calls == [True, True]
+
+    def test_all_429_gives_up_without_html_hammering(self, monkeypatch):
+        """直连与代理均 429：放弃本商品，不再发起 HTML 兜底轰炸目标站"""
+        crawler = self._crawler(monkeypatch)
+        fetch_text_calls = []
+
+        def fake_fetch_json(url, timeout=25, direct_first=False):
+            return None, 429
+
+        monkeypatch.setattr(crawler, "fetch_json", fake_fetch_json)
+        monkeypatch.setattr(crawler, "fetch_text",
+                            lambda url, timeout=25, status_holder=None: fetch_text_calls.append(url))
+        assert crawler._fetch_sitemap_product("https://demo.com/products/w") is None
+        assert fetch_text_calls == []
+
+
 # ── 代理服务熔断 / cloudscraper 兜底 ──────────────────────
 
 class FakeHttpResponse:
@@ -351,21 +413,21 @@ class TestProxyServiceCircuitBreaker:
         def boom(*args, **kwargs):
             raise requests.exceptions.ConnectionError("down")
 
-        monkeypatch.setattr(product_crawler.requests, "get", boom)
         client = ProxyServiceClient()
+        monkeypatch.setattr(client._http, "get", boom)
         for _ in range(ProxyServiceClient.FAILURE_THRESHOLD):
             assert client.fetch("https://target") == (None, 0)
         assert client.available is False
 
         # 熔断期间不再发起真实请求，直接返回 STATUS_SKIPPED
         calls = []
-        monkeypatch.setattr(product_crawler.requests, "get", lambda *a, **k: calls.append(1))
+        monkeypatch.setattr(client._http, "get", lambda *a, **k: calls.append(1))
         assert client.fetch("https://target") == (None, ProxyServiceClient.STATUS_SKIPPED)
         assert calls == []
 
     def test_success_resets_counter(self, monkeypatch):
         client = ProxyServiceClient()
-        monkeypatch.setattr(product_crawler.requests, "get",
+        monkeypatch.setattr(client._http, "get",
                             lambda *a, **k: FakeHttpResponse(payload={"ok": True}))
         assert client.fetch("https://target") == ({"ok": True}, 200)
         assert client.available is True
@@ -377,12 +439,89 @@ class TestProxyServiceCircuitBreaker:
     def test_service_level_failure_classification(self, status, expected):
         assert ProxyServiceClient._is_service_level_failure(status) is expected
 
+    def test_inflight_cap_returns_busy_fast(self, monkeypatch):
+        """并发名额满时短暂等待后快速返回 STATUS_BUSY，而不是排队到超时"""
+        monkeypatch.setattr(ProxyServiceClient, "QUEUE_WAIT", 0.1)
+        client = ProxyServiceClient()
+        # 占满全部进程级名额
+        held = [ProxyServiceClient._inflight.acquire()
+                for _ in range(ProxyServiceClient.INFLIGHT_LIMIT)]
+        try:
+            import time as _time
+            t0 = _time.time()
+            data, status = client.fetch("https://target")
+            dt = _time.time() - t0
+            assert status == ProxyServiceClient.STATUS_BUSY
+            assert data is None
+            assert dt < 3  # 快速失败，不等待长超时
+        finally:
+            for _ in held:
+                ProxyServiceClient._inflight.release()
+
+    def test_busy_not_counted_as_service_failure(self, monkeypatch):
+        """STATUS_BUSY 不计入熔断统计（请求根本没发出去）"""
+        monkeypatch.setattr(ProxyServiceClient, "QUEUE_WAIT", 0.05)
+        client = ProxyServiceClient()
+        held = [ProxyServiceClient._inflight.acquire()
+                for _ in range(ProxyServiceClient.INFLIGHT_LIMIT)]
+        try:
+            client.fetch("https://target")
+            assert client._failure == 0
+            assert client._consecutive_failures == 0
+            assert client.available is True
+        finally:
+            for _ in held:
+                ProxyServiceClient._inflight.release()
+
+
+class TestDirectBlockedLatch:
+    """直连被 CF 拒绝（403/401）后按域记住，后续 direct_first 跳过直连"""
+
+    def test_403_latches_then_skips_direct(self, monkeypatch):
+        crawler = ProductCrawler(currency_map={"USD": 1.0})
+        monkeypatch.setattr(product_crawler.time, "sleep", lambda *a: None)
+        # 禁用第 4 级 cloudscraper 兜底（它也调 cloudflare_client.get，会干扰计数）
+        monkeypatch.setattr(crawler, "_fetch_json_via_cloudscraper", lambda url, timeout=25: None)
+        direct_calls = []
+
+        def fake_direct(url, timeout=20, **k):
+            direct_calls.append(url)
+            return FakeHttpResponse(status_code=403, text="challenge")
+
+        monkeypatch.setattr(cloudflare_client, "is_available", lambda: True)
+        monkeypatch.setattr(cloudflare_client, "get", fake_direct)
+        monkeypatch.setattr(crawler.proxy_service, "fetch", lambda url, **k: (None, 403))
+        monkeypatch.setattr(crawler, "get_next_proxy", lambda: None)
+        monkeypatch.setattr(crawler.session, "get",
+                            lambda *a, **k: FakeHttpResponse(status_code=403, text="challenge"))
+
+        crawler.fetch_json("https://demo.com/products.json", direct_first=True)
+        crawler.fetch_json("https://demo.com/products.json", direct_first=True)
+        # 第一次直连 403 触发闩锁，第二次不再直连
+        assert len(direct_calls) == 1
+        assert crawler._direct_blocked.get("demo.com") is True
+
+    def test_429_does_not_latch(self, monkeypatch):
+        """429 是限流不是封禁：不闩锁，冷却后直连仍可重试"""
+        crawler = ProductCrawler(currency_map={"USD": 1.0})
+        monkeypatch.setattr(product_crawler.time, "sleep", lambda *a: None)
+        monkeypatch.setattr(cloudflare_client, "is_available", lambda: True)
+        monkeypatch.setattr(cloudflare_client, "get",
+                            lambda url, timeout=20, **k: FakeHttpResponse(status_code=429))
+        monkeypatch.setattr(crawler.proxy_service, "fetch", lambda url, **k: (None, 502))
+        monkeypatch.setattr(crawler, "get_next_proxy", lambda: None)
+        monkeypatch.setattr(crawler.session, "get",
+                            lambda *a, **k: FakeHttpResponse(status_code=200, payload={"ok": 1}))
+
+        crawler.fetch_json("https://demo.com/products.json", direct_first=True)
+        assert "demo.com" not in crawler._direct_blocked
+
 
 class TestFetchJsonCloudscraperFallback:
     def test_403_falls_back_to_cloudscraper(self, monkeypatch):
         crawler = ProductCrawler(currency_map={"USD": 1.0})
         monkeypatch.setattr(product_crawler.time, "sleep", lambda *a: None)
-        monkeypatch.setattr(crawler.proxy_service, "fetch", lambda url: (None, 403))
+        monkeypatch.setattr(crawler.proxy_service, "fetch", lambda url, **k: (None, 403))
         monkeypatch.setattr(crawler, "get_next_proxy", lambda: None)
         monkeypatch.setattr(crawler.session, "get",
                             lambda *a, **k: FakeHttpResponse(status_code=403, text="challenge"))
@@ -397,7 +536,7 @@ class TestFetchJsonCloudscraperFallback:
     def test_cloudscraper_failure_returns_original_status(self, monkeypatch):
         crawler = ProductCrawler(currency_map={"USD": 1.0})
         monkeypatch.setattr(product_crawler.time, "sleep", lambda *a: None)
-        monkeypatch.setattr(crawler.proxy_service, "fetch", lambda url: (None, 403))
+        monkeypatch.setattr(crawler.proxy_service, "fetch", lambda url, **k: (None, 403))
         monkeypatch.setattr(crawler, "get_next_proxy", lambda: None)
         monkeypatch.setattr(crawler.session, "get",
                             lambda *a, **k: FakeHttpResponse(status_code=403, text="challenge"))
@@ -409,7 +548,7 @@ class TestFetchJsonCloudscraperFallback:
     def test_404_does_not_invoke_cloudscraper(self, monkeypatch):
         crawler = ProductCrawler(currency_map={"USD": 1.0})
         monkeypatch.setattr(product_crawler.time, "sleep", lambda *a: None)
-        monkeypatch.setattr(crawler.proxy_service, "fetch", lambda url: (None, 404))
+        monkeypatch.setattr(crawler.proxy_service, "fetch", lambda url, **k: (None, 404))
         monkeypatch.setattr(crawler, "get_next_proxy", lambda: None)
         monkeypatch.setattr(crawler.session, "get",
                             lambda *a, **k: FakeHttpResponse(status_code=404, text="nope"))

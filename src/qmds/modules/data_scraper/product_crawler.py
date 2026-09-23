@@ -28,6 +28,10 @@ log = get_logger("product_crawler")
 
 # 请求配置
 REQUEST_TIMEOUT = 25
+# 代理服务专用超时：该服务为浏览器级抓取，实测单请求 1~40 秒（负载高时
+# 更长）。给它 25 秒会杀掉一半在途请求，给 90 秒又让线程挂太久——
+# 60 秒是"既然决定用它，就给它足够时间完成"的预算（并发名额已在客户端限死）
+PROXY_SERVICE_FETCH_TIMEOUT = 60
 
 # 本地代理池开关（settings.local_proxy_pool_enabled，默认关闭）
 # 关闭时降级链不再经过本地代理池：
@@ -43,12 +47,22 @@ SITE_COOLDOWN_RANGE = (6, 12)
 # products.json 与 meta.json 的商品数上限：达到该值说明分页接口已无法
 # 覆盖全店商品（250 条/页 × 100 页），必须改用 sitemap 通道枚举商品。
 PRODUCTS_JSON_MAX_PRODUCTS = 25000
-# sitemap 通道逐商品取数时的并发数（每个商品一次请求，远高于分页模式）
-SITEMAP_FETCH_WORKERS = 16
+# sitemap 通道逐商品取数时的并发数（每个商品一次请求，远高于分页模式）。
+# 8 是对单店的安全值：16 并发实测会频繁触发目标站 429（历史日志 4.7 万次
+# 按域退避、其中 1 万次顶到上限），退避期间整站线程全部冻结，得不偿失
+SITEMAP_FETCH_WORKERS = 8
 # 429 限流按域退避（指数退避，秒）：商店对单站并发敏感，命中 429 后暂停
-# 该域所有取数请求，等冷却结束再继续，避免 16 个线程空耗整条降级链
-SITEMAP_429_COOLDOWN = 30.0
-SITEMAP_429_MAX_COOLDOWN = 300.0
+# 该域所有取数请求，等冷却结束再继续，避免全部线程空耗整条降级链
+SITEMAP_429_COOLDOWN = 15.0
+SITEMAP_429_MAX_COOLDOWN = 180.0
+# 同域请求平滑限速：命中 429 后的最小请求间隔（秒，约 2 rps）。
+# 8 线程自由并发对单店可达 40 rps 突发，极易触发 429 后整域冻结；
+# 预约排队让请求按间隔错峰出发，连续成功后间隔逐步减半放宽
+SITEMAP_DOMAIN_PACE = 0.5
+# 单站 sitemap 通道时间预算（秒）：超时后放弃剩余商品提前收尾（边爬边写
+# 已入库的部分不受影响）。历史日志出现过单站爬 37 小时的僵尸任务，长期
+# 占用站点并发名额
+SITEMAP_TIME_BUDGET = 90 * 60
 # 进程级站点并发上限：多个分类任务同时跑时（每任务最多 10 站），限制
 # 全局同时在爬的站点总数，避免把目标站点/出口 IP 打到 429
 MAX_CONCURRENT_SITES = 12
@@ -147,6 +161,15 @@ class ProxyServiceClient:
     TIMEOUT = 90
     # 熔断中未发起请求的返回码（区别于 HTTP 状态码，调用方据此跳过退避等待）
     STATUS_SKIPPED = -1
+    # 并发名额已满未发起请求：调用方应立即走下一级降级，不要等待
+    STATUS_BUSY = -2
+    # 进程级并发名额（跨实例共享）。实测该服务为浏览器级抓取，仅能并行
+    # 消化约 4 个请求（8 并发时延迟 2.6s→32.7s 线性堆叠）；超出的请求
+    # 在服务端排队，最终在客户端超时——与其排队不如立刻失败走降级链
+    INFLIGHT_LIMIT = 4
+    # 等待名额的最长时间（秒）：吸收多任务瞬时突发；真饱和时快速失败
+    QUEUE_WAIT = 5.0
+    _inflight = threading.BoundedSemaphore(INFLIGHT_LIMIT)
 
     FAILURE_THRESHOLD = 3
     # 冷却固定 10 秒：服务恢复后很快就能重新走回远程代理，不再指数翻倍
@@ -159,6 +182,12 @@ class ProxyServiceClient:
         # 熔断开关：平台检测等场景传 False 关闭熔断（每个请求都真实发起，
         # 不再因连续失败进入冷却跳过）；商品抓取等保留默认开启。
         self._breaker_enabled = breaker_enabled
+        # 连接复用：多任务并发下逐请求新建 TCP/TLS（requests.get 裸调用）
+        # 会造成握手风暴与端口耗尽，是批量超时的帮凶之一
+        self._http = requests.Session()
+        _adapter = HTTPAdapter(pool_connections=32, pool_maxsize=32)
+        self._http.mount("http://", _adapter)
+        self._http.mount("https://", _adapter)
         self._success = 0
         self._failure = 0
         # 熔断状态
@@ -204,22 +233,32 @@ class ProxyServiceClient:
             self._cooldown = self.COOLDOWN
 
     def _get(self, target_url: str, timeout: Optional[int] = None) -> Tuple[Optional[requests.Response], int]:
-        """发起一次代理服务请求，返回 (响应, 状态码)；STATUS_SKIPPED 表示熔断中未发起"""
+        """发起一次代理服务请求，返回 (响应, 状态码)
+
+        STATUS_SKIPPED 表示熔断中未发起；STATUS_BUSY 表示并发名额已满
+        （短暂等待后仍拿不到名额），两者都未真正发出请求，不计入熔断统计。
+        """
         if not self.available:
             return None, self.STATUS_SKIPPED
-        effective_timeout = timeout or self.TIMEOUT
-        params = {"key": self.api_key, "url": target_url}
+        if not ProxyServiceClient._inflight.acquire(timeout=self.QUEUE_WAIT):
+            log.debug(f"代理服务并发已满（{self.INFLIGHT_LIMIT}），跳过 {target_url}")
+            return None, self.STATUS_BUSY
         try:
-            resp = requests.get(self.base_url, params=params, timeout=effective_timeout)
-            return resp, resp.status_code
-        except requests.exceptions.Timeout:
-            self._record_failure()
-            log.warning(f"代理服务超时 {target_url} | timeout={effective_timeout}s")
-            return None, 0
-        except Exception as e:
-            self._record_failure()
-            log.warning(f"代理服务异常 {target_url}: {type(e).__name__}: {e}")
-            return None, 0
+            effective_timeout = timeout or self.TIMEOUT
+            params = {"key": self.api_key, "url": target_url}
+            try:
+                resp = self._http.get(self.base_url, params=params, timeout=effective_timeout)
+                return resp, resp.status_code
+            except requests.exceptions.Timeout:
+                self._record_failure()
+                log.warning(f"代理服务超时 {target_url} | timeout={effective_timeout}s")
+                return None, 0
+            except Exception as e:
+                self._record_failure()
+                log.warning(f"代理服务异常 {target_url}: {type(e).__name__}: {e}")
+                return None, 0
+        finally:
+            ProxyServiceClient._inflight.release()
 
     def fetch(self, target_url: str, timeout: Optional[int] = None) -> Tuple[Optional[dict], int]:
         """通过代理服务请求目标URL（期望 JSON 响应）
@@ -326,6 +365,13 @@ class ProductCrawler:
         # 429 限流按域退避状态（sitemap 通道逐商品取数时使用）
         self._domain_throttled_until: Dict[str, float] = {}
         self._domain_429_count: Dict[str, int] = {}
+        # 同域平滑限速状态：当前最小间隔 / 下一个可用时间片 / 连续成功计数
+        self._domain_pace: Dict[str, float] = {}
+        self._domain_next_slot: Dict[str, float] = {}
+        self._domain_success_streak: Dict[str, int] = {}
+        # 直连被拒（403/401，多为 CF 挑战）的域：后续 direct_first 请求
+        # 跳过直连探测直接走代理服务，省掉每页一次的无效直连尝试
+        self._direct_blocked: Dict[str, bool] = {}
         self._throttle_lock = threading.Lock()
     
     def close(self):
@@ -363,21 +409,48 @@ class ProductCrawler:
     # ── 429 限流按域退避（sitemap 通道）───────────────────
 
     def _throttle_domain(self, domain: str):
-        """记录一次 429，按指数退避设置该域冷却期"""
+        """记录一次 429，按指数退避设置该域冷却期，并收紧平滑限速"""
         with self._throttle_lock:
             count = self._domain_429_count.get(domain, 0) + 1
             self._domain_429_count[domain] = count
             cooldown = min(SITEMAP_429_COOLDOWN * (2 ** (count - 1)), SITEMAP_429_MAX_COOLDOWN)
             self._domain_throttled_until[domain] = time.time() + cooldown
-        log.warning(f"[{domain}] 收到 429，退避 {cooldown:.0f} 秒（第 {count} 次）")
+            self._domain_pace[domain] = SITEMAP_DOMAIN_PACE
+        log.warning(f"[{domain}] 收到 429，退避 {cooldown:.0f} 秒（第 {count} 次），"
+                    f"限速至 {1 / SITEMAP_DOMAIN_PACE:.0f} req/s")
 
     def _domain_unthrottle(self, domain: str):
-        """一次成功取数后清零该域 429 计数（冷却期已过不再延长）"""
+        """一次成功取数后清零该域 429 计数；连续成功后逐步放宽平滑限速"""
         with self._throttle_lock:
             self._domain_429_count[domain] = 0
+            streak = self._domain_success_streak.get(domain, 0) + 1
+            self._domain_success_streak[domain] = streak
+            if streak >= 30:
+                pace = self._domain_pace.get(domain, 0.0)
+                if pace > 0.05:
+                    self._domain_pace[domain] = max(pace / 2, 0.05)
+                    log.info(f"[{domain}] 连续 {streak} 次成功，"
+                             f"限速放宽至 {1 / self._domain_pace[domain]:.0f} req/s")
+                self._domain_success_streak[domain] = 0
 
-    def _wait_if_throttled(self, domain: str, stop_event: threading.Event = None):
-        """若该域处于 429 冷却期，等待冷却结束（分片睡眠，停止信号可打断）"""
+    def _domain_pace_delay(self, domain: str) -> float:
+        """预约一个同域请求时间片，返回需要等待的秒数（平滑限速）
+
+        预约排队：多个线程各自领走间隔递增的时间片，避免全体睡同一时长
+        后再次突发。默认无间隔（全速），命中 429 后由 _throttle_domain 收紧。
+        """
+        with self._throttle_lock:
+            pace = self._domain_pace.get(domain, 0.0)
+            now = time.time()
+            slot = self._domain_next_slot.get(domain, 0.0)
+            if slot < now:
+                slot = now
+            self._domain_next_slot[domain] = slot + max(pace, 0.05)
+            return max(0.0, slot - now)
+
+    def _wait_if_throttled(self, domain: str, stop_event: threading.Event = None,
+                           abandon_event: threading.Event = None):
+        """若该域处于 429 冷却期，等待冷却结束（分片睡眠，停止/放弃信号可打断）"""
         while True:
             with self._throttle_lock:
                 until = self._domain_throttled_until.get(domain, 0.0)
@@ -385,6 +458,8 @@ class ProductCrawler:
             if remaining <= 0:
                 return
             if stop_event is not None and stop_event.is_set():
+                return
+            if abandon_event is not None and abandon_event.is_set():
                 return
             time.sleep(min(remaining, 1.0))
 
@@ -397,20 +472,58 @@ class ProductCrawler:
             if _site_concurrency.acquire(timeout=1.0):
                 return True
 
-    def fetch_json(self, url: str, timeout: int = REQUEST_TIMEOUT) -> Tuple[Optional[dict], int]:
+    def fetch_json(self, url: str, timeout: int = REQUEST_TIMEOUT,
+                   direct_first: bool = False) -> Tuple[Optional[dict], int]:
         """获取JSON数据
 
         降级链：代理服务 → 本地代理池(3次) → 直连(仅429/池不可用) → cloudscraper 兜底
         本地代理池关闭（settings.local_proxy_pool_enabled=False）时跳过第2步，
         等价于：代理服务 → 直连 → cloudscraper 兜底。
+
+        Args:
+            timeout: 各级降级统一超时；同样透传给代理服务——不传的话
+                代理服务默认 90 秒，多任务并发下慢站点会拖垮整批线程
+                （历史日志 6.8 万次 90 秒超时的主因）。
+            direct_first: 先直连一次（sitemap 逐商品取数用）。静态 .json 端点
+                直连可达率很高，省掉远程代理一跳可把单件耗时从秒级压到
+                百毫秒级，同时避免多任务把代理服务打爆。直连 404/410/
+                200 非 JSON 是源站结论，直接返回不再走代理。
         """
-        # 第一步：优先使用代理服务
-        data, status = self.proxy_service.fetch(url)
+        direct_429 = False
+        if direct_first and not self._direct_blocked.get(get_domain(url), False):
+            response = cloudflare_client.get(url, timeout=timeout)
+            if response is not None:
+                dstat = response.status_code
+                if dstat == 200:
+                    ct = response.headers.get("Content-Type", "")
+                    if "json" in ct.lower():
+                        try:
+                            return response.json(), 200
+                        except ValueError:
+                            pass  # 解析失败交由代理服务复核
+                elif dstat in (404, 410):
+                    return None, dstat  # 源站明确无此端点
+                elif dstat == 200:
+                    return None, 200    # 200 非 JSON：端点被主题禁用
+                elif dstat == 429:
+                    direct_429 = True   # 目标限流；仍尝试代理，但保留限流信号
+                elif dstat in (401, 403):
+                    # CF 挑战/拒绝：本域直连通道已废，后续请求直接走代理
+                    self._direct_blocked[get_domain(url)] = True
+                # 5xx/超时：可能瞬时故障，交由代理服务但不记住
+
+        # 第一步：优先使用代理服务（超时用服务专用预算：它单次要 1~40 秒，
+        # 沿用调用方的 15/25 秒会在服务正常工作时也大量超时）
+        data, status = self.proxy_service.fetch(url, timeout=PROXY_SERVICE_FETCH_TIMEOUT)
         if status == 200 and data:
             return data, status
-        # 代理服务失败后等待3秒，避免触发频率限制（熔断中未发起请求则无需等待）
-        if status != ProxyServiceClient.STATUS_SKIPPED:
-            time.sleep(3)
+        if direct_429 and status != 200:
+            return None, 429  # 直连已被目标限流且代理未救回：保留限流信号
+        # 仅代理服务自身故障（超时/5xx/限流）才稍作等待，目标站结论（404 等）
+        # 无需等待；旧版无条件 sleep(3) 在批量失败时冻结了大量取数线程
+        if status != ProxyServiceClient.STATUS_SKIPPED and \
+                ProxyServiceClient._is_service_level_failure(status):
+            time.sleep(1)
 
         # 第二步：降级到本地代理池（3次尝试）
         last_status = 0
@@ -569,8 +682,8 @@ class ProductCrawler:
             if response.status_code == 200 and response.content:
                 return response.content
 
-        # 2. 代理服务
-        content, status = self.proxy_service.fetch_bytes(url, timeout=timeout)
+        # 2. 代理服务（服务专用超时预算，见 PROXY_SERVICE_FETCH_TIMEOUT）
+        content, status = self.proxy_service.fetch_bytes(url, timeout=PROXY_SERVICE_FETCH_TIMEOUT)
         _note(status)
         if status == 200 and content:
             return content
@@ -618,7 +731,7 @@ class ProductCrawler:
     def fetch_meta(self, url: str) -> Optional[dict]:
         """获取 Shopify /meta.json 原始内容（同时给出货币与商品总数）"""
         meta_url = f"{normalize_url(url)}/meta.json"
-        data, status = self.fetch_json(meta_url, timeout=15)
+        data, status = self.fetch_json(meta_url, timeout=15, direct_first=True)
         if status == 200 and isinstance(data, dict):
             return data
         return None
@@ -748,6 +861,11 @@ class ProductCrawler:
             seen_unique_keys = set()
             done_count = 0
             failed_count = 0
+            # 时间预算与僵尸判定：超预算或长时间零产出时置 abandon，
+            # 取数线程快速返回，释放站点并发名额（已入库数据不受影响）
+            t_start = time.time()
+            last_valid_time = t_start
+            abandon_event = threading.Event()
 
             # 先探测一次 .json 端点：被禁用时全部改走商品页 JSON-LD，
             # 避免每个商品都白等一轮失败重试
@@ -758,13 +876,30 @@ class ProductCrawler:
             workers = max(1, min(SITEMAP_FETCH_WORKERS, total_urls))
             with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="sitemap_fetch") as executor:
                 futures = {
-                    executor.submit(self._fetch_sitemap_product, pu, prefer_jsonld, stop_event): pu
+                    executor.submit(self._fetch_sitemap_product, pu, prefer_jsonld,
+                                    stop_event, abandon_event): pu
                     for pu in product_urls
                 }
                 for future in as_completed(futures):
                     if stop_event is not None and stop_event.is_set():
                         log.info(f"[{domain}] 收到停止信号，已取 {total_valid} 件")
                         break
+                    if not abandon_event.is_set():
+                        now = time.time()
+                        if now - t_start > SITEMAP_TIME_BUDGET:
+                            abandon_event.set()
+                            log.warning(
+                                f"[{domain}] sitemap 通道超过时间预算"
+                                f"（{SITEMAP_TIME_BUDGET // 60:.0f} 分钟），"
+                                f"已取 {total_valid} 件，提前收尾"
+                            )
+                        elif now - t_start > 600 and now - last_valid_time > 600:
+                            abandon_event.set()
+                            log.warning(
+                                f"[{domain}] sitemap 通道连续 "
+                                f"{(now - last_valid_time) / 60:.0f} 分钟零产出"
+                                f"（已取 {total_valid} 件），判定为僵尸爬取，提前收尾"
+                            )
                     done_count += 1
                     try:
                         product = future.result()
@@ -785,6 +920,7 @@ class ProductCrawler:
                         continue
                     seen_unique_keys.add(record["unique_key"])
                     total_valid += 1
+                    last_valid_time = time.time()
                     if flush_callback is not None:
                         # 边爬边写：攒满一批立即落库
                         pending.append(record)
@@ -815,7 +951,11 @@ class ProductCrawler:
                 return {"success": False, "products": [], "count": 0,
                         "error": "sitemap 商品取数全部失败", "crawl_mode": "sitemap"}
 
-            log.info(f"[{domain}] sitemap 通道完成: {total_valid}/{total_urls} 件有效商品")
+            if abandon_event.is_set():
+                log.info(f"[{domain}] sitemap 提前收尾: {total_valid}/{total_urls} 件有效商品"
+                         f"（时间预算 {SITEMAP_TIME_BUDGET // 60:.0f} 分钟 / 僵尸判定）")
+            else:
+                log.info(f"[{domain}] sitemap 通道完成: {total_valid}/{total_urls} 件有效商品")
             _progress(f"[{domain}] sitemap 完成: {total_valid} 件")
             return {
                 "success": True,
@@ -831,27 +971,51 @@ class ProductCrawler:
                     "error": str(e), "crawl_mode": "sitemap"}
 
     def _fetch_sitemap_product(self, product_url: str, prefer_jsonld: bool = False,
-                               stop_event: threading.Event = None) -> Optional[dict]:
+                               stop_event: threading.Event = None,
+                               abandon_event: threading.Event = None) -> Optional[dict]:
         """取单个商品的数据
 
-        顺序：<商品链接>.json → 商品页 JSON-LD 兜底。
+        顺序：<商品链接>.json（直连优先） → 商品页 JSON-LD 兜底。
         部分店铺会同时禁用 /products.json 与 /products/<handle>.json，
         此时只能从商品页内嵌的 JSON-LD 取数。
 
-        429 限流处理：请求前若该域处于冷却期则等待；请求中命中 429 则记录
-        指数退避，后续取数请求暂停该域，避免整站 16 个线程空耗降级链。
+        429 限流处理：请求前若该域处于冷却期则等待；命中 429 则记录指数退避、
+        冷却结束后重试一次本商品（而非直接丢弃），连续两次 429 说明本出口 IP
+        已被持续限流，改经代理服务（不同出口 IP）抢救该商品。
 
         Args:
             prefer_jsonld: 已探测到 .json 端点被禁用，直接走商品页解析
             stop_event: 可选停止信号（冷却等待期间可被打断）
+            abandon_event: 可选放弃信号（站点超时间预算/僵尸判定后快速返回）
         """
+        if abandon_event is not None and abandon_event.is_set():
+            return None
         domain = get_domain(product_url)
-        self._wait_if_throttled(domain, stop_event)
+        self._wait_if_throttled(domain, stop_event, abandon_event)
+        # 同域平滑限速：预约时间片错峰出发，避免突发触发 429
+        pace_wait = self._domain_pace_delay(domain)
+        if pace_wait > 0:
+            time.sleep(pace_wait)
 
+        json_url = product_url.rstrip("/") + ".json"
         if not prefer_jsonld:
-            data, status = self.fetch_json(product_url.rstrip("/") + ".json", timeout=REQUEST_TIMEOUT)
-            if status == 429:
+            for attempt in range(2):
+                data, status = self.fetch_json(json_url, timeout=REQUEST_TIMEOUT, direct_first=True)
+                if status != 429:
+                    break
                 self._throttle_domain(domain)
+                if attempt == 0 and not (stop_event and stop_event.is_set()) \
+                        and not (abandon_event and abandon_event.is_set()):
+                    # 冷却结束后重试一次本商品
+                    self._wait_if_throttled(domain, stop_event, abandon_event)
+                    continue
+                break
+            if status == 429 and not (stop_event and stop_event.is_set()) \
+                    and not (abandon_event and abandon_event.is_set()):
+                # 连续 429：直连出口已被持续限流，换出口 IP 抢救本商品
+                data, status = self.fetch_json(json_url, timeout=REQUEST_TIMEOUT)
+                if status == 429:
+                    return None
             if isinstance(data, dict):
                 product = data.get("product")
                 if isinstance(product, dict):
@@ -872,8 +1036,9 @@ class ProductCrawler:
         return None
 
     def _json_endpoint_blocked(self, product_url: str) -> bool:
-        """探测单个商品的 .json 端点是否被禁用"""
-        data, status = self.fetch_json(product_url.rstrip("/") + ".json", timeout=REQUEST_TIMEOUT)
+        """探测单个商品的 .json 端点是否被禁用（直连优先，快速得出结论）"""
+        data, status = self.fetch_json(product_url.rstrip("/") + ".json",
+                                        timeout=REQUEST_TIMEOUT, direct_first=True)
         blocked = not (isinstance(data, dict) and (data.get("product") or data.get("title")))
         if blocked:
             log.info(f".json 端点不可用（HTTP {status}），改从商品页 JSON-LD 取数: {product_url}")
@@ -939,9 +1104,9 @@ class ProductCrawler:
             if progress_callback:
                 progress_callback(f"[{domain}] 汇率 OK: {currency}，开始爬取商品")
             
-            # 探针检测
+            # 探针检测（直连优先，快速判断通道可用性）
             probe_url = f"{url}/products.json?limit=200&page=1"
-            probe_data, probe_code = self.fetch_json(probe_url, timeout=15)
+            probe_data, probe_code = self.fetch_json(probe_url, timeout=15, direct_first=True)
             
             if probe_code != 200 or not isinstance(probe_data, dict):
                 log.warning(f"[{domain}] products.json 不可用，改用 sitemap 兜底通道")
@@ -980,7 +1145,7 @@ class ProductCrawler:
                             "domain": domain, "currency": currency}
 
                 products_url = f"{url}/products.json?limit=200&page={page}"
-                data, code = self.fetch_json(products_url)
+                data, code = self.fetch_json(products_url, direct_first=True)
                 
                 if code != 200:
                     break
@@ -1132,7 +1297,7 @@ class ProductCrawler:
 
                 while empty_pages < MAX_EMPTY_PAGES and empty_saved_pages < MAX_EMPTY_PAGES and page <= MAX_PAGE_LIMIT:
                     products_url = f"{url}/collections/{handle}/products.json?limit=200&page={page}"
-                    data, code = self.fetch_json(products_url)
+                    data, code = self.fetch_json(products_url, direct_first=True)
 
                     if code != 200:
                         break

@@ -29,9 +29,10 @@ class FakeResponse:
 
 def make_detector():
     detector = PlatformDetector()
-    # 永久停用远程代理服务复检与 cloudscraper 复检，测试不发起真实网络请求
+    # 永久停用远程代理服务复检、cloudscraper 复检与 DNS 预检，测试不发起真实网络请求
     detector._proxy_service_failed = True
     detector.cloudflare_fallback_enabled = False
+    detector.dns_check_enabled = False
     return detector
 
 
@@ -90,8 +91,8 @@ class TestDetectInconclusive:
         result = make_detector().detect("https://blocked-shop.com")
         assert result.inconclusive is True
 
-    def test_meta_json_404_is_definitive_negative(self, monkeypatch):
-        """只使用 meta.json：meta.json 404 即确认不是 Shopify"""
+    def test_meta_404_with_blocked_homepage_is_inconclusive(self, monkeypatch):
+        """meta.json 404 + 首页被拦：不能定案（headless Shopify 也可能如此）"""
         patch_responses(
             monkeypatch,
             {"meta.json": FakeResponse(404)},
@@ -99,7 +100,7 @@ class TestDetectInconclusive:
         )
         result = make_detector().detect("https://not-shopify.com")
         assert result.platform == Platform.UNKNOWN
-        assert result.inconclusive is False
+        assert result.inconclusive is True
 
     def test_unexpected_exception_is_inconclusive(self):
         """detect() 内部未预见异常不构成否定证据"""
@@ -132,17 +133,67 @@ class TestDetectPositive:
         assert result.confidence == 1.0
         assert result.inconclusive is False
 
-    def test_homepage_fingerprint_does_not_confirm_shopify(self, monkeypatch):
-        """只使用 meta.json：首页 Shopify 指纹不能单独确认"""
+    def test_strong_homepage_fingerprint_confirms_shopify(self, monkeypatch):
+        """直连被拦（403）+ 首页强指纹（cdn.shopify.）→ 确认 Shopify
+
+        旧版只认 meta.json，被拦的真店全部被误杀（成功率 <10% 的主因之一）。
+        """
         shopify_html = '<html><script src="https://cdn.shopify.com/s/files/x.js"></script></html>'
         patch_responses(
             monkeypatch,
-            {"meta.json": FakeResponse(404)},
+            {"meta.json": FakeResponse(403)},
             homepage=FakeResponse(200, text=shopify_html),
         )
         result = make_detector().detect("https://fingerprint-shop.com")
+        assert result.platform == Platform.SHOPIFY
+        assert result.confidence == 0.9
+        assert result.inconclusive is False
+
+    def test_weak_homepage_fingerprint_not_enough(self, monkeypatch):
+        """弱特征（window.shopify 等）不能单独确认 Shopify，防误报"""
+        weak_html = '<html><script>window.shopify = {};</script></html>'
+        patch_responses(
+            monkeypatch,
+            {"meta.json": FakeResponse(403)},
+            homepage=FakeResponse(200, text=weak_html),
+        )
+        result = make_detector().detect("https://weak-shop.com")
         assert result.platform == Platform.UNKNOWN
         assert result.inconclusive is False
+
+    def test_proxy_502_not_definitive_negative(self, monkeypatch):
+        """远程代理 502 不得作为"非 Shopify"定案（历史误杀主因）
+
+        修复前：代理 502 → 判定非 Shopify → 真店永久丢失；
+        修复后：502 视为无法确定，继续走首页强指纹确认。
+        """
+        detector = make_detector()
+        monkeypatch.setattr(
+            detector, "_detect_shopify_via_proxy_service",
+            lambda meta_url: (None, 502),
+        )
+        shopify_html = '<html><script src="https://cdn.shopify.com/s/files/x.js"></script></html>'
+        patch_responses(
+            monkeypatch,
+            {"meta.json": FakeResponse(403)},
+            homepage=FakeResponse(200, text=shopify_html),
+        )
+        result = detector.detect("https://blocked-real-shop.com")
+        assert result.platform == Platform.SHOPIFY
+        assert result.confidence == 0.9
+
+    def test_dns_hit_confirms_shopify(self, monkeypatch):
+        """域名解析到 Shopify 边缘 IP 段（23.227.38.0/24）→ 直接收录"""
+        detector = make_detector()
+        detector.dns_check_enabled = True
+        monkeypatch.setattr(detector, "_dns_points_to_shopify", lambda domain: True)
+        patch_responses(
+            monkeypatch,
+            {"meta.json": FakeResponse(404)},
+        )
+        result = detector.detect("https://dns-shop.com")
+        assert result.platform == Platform.SHOPIFY
+        assert result.confidence == 0.85
 
 
 class TestMagentoFalsePositive:
@@ -165,10 +216,14 @@ class TestMagentoFalsePositive:
         assert result.platform == Platform.UNKNOWN
 
     def test_real_magento_version_still_detected(self, monkeypatch):
-        """收紧判据不影响真实 Magento 检测"""
+        """收紧判据不影响真实 Magento 检测（meta 被拦 → 首页干净 → 平台识别）"""
         patch_responses(
             monkeypatch,
-            {"magento_version": FakeResponse(200, text="Magento/2.4 (Community)")},
+            {
+                "meta.json": FakeResponse(403),
+                "magento_version": FakeResponse(200, text="Magento/2.4 (Community)"),
+            },
+            homepage=FakeResponse(200, text=PLAIN_HTML),
         )
         result = make_detector().detect("https://real-magento.com")
         assert result.platform == Platform.MAGENTO

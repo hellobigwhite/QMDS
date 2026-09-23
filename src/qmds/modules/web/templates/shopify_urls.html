@@ -56,7 +56,7 @@
         </div>
         <div class="form-group">
             <label for="min_products">最低商品数（0 表示不限）</label>
-            <input type="number" id="min_products" name="min_products" placeholder="0" value="{{ request.form.get('min_products', '0') }}" min="0">
+            <input type="number" id="min_products" name="min_products" placeholder="10" value="{{ request.form.get('min_products', '10') }}" min="10">
         </div>
         <div class="form-group">
             <label>存储方式（二选一）</label>
