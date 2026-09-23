@@ -7,7 +7,7 @@ import random
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import requests
@@ -52,6 +52,9 @@ SITEMAP_429_MAX_COOLDOWN = 300.0
 # 进程级站点并发上限：多个分类任务同时跑时（每任务最多 10 站），限制
 # 全局同时在爬的站点总数，避免把目标站点/出口 IP 打到 429
 MAX_CONCURRENT_SITES = 12
+# 边爬边写：商品攒满该数量即调用 flush_callback 落库一次，避免整站几万条
+# 堆在内存里、爬完才一次性写入导致长时间看不到数据库增长
+SAVE_FLUSH_BATCH_SIZE = 500
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
@@ -699,7 +702,8 @@ class ProductCrawler:
 
     def crawl_site_via_sitemap(self, url: str, category: str, currency: str, rate: float,
                                progress_callback=None, stop_event: threading.Event = None,
-                               subcategory: str = "", reason: str = "") -> Dict:
+                               subcategory: str = "", reason: str = "",
+                               flush_callback: Optional[Callable[[List[dict]], int]] = None) -> Dict:
         """Sitemap 兜底通道：从 /sitemap.xml 枚举商品链接并逐个取数
 
         仅在 products.json 不可用（被禁用/无响应）或全店商品数达到
@@ -709,6 +713,9 @@ class ProductCrawler:
             currency: 已由 meta.json 确认的货币
             rate: 该货币对 USD 的汇率
             reason: 触发兜底的原因（用于日志与进度展示）
+            flush_callback: 可选落库回调 (batch) -> int；传入后每攒满一批商品
+                立即调用一次入库（边爬边写），避免整站几万条堆在内存里、
+                爬完才一次性写入导致长时间看不到数据库增长
         """
         url = normalize_url(url)
         domain = get_domain(url)
@@ -734,7 +741,10 @@ class ProductCrawler:
             total_urls = len(product_urls)
             _progress(f"[{domain}] sitemap 发现 {total_urls} 个商品，开始取数")
 
-            all_products: List[dict] = []
+            all_products: List[dict] = []   # 未落库缓冲（flush 模式下仅剩尾部残余）
+            pending: List[dict] = []        # flush 模式攒批缓冲
+            flushed_saved = 0               # flush 回调累计入库数
+            total_valid = 0                 # 累计有效商品数（进度展示）
             seen_unique_keys = set()
             done_count = 0
             failed_count = 0
@@ -753,7 +763,7 @@ class ProductCrawler:
                 }
                 for future in as_completed(futures):
                     if stop_event is not None and stop_event.is_set():
-                        log.info(f"[{domain}] 收到停止信号，已取 {len(all_products)} 件")
+                        log.info(f"[{domain}] 收到停止信号，已取 {total_valid} 件")
                         break
                     done_count += 1
                     try:
@@ -774,26 +784,43 @@ class ProductCrawler:
                     if record["unique_key"] in seen_unique_keys:
                         continue
                     seen_unique_keys.add(record["unique_key"])
-                    all_products.append(record)
-                    if len(all_products) % 200 == 0:
-                        _progress(
-                            f"[{domain}] sitemap 已取 {len(all_products)} 件"
-                            f"（进度 {done_count}/{total_urls}）"
-                        )
+                    total_valid += 1
+                    if flush_callback is not None:
+                        # 边爬边写：攒满一批立即落库
+                        pending.append(record)
+                        if len(pending) >= SAVE_FLUSH_BATCH_SIZE:
+                            flushed_saved += flush_callback(pending)
+                            pending = []
+                            _progress(
+                                f"[{domain}] sitemap 已入库 {flushed_saved} 件"
+                                f"（进度 {done_count}/{total_urls}）"
+                            )
+                    else:
+                        all_products.append(record)
+                        if len(all_products) % 200 == 0:
+                            _progress(
+                                f"[{domain}] sitemap 已取 {len(all_products)} 件"
+                                f"（进度 {done_count}/{total_urls}）"
+                            )
+
+            # flush 模式：收尾把剩余批次写入
+            if flush_callback is not None and pending:
+                flushed_saved += flush_callback(pending)
+                pending = []
 
             # 全部商品链接都取数失败：属于通道失败而非"无有效商品"，
             # 否则会以 success=True 把站点标记为已爬取，永久丢失
-            if not all_products and failed_count == total_urls:
+            if not all_products and not flushed_saved and failed_count == total_urls:
                 log.warning(f"[{domain}] sitemap 通道 {total_urls} 个商品全部取数失败")
                 return {"success": False, "products": [], "count": 0,
                         "error": "sitemap 商品取数全部失败", "crawl_mode": "sitemap"}
 
-            log.info(f"[{domain}] sitemap 通道完成: {len(all_products)}/{total_urls} 件有效商品")
-            _progress(f"[{domain}] sitemap 完成: {len(all_products)} 件")
+            log.info(f"[{domain}] sitemap 通道完成: {total_valid}/{total_urls} 件有效商品")
+            _progress(f"[{domain}] sitemap 完成: {total_valid} 件")
             return {
                 "success": True,
                 "products": all_products,
-                "count": len(all_products),
+                "count": total_valid,
                 "domain": domain,
                 "currency": currency,
                 "crawl_mode": "sitemap",
@@ -853,7 +880,8 @@ class ProductCrawler:
         return blocked
     
     def crawl_site(self, url: str, category: str, progress_callback=None,
-                   stop_event: threading.Event = None, subcategory: str = "") -> Dict:
+                   stop_event: threading.Event = None, subcategory: str = "",
+                   flush_callback: Optional[Callable[[List[dict]], int]] = None) -> Dict:
         """爬取单个站点的商品数据
         
         Args:
@@ -862,6 +890,8 @@ class ProductCrawler:
             progress_callback: 进度回调函数
             stop_event: 停止信号事件（可选）
             subcategory: 二级分类名称（空字符串归入 "other"）
+            flush_callback: 可选落库回调 (batch) -> int；传入后边爬边写，
+                每攒满 SAVE_FLUSH_BATCH_SIZE 条商品立即入库一次
             
         Returns:
             {"success": bool, "products": list, "count": int,
@@ -903,6 +933,7 @@ class ProductCrawler:
                     url, category, currency, rate, progress_callback,
                     stop_event=stop_event, subcategory=subcategory,
                     reason=f"商品数 {published_count} 达到 products.json 上限 {PRODUCTS_JSON_MAX_PRODUCTS}",
+                    flush_callback=flush_callback,
                 )
 
             if progress_callback:
@@ -918,6 +949,7 @@ class ProductCrawler:
                     url, category, currency, rate, progress_callback,
                     stop_event=stop_event, subcategory=subcategory,
                     reason=f"products.json 不可用 (HTTP {probe_code})",
+                    flush_callback=flush_callback,
                 )
             
             products_count = len(probe_data.get("products", []))
@@ -930,6 +962,9 @@ class ProductCrawler:
             
             # 爬取所有页面
             all_products = []
+            pending = []            # flush 模式攒批缓冲
+            flushed_saved = 0       # flush 回调累计入库数
+            total_valid = 0         # 累计有效商品数（进度展示）
             seen_unique_keys = set()
             page = 1
             empty_pages = 0
@@ -937,8 +972,11 @@ class ProductCrawler:
 
             while empty_pages < MAX_EMPTY_PAGES and empty_saved_pages < MAX_EMPTY_PAGES and page <= MAX_PAGE_LIMIT:
                 if stop_event and stop_event.is_set():
-                    log.info(f"[{domain}] 收到停止信号，已爬取 {len(all_products)} 件")
-                    return {"success": True, "products": all_products, "count": len(all_products),
+                    if flush_callback is not None and pending:
+                        flushed_saved += flush_callback(pending)
+                        pending = []
+                    log.info(f"[{domain}] 收到停止信号，已爬取 {total_valid} 件")
+                    return {"success": True, "products": all_products, "count": total_valid,
                             "domain": domain, "currency": currency}
 
                 products_url = f"{url}/products.json?limit=200&page={page}"
@@ -957,6 +995,7 @@ class ProductCrawler:
 
                 empty_pages = 0
                 page_products = []
+                page_valid = 0
                 
                 for product in products:
                     record = self.parse_product_record(
@@ -969,17 +1008,26 @@ class ProductCrawler:
                     if record["unique_key"] in seen_unique_keys:
                         continue
                     seen_unique_keys.add(record["unique_key"])
-                    page_products.append(record)
+                    total_valid += 1
+                    page_valid += 1
+                    if flush_callback is not None:
+                        # 边爬边写：攒满一批立即落库
+                        pending.append(record)
+                        if len(pending) >= SAVE_FLUSH_BATCH_SIZE:
+                            flushed_saved += flush_callback(pending)
+                            pending = []
+                    else:
+                        page_products.append(record)
                 
                 all_products.extend(page_products)
 
-                if not page_products:
+                if not page_valid:
                     empty_saved_pages += 1
                 else:
                     empty_saved_pages = 0
 
                 if progress_callback and page % 5 == 0:
-                    progress_callback(f"[{domain}] 第{page}页: 累计{len(all_products)}件")
+                    progress_callback(f"[{domain}] 第{page}页: 累计{total_valid}件")
 
                 if empty_saved_pages >= MAX_EMPTY_PAGES:
                     if progress_callback:
@@ -992,13 +1040,18 @@ class ProductCrawler:
                     break
                 time.sleep(random.uniform(*PAGE_SLEEP_RANGE))
             
+            # flush 模式：收尾把剩余批次写入
+            if flush_callback is not None and pending:
+                flushed_saved += flush_callback(pending)
+                pending = []
+
             if progress_callback:
-                progress_callback(f"[{domain}] 完成: {len(all_products)} 件商品")
+                progress_callback(f"[{domain}] 完成: {total_valid} 件商品")
             
             return {
                 "success": True,
                 "products": all_products,
-                "count": len(all_products),
+                "count": total_valid,
                 "domain": domain,
                 "currency": currency
             }
@@ -1181,20 +1234,33 @@ class ProductCrawler:
             if progress_callback:
                 progress_callback(f"[{site_index}/{total_sites}] 开始: {domain}")
 
-            result = crawler.crawl_site(url, category, progress_callback, stop_event=stop_event, subcategory=subcategory)
+            saved_total = 0
 
-            saved_count = 0
-            if result["success"] and result["products"]:
-                saved_count = product_db.save_raw_products(category, subcategory, result["products"])
+            # 边爬边写：crawl_site 每攒满一批商品调用一次本回调立即入库，
+            # 长时爬取（尤其 sitemap 通道几万条）也能实时看到数据库增长
+            def _flush(batch):
+                nonlocal saved_total
+                if not batch:
+                    return 0
+                n = product_db.save_raw_products(category, subcategory, batch)
+                saved_total += n
                 if progress_callback:
-                    progress_callback(f"[{site_index}/{total_sites}] 保存 {saved_count} 件: {domain}")
+                    progress_callback(f"[{site_index}/{total_sites}] 已入库 {saved_total} 件: {domain}")
+                return n
+
+            result = crawler.crawl_site(url, category, progress_callback, stop_event=stop_event,
+                                        subcategory=subcategory, flush_callback=_flush)
+
+            # 收尾：把未走 flush 回调的剩余商品一次性入库（无 flush 的老路径也兼容）
+            if result["success"] and result["products"]:
+                saved_total += product_db.save_raw_products(category, subcategory, result["products"])
 
             if progress_callback:
-                progress_callback(f"[{site_index}/{total_sites}] 完成: {domain} ({saved_count} 件)")
+                progress_callback(f"[{site_index}/{total_sites}] 完成: {domain} ({saved_total} 件)")
 
             return {
                 "success": result["success"],
-                "saved": saved_count,
+                "saved": saved_total,
                 "url": url,
                 "domain": domain,
                 "error": result.get("error"),
