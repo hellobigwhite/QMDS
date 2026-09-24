@@ -31,6 +31,8 @@ log = get_logger("mongodb")
 FILTER_STATUS_UNFILTERED = "unfiltered"  # 未筛选（店铺URL在 {category} 集合中）
 FILTER_STATUS_FILTERED = "filtered"      # 已筛选（collection URL 在 {category}__{subcategory} 集合中）
 FILTER_STATUS_FAILED = "filter_failed"   # 筛选失败
+FILTER_STATUS_UNCERTAIN = "uncertain"    # 平台检测被拦截/无法确认，待人工复核（不按非 Shopify 误杀）
+FILTER_STATUS_NOT_SHOPIFY = "not_shopify"  # 待确认重检后确认非 Shopify（从待确认中移除）
 
 # 爬取状态
 CRAWL_STATUS_UNCRAWLED = "uncrawled"    # 未爬取
@@ -508,6 +510,46 @@ class MongoDBClient:
                     self._set_counter_type(category, "unfiltered", category)
                     self._inc_counter(category, "unfiltered", 1, doc_delta=1)
         log.info(f"MongoDB 写入 {category} (unfiltered): {count}/{len(stores)} 条")
+        return count
+
+    def save_uncertain(self, category: str, stores: list[dict]) -> int:
+        """保存平台检测时被拦截/无法确认的店铺（filter_status=uncertain，供人工复核）
+
+        这些站点不是确认非 Shopify（可能只是被 WAF/网络拦截的真店），
+        单独保存为"待确认"，后续可换网络/时间人工复核，避免被静默误杀。
+
+        stores 中每个 dict 应包含:
+            url, domain, platform, product_count, store_name, currency, category, search_query
+        """
+        if not stores:
+            return 0
+        col = self.unfiltered_col(category)
+        self.ensure_indexes(category)
+        ts = datetime.utcnow().isoformat()
+        count = 0
+        for store in stores:
+            result = col.update_one(
+                {"domain": store["domain"]},
+                {"$set": {
+                    "domain": store["domain"],
+                    "url": store["url"],
+                    "platform": store.get("platform", "Blocked/待确认"),
+                    "product_count": store.get("product_count", 0),
+                    "store_name": store.get("store_name", ""),
+                    "currency": store.get("currency", "USD"),
+                    "category": category,
+                    "search_query": store.get("search_query", ""),
+                    "source": store.get("source", "google_search"),
+                    "filter_status": FILTER_STATUS_UNCERTAIN,
+                    "updated_at": ts,
+                }, "$setOnInsert": {
+                    "created_at": ts,
+                }},
+                upsert=True,
+            )
+            if result.upserted_id or result.modified_count > 0:
+                count += 1
+        log.info(f"MongoDB 写入 {category} (uncertain): {count}/{len(stores)} 条")
         return count
 
     # ── 筛选状态迁移（原 move_to_filtered，改为同集合更新） ──

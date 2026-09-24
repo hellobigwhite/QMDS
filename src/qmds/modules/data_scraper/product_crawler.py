@@ -331,6 +331,42 @@ def get_shared_proxy_service() -> ProxyServiceClient:
 # acquire/release，多个分类任务（各自最多 workers 个站点）共享同一上限
 _site_concurrency = threading.BoundedSemaphore(MAX_CONCURRENT_SITES)
 
+# 进程级 CF 429 风暴冷却：多个不同域在短时间内同时 429，说明本 IP 被
+# Cloudflare 整体限流（实测会波及全部 Shopify 系域名且持续很久，期间
+# 直连必然 429）。冷却期内暂停一切直连（含 cloudscraper 与直连降级），
+# 只允许走代理服务，避免继续加深限流
+_DIRECT_429_WINDOW = 60.0      # 观察窗口（秒）
+_DIRECT_429_THRESHOLD = 3      # 窗口内不同域 429 数达到该值触发冷却
+_DIRECT_429_COOLDOWN = 300.0   # 冷却时长（秒）
+_direct_429_lock = threading.Lock()
+_direct_429_hits: list = []    # [(timestamp, domain), ...]
+_direct_429_until = 0.0
+
+
+def _note_direct_429(domain: str):
+    """记录一次直连 429；跨域风暴时触发全局直连冷却"""
+    global _direct_429_until
+    now = time.time()
+    with _direct_429_lock:
+        _direct_429_hits[:] = [h for h in _direct_429_hits if now - h[0] < _DIRECT_429_WINDOW]
+        _direct_429_hits.append((now, domain))
+        domains = {h[1] for h in _direct_429_hits}
+        if len(domains) >= _DIRECT_429_THRESHOLD and now >= _direct_429_until:
+            _direct_429_until = now + _DIRECT_429_COOLDOWN
+            log.warning(f"{_DIRECT_429_WINDOW:.0f} 秒内 {len(domains)} 个不同域直连 429："
+                        f"本 IP 疑似被 Cloudflare 整体限流，直连通道冷却 "
+                        f"{_DIRECT_429_COOLDOWN / 60:.0f} 分钟")
+
+
+def _direct_cooldown_active() -> bool:
+    """CF 429 风暴冷却是否进行中（期间应暂停直连，改走代理服务）"""
+    return time.time() < _direct_429_until
+
+
+def _direct_cooldown_remaining() -> float:
+    """直连冷却剩余秒数（供任务尾的拦截站点重试等待）"""
+    return max(0.0, _direct_429_until - time.time())
+
 
 class ProductCrawler:
     """产品数据爬取器"""
@@ -473,7 +509,8 @@ class ProductCrawler:
                 return True
 
     def fetch_json(self, url: str, timeout: int = REQUEST_TIMEOUT,
-                   direct_first: bool = False) -> Tuple[Optional[dict], int]:
+                   direct_first: bool = False,
+                   proxy_timeout: int = PROXY_SERVICE_FETCH_TIMEOUT) -> Tuple[Optional[dict], int]:
         """获取JSON数据
 
         降级链：代理服务 → 本地代理池(3次) → 直连(仅429/池不可用) → cloudscraper 兜底
@@ -489,8 +526,10 @@ class ProductCrawler:
                 百毫秒级，同时避免多任务把代理服务打爆。直连 404/410/
                 200 非 JSON 是源站结论，直接返回不再走代理。
         """
+        domain = get_domain(url)
         direct_429 = False
-        if direct_first and not self._direct_blocked.get(get_domain(url), False):
+        if direct_first and not _direct_cooldown_active() \
+                and not self._direct_blocked.get(domain, False):
             response = cloudflare_client.get(url, timeout=timeout)
             if response is not None:
                 dstat = response.status_code
@@ -507,14 +546,15 @@ class ProductCrawler:
                     return None, 200    # 200 非 JSON：端点被主题禁用
                 elif dstat == 429:
                     direct_429 = True   # 目标限流；仍尝试代理，但保留限流信号
+                    _note_direct_429(domain)
                 elif dstat in (401, 403):
                     # CF 挑战/拒绝：本域直连通道已废，后续请求直接走代理
-                    self._direct_blocked[get_domain(url)] = True
+                    self._direct_blocked[domain] = True
                 # 5xx/超时：可能瞬时故障，交由代理服务但不记住
 
         # 第一步：优先使用代理服务（超时用服务专用预算：它单次要 1~40 秒，
         # 沿用调用方的 15/25 秒会在服务正常工作时也大量超时）
-        data, status = self.proxy_service.fetch(url, timeout=PROXY_SERVICE_FETCH_TIMEOUT)
+        data, status = self.proxy_service.fetch(url, timeout=proxy_timeout)
         if status == 200 and data:
             return data, status
         if direct_429 and status != 200:
@@ -610,8 +650,9 @@ class ProductCrawler:
                     return None, 0
             time.sleep(1)
 
-        # 第三步：直连降级（429 限流，或代理池整体不可用/已关闭时）
-        if last_status == 429 or pool_unavailable:
+        # 第三步：直连降级（429 限流，或代理池整体不可用/已关闭时）；
+        # CF 风暴冷却期间跳过——直连只会继续触发限流
+        if (last_status == 429 or pool_unavailable) and not _direct_cooldown_active():
             try:
                 response = self.session.get(url, timeout=timeout)
                 code = response.status_code
@@ -631,8 +672,9 @@ class ProductCrawler:
             except Exception as e:
                 log.warning(f"直连降级失败 {url} | {type(e).__name__}: {e}")
 
-        # 第四步：cloudscraper 兜底（Cloudflare JS 挑战 / 代理通道全部被拒）
-        if cloudflare_blocked or last_status in (429, 0):
+        # 第四步：cloudscraper 兜底（Cloudflare JS 挑战 / 代理通道全部被拒）；
+        # cloudscraper 也是本机直连出口，CF 风暴冷却期间同样跳过
+        if (cloudflare_blocked or last_status in (429, 0)) and not _direct_cooldown_active():
             data = self._fetch_json_via_cloudscraper(url, timeout)
             if data is not None:
                 return data, 200
@@ -675,10 +717,12 @@ class ProductCrawler:
             if status_holder is not None:
                 status_holder.append(status)
 
-        # 1. cloudscraper 直连（同时可绕 Cloudflare）
-        response = cloudflare_client.get(url, timeout=timeout)
+        # 1. cloudscraper 直连（同时可绕 Cloudflare）；CF 风暴冷却期间跳过
+        response = None if _direct_cooldown_active() else cloudflare_client.get(url, timeout=timeout)
         if response is not None:
             _note(response.status_code)
+            if response.status_code == 429:
+                _note_direct_429(get_domain(url))
             if response.status_code == 200 and response.content:
                 return response.content
 
@@ -688,7 +732,10 @@ class ProductCrawler:
         if status == 200 and content:
             return content
 
-        # 3. 本地代理池（关闭或已被禁止时改为直连兜底，避免整级缺失）
+        # 3. 本地代理池（关闭或已被禁止时改为直连兜底，避免整级缺失）；
+        #    CF 风暴冷却期间直连兜底同样跳过
+        if (not _LOCAL_PROXY_POOL_ENABLED or is_local_pool_banned()) and _direct_cooldown_active():
+            return None
         if not _LOCAL_PROXY_POOL_ENABLED or is_local_pool_banned():
             try:
                 response = self.session.get(url, timeout=timeout)
@@ -728,17 +775,29 @@ class ProductCrawler:
         except Exception:
             return ""
 
-    def fetch_meta(self, url: str) -> Optional[dict]:
-        """获取 Shopify /meta.json 原始内容（同时给出货币与商品总数）"""
+    def fetch_meta(self, url: str) -> Tuple[Optional[dict], str]:
+        """获取 Shopify /meta.json 原始内容，并给出可执行的判定
+
+        Returns:
+            (meta, verdict)，verdict 取值：
+              "ok"      —— 拿到 meta，正常流程
+              "absent"  —— 404/410/200 非 JSON：端点不存在，可判非 Shopify
+              "blocked" —— 429/403/超时/代理不可用：无法判定。调用方绝不能
+                           据此判非 Shopify（历史 bug：被 CF 限流的真店被
+                           成批误标"非 Shopify 站点"并永久跳过）
+        """
         meta_url = f"{normalize_url(url)}/meta.json"
-        data, status = self.fetch_json(meta_url, timeout=15, direct_first=True)
+        data, status = self.fetch_json(meta_url, timeout=15, direct_first=True,
+                                       proxy_timeout=20)
         if status == 200 and isinstance(data, dict):
-            return data
-        return None
-    
+            return data, "ok"
+        if status in (404, 410, 200):
+            return None, "absent"
+        return None, "blocked"
+
     def fetch_currency(self, url: str) -> str:
         """获取货币类型"""
-        meta = self.fetch_meta(url)
+        meta, _verdict = self.fetch_meta(url)
         if meta:
             currency = meta.get("currency", "USD")
             return str(currency).upper() if currency else "USD"
@@ -847,6 +906,12 @@ class ProductCrawler:
                 workers=sitemap_fetcher.SITEMAP_DISCOVER_WORKERS,
             )
             if not product_urls:
+                if _direct_cooldown_active():
+                    # CF 风暴冷却中：发现失败是被拦截而非真的无链接
+                    log.warning(f"[{domain}] sitemap 发现被 CF 限流拦截，本轮跳过待重试")
+                    return {"success": False, "products": [], "count": 0,
+                            "error": "sitemap 发现被拦截", "crawl_mode": "sitemap",
+                            "blocked": True}
                 log.warning(f"[{domain}] sitemap 未发现商品链接")
                 return {"success": False, "products": [], "count": 0,
                         "error": "sitemap 未发现商品链接", "crawl_mode": "sitemap"}
@@ -947,6 +1012,11 @@ class ProductCrawler:
             # 全部商品链接都取数失败：属于通道失败而非"无有效商品"，
             # 否则会以 success=True 把站点标记为已爬取，永久丢失
             if not all_products and not flushed_saved and failed_count == total_urls:
+                if _direct_cooldown_active():
+                    log.warning(f"[{domain}] sitemap 取数被 CF 限流拦截，本轮跳过待重试")
+                    return {"success": False, "products": [], "count": 0,
+                            "error": "sitemap 取数被拦截", "crawl_mode": "sitemap",
+                            "blocked": True}
                 log.warning(f"[{domain}] sitemap 通道 {total_urls} 个商品全部取数失败")
                 return {"success": False, "products": [], "count": 0,
                         "error": "sitemap 商品取数全部失败", "crawl_mode": "sitemap"}
@@ -1078,10 +1148,15 @@ class ProductCrawler:
             # 获取货币
             if progress_callback:
                 progress_callback(f"[{domain}] 获取货币...")
-            meta = self.fetch_meta(url)
-            if not meta:
-                log.warning(f"[{domain}] 非 Shopify 站点（meta.json 无响应）")
+            meta, meta_verdict = self.fetch_meta(url)
+            if meta_verdict == "absent":
+                log.warning(f"[{domain}] 非 Shopify 站点（meta.json 404/禁用）")
                 return {"success": False, "products": [], "count": 0, "error": "非 Shopify 站点"}
+            if not meta:
+                # 429/403/超时/代理不可用：无法判定，绝不能误标非 Shopify
+                log.warning(f"[{domain}] meta.json 被拦截（CF 限流/挑战），本轮跳过待重试")
+                return {"success": False, "products": [], "count": 0,
+                        "error": "meta.json 被拦截", "blocked": True}
 
             currency = str(meta.get("currency") or "USD").upper()
             
@@ -1430,6 +1505,8 @@ class ProductCrawler:
                 "domain": domain,
                 "error": result.get("error"),
                 "stopped": False,
+                # CF 限流被拦截：调用方不得标记已爬取/失败，留待重试
+                "blocked": bool(result.get("blocked")),
             }
         except Exception as e:
             if stop_event and stop_event.is_set():
@@ -1443,6 +1520,51 @@ class ProductCrawler:
             _site_concurrency.release()
             crawler.close()
             product_db.close()
+
+    def _retry_blocked_sites(self, blocked_docs: list, category: str,
+                             progress_callback, stop_event, subcategory_norm: str):
+        """CF 限流被拦截的站点：等直连冷却结束后串行重试一轮
+
+        重试仍被拦截的保持 uncrawled（下次任务再试），绝不标记失败。
+        串行重试是有意的：这些站点只能走代理服务（4 个名额），并发无意义。
+
+        Returns:
+            (成功站点数, 商品数, 可标记域名表)
+        """
+        if not blocked_docs:
+            return 0, 0, {}
+        wait = min(_direct_cooldown_remaining(), _DIRECT_429_COOLDOWN)
+        if wait > 0:
+            log.info(f"等待直连冷却 {wait:.0f}s 后重试 {len(blocked_docs)} 个被拦截站点")
+            if progress_callback:
+                progress_callback(f"等待 CF 冷却 {wait:.0f}s，"
+                                  f"随后重试 {len(blocked_docs)} 个被拦截站点")
+            for _ in range(int(wait) + 1):
+                if stop_event is not None and stop_event.is_set():
+                    break
+                time.sleep(1)
+        success_sites = 0
+        total_products = 0
+        still_blocked = 0
+        retried_domains = {}
+        for i, url_doc in enumerate(blocked_docs, 1):
+            if stop_event is not None and stop_event.is_set():
+                break
+            result = self._crawl_single_site(url_doc, category, i, len(blocked_docs),
+                                             progress_callback, stop_event=stop_event,
+                                             subcategory=subcategory_norm)
+            if result["success"]:
+                success_sites += 1
+                total_products += result["saved"]
+            if result.get("blocked"):
+                still_blocked += 1  # 保持 uncrawled，不标记
+            elif not result.get("stopped"):
+                retried_domains[url_doc["domain"]] = {
+                    "products": result["saved"], "success": result["success"]}
+            time.sleep(random.uniform(*SITE_COOLDOWN_RANGE))
+        if still_blocked:
+            log.info(f"重试后仍有 {still_blocked} 个站点被 CF 拦截，保持未爬取留待下次任务")
+        return success_sites, total_products, retried_domains
 
     def _mark_crawled(self, source_db, category: str, crawled_domains: dict, subcategory: str = ""):
         """将已处理域名的 collection URL 在同一集合中标记 crawl_status（不再跨集合移动）
@@ -1548,6 +1670,7 @@ class ProductCrawler:
             success_sites = 0
             total_products = 0
             crawled_domains = {}
+            blocked_docs = []
             for i, url_doc in enumerate(store_urls, 1):
                 if stop_event and stop_event.is_set():
                     log.info(f"分类 {category}/{subcategory_norm}: 收到停止信号，已处理 {i-1}/{total_sites} 站点")
@@ -1558,11 +1681,22 @@ class ProductCrawler:
                 if result["success"]:
                     success_sites += 1
                     total_products += result["saved"]
-                # 被停止信号跳过的站点保留为 uncrawled，以便下次继续；其余（成功/失败）均标记为已爬取
-                if not result.get("stopped"):
+                # 被停止信号跳过的站点保留为 uncrawled，以便下次继续；
+                # 被 CF 拦截的同样保留（稍后重试）；其余（成功/失败）均标记为已爬取
+                if result.get("blocked"):
+                    blocked_docs.append(url_doc)
+                elif not result.get("stopped"):
                     crawled_domains[url_doc["domain"]] = {"products": result["saved"], "success": result["success"]}
                 if i < total_sites and not (stop_event and stop_event.is_set()):
                     time.sleep(random.uniform(*SITE_COOLDOWN_RANGE))
+
+            # CF 限流被拦截的站点：等冷却结束后重试一轮（仍拦截则留待下次任务）
+            if blocked_docs and not (stop_event and stop_event.is_set()):
+                r_ok, r_prod, retried = self._retry_blocked_sites(
+                    blocked_docs, category, progress_callback, stop_event, subcategory_norm)
+                success_sites += r_ok
+                total_products += r_prod
+                crawled_domains.update(retried)
 
             self._mark_crawled(source_db, category, crawled_domains, subcategory=subcategory_norm)
             source_db.close()
@@ -1578,6 +1712,7 @@ class ProductCrawler:
         success_sites = 0
         total_products = 0
         crawled_domains = {}
+        blocked_docs = []
 
         def _worker(idx: int, url_doc: dict) -> dict:
             nonlocal success_sites, total_products, crawled_domains
@@ -1588,8 +1723,12 @@ class ProductCrawler:
                 with lock:
                     success_sites += 1
                     total_products += result["saved"]
-            # 被停止信号跳过的站点保留为 uncrawled；其余（成功/失败）均标记为已爬取
-            if not result.get("stopped"):
+            # 被停止信号跳过的站点保留为 uncrawled；被 CF 拦截的同样保留
+            # （任务尾重试）；其余（成功/失败）均标记为已爬取
+            if result.get("blocked"):
+                with lock:
+                    blocked_docs.append(url_doc)
+            elif not result.get("stopped"):
                 with lock:
                     crawled_domains[url_doc["domain"]] = {"products": result["saved"], "success": result["success"]}
             return result
@@ -1606,6 +1745,14 @@ class ProductCrawler:
                     url_doc = futures[future]
                     log.error(f"线程异常 {url_doc.get('domain', '')}: {e}")
 
+        # CF 限流被拦截的站点：等冷却结束后重试一轮（仍拦截则留待下次任务）
+        if blocked_docs and not (stop_event and stop_event.is_set()):
+            r_ok, r_prod, retried = self._retry_blocked_sites(
+                blocked_docs, category, progress_callback, stop_event, subcategory_norm)
+            success_sites += r_ok
+            total_products += r_prod
+            crawled_domains.update(retried)
+
         self._mark_crawled(source_db, category, crawled_domains, subcategory=subcategory_norm)
         source_db.close()
 
@@ -1619,18 +1766,50 @@ class ProductCrawler:
             "total_products": total_products,
         }
 
+    def _collect_category_sites(self, category: str, subcategory_norm: str,
+                                max_sites: int = 0) -> list[dict]:
+        """收集某集合中未爬取的 filtered 店铺（去重，max_sites 截断）
+
+        返回 [{url, domain}, ...]
+        """
+        source_db = MongoDBClient()
+        try:
+            filtered_col = source_db.filtered_col(category, subcategory_norm)
+            query = {"filter_status": "filtered", "crawl_status": "uncrawled"}
+            seen_domains = set()
+            sites = []
+            for doc in filtered_col.find(query, {"url": 1, "domain": 1, "store_url": 1, "_id": 0}):
+                domain = doc.get("domain", "")
+                if not domain or domain in seen_domains:
+                    continue
+                seen_domains.add(domain)
+                store_url = doc.get("store_url") or ""
+                if not store_url:
+                    raw_url = doc.get("url", "")
+                    parsed = urlparse(raw_url)
+                    store_url = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else ""
+                if store_url:
+                    sites.append({"url": store_url, "domain": domain})
+                if max_sites > 0 and len(sites) >= max_sites:
+                    break
+        finally:
+            source_db.close()
+        return sites
+
     def crawl_category_all_subcategories(self, category: str, max_sites: int = 0,
                                          workers: int = 1, progress_callback=None,
                                          stop_event: threading.Event = None) -> Dict:
-        """爬取一级分类下所有二级分类的商品数据
+        """爬取一级分类下所有二级分类的商品数据（跨集合并发，总线程=workers）
 
-        从 MongoDB 动态获取该一级分类下所有有 filtered 数据的二级分类，
-        依次调用 crawl_category() 爬取每个二级分类，汇总结果。
+        旧版串行等待每个二级分类爬完再爬下一个（集合内多线程、集合间串行），
+        大集合会拖住其他集合。新版把一级分类下所有集合的站点合并进一个全局
+        线程池（总线程数 = workers，与单集合爬取时的线程数一致），不同集合的
+        站点同时并发爬取、互不等待；站点级并发仍受 _site_concurrency 全局名额限制。
 
         Args:
             category: 一级分类名称
             max_sites: 每个二级分类最大爬取站点数（0 表示不限制）
-            workers: 并发线程数（默认 1 串行）
+            workers: 全局并发线程数（默认 1 串行）
             progress_callback: 进度回调函数
             stop_event: 停止信号事件（可选）
 
@@ -1656,51 +1835,110 @@ class ProductCrawler:
                 "error": "无可用二级分类",
             }
 
-        log.info(f"开始爬取一级分类 {category}: 共 {len(subcategories)} 个二级分类")
-        if progress_callback:
-            progress_callback(f"开始爬取一级分类 {category}: 共 {len(subcategories)} 个二级分类")
+        # 收集所有集合的站点（每集合独立去重 + max_sites 截断）
+        tasks: list = []  # [(subcategory_norm, url_doc), ...]
+        per_sub_site_count: dict = {}
+        for sub in subcategories:
+            sub_norm = normalize_subcategory(sub)
+            sites = self._collect_category_sites(category, sub_norm, max_sites)
+            per_sub_site_count[sub_norm] = len(sites)
+            for site in sites:
+                tasks.append((sub_norm, site))
 
-        grand_total_sites = 0
+        if not tasks:
+            log.warning(f"一级分类 {category} 各二级分类均无可用URL")
+            if progress_callback:
+                progress_callback(f"一级分类 {category} 各二级分类均无可用URL")
+            return {
+                "total_subcategories": len(subcategories),
+                "total_sites": 0,
+                "success_sites": 0,
+                "total_products": 0,
+                "error": "无可用URL",
+            }
+
+        # 预创建索引（幂等）
+        for sub_norm in per_sub_site_count:
+            product_db = ProductDBClient()
+            try:
+                product_db.ensure_product_indexes(category, sub_norm)
+            finally:
+                product_db.close()
+
+        total_sites = len(tasks)
+        log.info(f"开始爬取一级分类 {category}: {len(subcategories)} 个二级分类 "
+                 f"共 {total_sites} 个站点, {workers} 线程（跨集合并发）")
+        if progress_callback:
+            progress_callback(f"开始爬取: {category} - {len(subcategories)} 个二级分类 "
+                              f"共 {total_sites} 个站点, {workers} 线程")
+
+        lock = threading.Lock()
         grand_success_sites = 0
         grand_total_products = 0
+        crawled_by_sub: dict = {}
+        blocked_by_sub: dict = {}
 
-        for idx, sub in enumerate(subcategories, 1):
-            if stop_event and stop_event.is_set():
-                log.info(f"一级分类 {category}: 收到停止信号，已完成 {idx - 1}/{len(subcategories)} 个二级分类")
-                if progress_callback:
-                    progress_callback(f"已停止: 完成 {idx - 1}/{len(subcategories)} 个二级分类")
-                break
+        def _worker(idx: int, sub_norm: str, url_doc: dict) -> dict:
+            nonlocal grand_success_sites, grand_total_products
+            result = self._crawl_single_site(url_doc, category, idx, total_sites,
+                                             progress_callback, stop_event=stop_event,
+                                             subcategory=sub_norm)
+            if result["success"]:
+                with lock:
+                    grand_success_sites += 1
+                    grand_total_products += result["saved"]
+            # 被停止信号跳过的站点保留为 uncrawled；被 CF 拦截的同样保留
+            # （任务尾按集合重试）；其余（成功/失败）均标记为已爬取
+            if result.get("blocked"):
+                with lock:
+                    blocked_by_sub.setdefault(sub_norm, []).append(url_doc)
+            elif not result.get("stopped"):
+                with lock:
+                    crawled_by_sub.setdefault(sub_norm, {})[url_doc["domain"]] = {
+                        "products": result["saved"], "success": result["success"]}
+            return result
 
-            sub_display = sub if sub else "other"
-            if progress_callback:
-                progress_callback(f"[{idx}/{len(subcategories)}] 开始爬取二级分类: {category}/{sub_display}")
+        # 全局线程池：总线程数 = workers，不同集合的站点同时并发爬取
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="crawl_site") as executor:
+            futures = {
+                executor.submit(_worker, i, sub_norm, site): (sub_norm, site)
+                for i, (sub_norm, site) in enumerate(tasks, 1)
+            }
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    sub_norm, site = futures[future]
+                    log.error(f"线程异常 {site.get('domain', '')} [{sub_norm}]: {e}")
 
-            result = self.crawl_category(
-                category, max_sites=max_sites, workers=workers,
-                progress_callback=progress_callback, stop_event=stop_event,
-                subcategory=sub,
-            )
+        # 按集合标记已爬取
+        source_db = MongoDBClient()
+        try:
+            for sub_norm, crawled in crawled_by_sub.items():
+                if crawled:
+                    self._mark_crawled(source_db, category, crawled, subcategory=sub_norm)
 
-            grand_total_sites += result.get("total_sites", 0)
-            grand_success_sites += result.get("success_sites", 0)
-            grand_total_products += result.get("total_products", 0)
-
-            if progress_callback:
-                progress_callback(
-                    f"[{idx}/{len(subcategories)}] 二级分类 {category}/{sub_display} 完成: "
-                    f"成功 {result.get('success_sites', 0)}/{result.get('total_sites', 0)} 站点, "
-                    f"{result.get('total_products', 0)} 件商品"
-                )
+            # CF 限流被拦截的站点：按集合等冷却后重试一轮（仍拦截则留待下次任务）
+            if blocked_by_sub and not (stop_event and stop_event.is_set()):
+                for sub_norm, blocked in blocked_by_sub.items():
+                    r_ok, r_prod, retried = self._retry_blocked_sites(
+                        blocked, category, progress_callback, stop_event, sub_norm)
+                    grand_success_sites += r_ok
+                    grand_total_products += r_prod
+                    if retried:
+                        self._mark_crawled(source_db, category, retried, subcategory=sub_norm)
+        finally:
+            source_db.close()
 
         summary = (f"一级分类 {category} 爬取完成: {len(subcategories)} 个二级分类, "
-                   f"{grand_success_sites}/{grand_total_sites} 站点, {grand_total_products} 件商品")
+                   f"{grand_success_sites}/{total_sites} 站点, {grand_total_products} 件商品")
         log.info(summary)
         if progress_callback:
             progress_callback(summary)
 
         return {
             "total_subcategories": len(subcategories),
-            "total_sites": grand_total_sites,
+            "total_sites": total_sites,
             "success_sites": grand_success_sites,
             "total_products": grand_total_products,
         }

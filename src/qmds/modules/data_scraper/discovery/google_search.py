@@ -9,13 +9,18 @@ from qmds.config.search_providers import SearchManager, ScrapeProviderError
 from qmds.core.base import BaseScraper, ScrapeResult
 from qmds.core.exceptions import ScrapeError
 from qmds.utils.logger import get_logger
+from qmds.modules.data_scraper.discovery.query_builder import (
+    count_dork_hits,
+    is_noise_domain,
+)
 
 log = get_logger("google_search")
 
+# 默认店铺发现查询（未指定 query 时使用；与 query_builder.build_query_variants
+# 的指纹族保持一致：collections/all 路径 / powered-by-shopify 页脚）
 SHOPIFY_QUERIES = [
     'inurl:collections/all',
-    'inurl:products "shopify"',
-    'site:myshopify.com',
+    '"powered by shopify"',
 ]
 
 
@@ -56,7 +61,13 @@ def is_translate_url(url: str) -> bool:
     return "translate.google.com" in url
 
 
-def filter_urls(urls: list[str], existing_domains: set | None = None) -> tuple[list[str], dict]:
+def filter_urls(urls: list[str], existing_domains: set | None = None,
+                block_noise: bool = True) -> tuple[list[str], dict]:
+    """清洗去重搜索结果 URL，并过滤噪声域名（社媒/电商巨头/图库等）
+
+    block_noise: 过滤 query_builder.NOISE_DOMAINS 黑名单域名。
+    这些域名不可能承载 Shopify 店铺，过滤后省去平台检测开销（零误杀）。
+    """
     existing_domains = existing_domains or set()
     existing_domains = {d.lower() for d in existing_domains}
     seen_domains: set[str] = set()
@@ -69,6 +80,8 @@ def filter_urls(urls: list[str], existing_domains: set | None = None) -> tuple[l
         if not cleaned or not domain:
             continue
         if is_translate_url(cleaned):
+            continue
+        if block_noise and is_noise_domain(domain):
             continue
         if domain in existing_domains or domain in seen_domains:
             continue
@@ -103,11 +116,23 @@ class GoogleShopifySearcher(BaseScraper):
         log.info(f"搜索初始化: {', '.join(names) if names else '无可用 API'}")
 
     def _search_page(self, query: str, page: int = 1, provider_name: str = "") -> list[str]:
-        """搜索一页，可指定或自动切换 API"""
+        """搜索一页，可指定或自动切换 API
+
+        固定指定 provider 且失败（如 serper 全部 key 额度用完）时，
+        自动降级为"自动切换"模式用其他 provider 兜底，避免任务空转。
+        """
         try:
             result = self._manager.search(query, page, provider_name=provider_name)
             return result.urls
         except ScrapeProviderError as e:
+            if provider_name:
+                log.warning(f"[{provider_name}] 搜索失败（{e}），自动切换其他 provider")
+                try:
+                    result = self._manager.search(query, page, provider_name="")
+                    return result.urls
+                except ScrapeProviderError as e2:
+                    log.error(str(e2))
+                    return []
             log.error(str(e))
             return []
 
@@ -126,19 +151,35 @@ class GoogleShopifySearcher(BaseScraper):
         for q in queries:
             page = 1
             consecutive_empty = 0
+            consecutive_dork_miss = 0
             while True:
                 try:
                     urls = self._search_page(q, page, provider_name=provider_name)
                     if not urls:
                         consecutive_empty += 1
+                        consecutive_dork_miss = 0
                         if consecutive_empty >= 2:
                             log.info(f"[{thread_name}] 查询 {q!r}: 连续 {consecutive_empty} 页无结果，停止搜索")
                             break
                     else:
                         consecutive_empty = 0
+                        # 先入库本页 URL（已取回的不丢数据），再判断是否提前停止
                         result.data.extend({"url": u, "query": q, "source": provider_name or "multi_api"} for u in urls)
                         result.total_found += len(urls)
-                        log.info(f"[{thread_name}] 查询 {q!r} 第 {page} 页: {len(urls)} 个结果")
+                        # dork 查询翻页提前停止：Google 严格 dork 结果耗尽后会放宽
+                        # 查询，深翻页（实测 27~38 页仍返回结果）混入大量纯关键词
+                        # 匹配的噪声页。连续多页不再命中 dork 指纹时停止翻页，省
+                        # 额度并减少噪声灌入（已取回的 URL 仍会进入平台检测）。
+                        dork_hits = count_dork_hits(urls, q)
+                        log.info(f"[{thread_name}] 查询 {q!r} 第 {page} 页: {len(urls)} 个结果（dork 命中 {dork_hits}）")
+                        if dork_hits == 0:
+                            consecutive_dork_miss += 1
+                            log.info(f"[{thread_name}] 查询 {q!r} 第 {page} 页: {len(urls)} 个结果均不匹配 dork 指纹（Google 已放宽查询），连续 {consecutive_dork_miss} 页")
+                            if consecutive_dork_miss >= 2:
+                                log.info(f"[{thread_name}] 查询 {q!r}: dork 结果已耗尽（连续 {consecutive_dork_miss} 页无指纹命中），停止搜索")
+                                break
+                        else:
+                            consecutive_dork_miss = 0
                 except Exception as e:
                     log.error(f"[{thread_name}] 搜索异常: {e}")
                     consecutive_empty += 1

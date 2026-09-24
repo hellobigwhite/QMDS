@@ -9,6 +9,7 @@
 """
 
 import gzip
+import time
 
 import pytest
 import requests
@@ -67,7 +68,8 @@ def make_crawler(monkeypatch, *, meta, probe, page_sleep=True):
     probe(url) -> (data, status)，用于应答 products.json 分页请求。
     """
     crawler = ProductCrawler(currency_map={"USD": 1.0})
-    monkeypatch.setattr(crawler, "fetch_meta", lambda url: meta)
+    monkeypatch.setattr(crawler, "fetch_meta",
+                        lambda url: (meta, "ok" if meta else "absent"))
     monkeypatch.setattr(crawler, "fetch_json",
                         lambda url, timeout=25, direct_first=False: probe(url))
     if page_sleep:
@@ -515,6 +517,75 @@ class TestDirectBlockedLatch:
 
         crawler.fetch_json("https://demo.com/products.json", direct_first=True)
         assert "demo.com" not in crawler._direct_blocked
+
+
+class TestBlockedNotMisjudged:
+    """CF 限流/拦截绝不判为"非 Shopify"（历史误杀 65 个真店的教训）"""
+
+    def test_meta_blocked_returns_blocked_outcome(self, monkeypatch):
+        """meta 被拦截（429/403/超时）→ blocked 结果，而非非 Shopify 定论"""
+        crawler = ProductCrawler(currency_map={"USD": 1.0})
+        monkeypatch.setattr(crawler, "fetch_meta", lambda url: (None, "blocked"))
+        result = crawler.crawl_site("https://demo.com", "Home")
+        assert result["success"] is False
+        assert result.get("blocked") is True
+        assert "拦截" in result["error"]
+        assert "非 Shopify" not in result["error"]
+
+    def test_meta_absent_still_non_shopify(self, monkeypatch):
+        """meta 404（headless 之外的真非 Shopify）→ 维持原判定"""
+        crawler = ProductCrawler(currency_map={"USD": 1.0})
+        monkeypatch.setattr(crawler, "fetch_meta", lambda url: (None, "absent"))
+        result = crawler.crawl_site("https://demo.com", "Home")
+        assert result["success"] is False
+        assert result.get("blocked") is None or result.get("blocked") is False
+        assert result["error"] == "非 Shopify 站点"
+
+    def test_fetch_meta_verdicts(self, monkeypatch):
+        """verdict 三态：ok / absent（404、410、200非JSON）/ blocked（其余）"""
+        crawler = ProductCrawler(currency_map={"USD": 1.0})
+        for status, expected in [(200, "ok"), (404, "absent"), (410, "absent"),
+                                 (429, "blocked"), (403, "blocked"), (0, "blocked"),
+                                 (ProxyServiceClient.STATUS_BUSY, "blocked"),
+                                 (ProxyServiceClient.STATUS_SKIPPED, "blocked")]:
+            payload = {"currency": "USD"} if status == 200 else None
+            monkeypatch.setattr(crawler, "fetch_json",
+                                lambda url, timeout=15, direct_first=True, proxy_timeout=20:
+                                (payload, status))
+            meta, verdict = crawler.fetch_meta("https://demo.com")
+            assert verdict == expected, f"HTTP {status} 应为 {expected}"
+            if expected == "ok":
+                assert meta == {"currency": "USD"}
+            else:
+                assert meta is None
+
+    def test_429_storm_triggers_global_cooldown(self, monkeypatch):
+        """60 秒内 3 个不同域直连 429 → 触发全局直连冷却"""
+        # 重置模块级风暴状态，避免与其他测试相互影响
+        monkeypatch.setattr(product_crawler, "_direct_429_hits", [])
+        monkeypatch.setattr(product_crawler, "_direct_429_until", 0.0)
+        assert product_crawler._direct_cooldown_active() is False
+        product_crawler._note_direct_429("a.com")
+        product_crawler._note_direct_429("b.com")
+        assert product_crawler._direct_cooldown_active() is False  # 未到阈值
+        product_crawler._note_direct_429("c.com")
+        assert product_crawler._direct_cooldown_active() is True
+        assert product_crawler._direct_cooldown_remaining() > 0
+
+    def test_cooldown_skips_direct_attempts(self, monkeypatch):
+        """冷却期内 direct_first 跳过直连，直接走代理"""
+        monkeypatch.setattr(product_crawler, "_direct_429_until", time.time() + 60)
+        crawler = ProductCrawler(currency_map={"USD": 1.0})
+        monkeypatch.setattr(product_crawler.time, "sleep", lambda *a: None)
+        direct_calls = []
+        monkeypatch.setattr(cloudflare_client, "is_available", lambda: True)
+        monkeypatch.setattr(cloudflare_client, "get",
+                            lambda url, timeout=20, **k: direct_calls.append(url))
+        monkeypatch.setattr(crawler.proxy_service, "fetch",
+                            lambda url, **k: ({"product": {"title": "W"}}, 200))
+        data, status = crawler.fetch_json("https://demo.com/p.json", direct_first=True)
+        assert status == 200 and data == {"product": {"title": "W"}}
+        assert direct_calls == []  # 冷却期内未发起任何直连
 
 
 class TestFetchJsonCloudscraperFallback:

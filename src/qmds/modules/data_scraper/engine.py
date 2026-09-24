@@ -15,9 +15,10 @@ from pymongo import UpdateOne, InsertOne
 from qmds.config import settings
 from qmds.config.search_providers import SERIAL_SEARCH_PROVIDERS
 from qmds.core.base import ScrapeResult
-from qmds.db.mongodb import MongoDBClient
+from qmds.db.mongodb import FILTER_STATUS_NOT_SHOPIFY, FILTER_STATUS_UNFILTERED, MongoDBClient
 from qmds.modules.data_scraper.discovery import GoogleShopifySearcher
 from qmds.modules.data_scraper.discovery.google_search import clean_url, extract_domain, filter_urls
+from qmds.modules.data_scraper.discovery.query_builder import build_exa_variants, build_query_variants
 from qmds.modules.data_scraper.detection import PlatformDetector
 from qmds.modules.data_scraper.extraction import ShopifyExtractor
 from qmds.modules.data_scraper.models.schemas import Product, ScrapeTask, TaskStatus
@@ -27,6 +28,18 @@ from qmds.utils.logger import get_logger
 from qmds.utils.proxy_manager import ProxyManager
 
 log = get_logger("data_scraper")
+
+# 平台检测（单通道）依赖远程代理服务 ProxyServiceClient，其实时并发上限
+# INFLIGHT_LIMIT=4（浏览器级抓取，实测 8 并发时延迟线性堆叠）。检测并发若
+# 超过代理容量，多余请求会因并发名额已满返回 STATUS_BUSY(-2) 而无法确认
+# （日志里大量"不确定(网络失败/拦截)"即是此因）。因此用全局信号量把检测
+# 并发压到与代理容量匹配，让请求排队真正发出，而不是互相抢占名额。
+# 注意：必须用模块级信号量，才能跨关键词/多路并行检测共享这 4 个名额。
+PROXY_DETECT_CONCURRENCY = 4
+_detect_semaphore = threading.BoundedSemaphore(PROXY_DETECT_CONCURRENCY)
+# 代理服务健康检查（进程内只测一次，避免每个关键词重复探测）
+_proxy_health_checked = False
+_proxy_health_lock = threading.Lock()
 
 
 class DataScraperModule:
@@ -166,6 +179,96 @@ class DataScraperModule:
             log.error(f"MongoDB 写入失败: {e}")
             return 0
 
+    def save_uncertain_to_mongodb(self, stores: list[dict], category: str) -> int:
+        """将检测时被拦截/无法确认的店铺保存为待确认（filter_status=uncertain）"""
+        try:
+            db = MongoDBClient()
+            count = db.save_uncertain(category, stores)
+            db.close()
+            return count
+        except Exception as e:
+            log.error(f"MongoDB 写入 uncertain 失败: {e}")
+            return 0
+
+    def recheck_uncertain(self, category: str, limit: int = 0, workers: int = 4) -> dict:
+        """重新检测待确认站点（filter_status=uncertain）
+
+        用当前代理服务对每个待确认站重跑平台检测（并发与代理容量匹配）：
+        - 确认 Shopify      → 更新为 unfiltered（转正，进入主流程）
+        - 明确非 Shopify    → 标记 not_shopify（从待确认移除）
+        - 仍无法确认（被拦） → 保留 uncertain，记录 rechecked_at（可再重试）
+
+        返回: {"total", "shopify", "not_shopify", "still_uncertain", "errors"}
+        """
+        db = MongoDBClient()
+        col = db.unfiltered_col(category)
+        query = {"filter_status": "uncertain"}
+        docs = list(col.find(query, limit=limit))
+        if not docs:
+            db.close()
+            return {"total": 0, "shopify": 0, "not_shopify": 0, "still_uncertain": 0, "errors": 0}
+
+        log.info(f"重新检测 {category} 待确认站点: {len(docs)} 个")
+        counts = {"total": len(docs), "shopify": 0, "not_shopify": 0, "still_uncertain": 0, "errors": 0}
+        lock = threading.Lock()
+        ts = datetime.utcnow().isoformat()
+
+        def _recheck_one(doc):
+            url = doc.get("url") or doc.get("domain") or ""
+            domain = doc.get("domain") or extract_domain(url)
+            try:
+                with _detect_semaphore:
+                    result = self.detector.detect(url)
+                if result is not None and result.platform.value == "shopify":
+                    col.update_one({"_id": doc["_id"]}, {"$set": {
+                        "url": url,
+                        "domain": domain,
+                        "platform": "Shopify",
+                        "product_count": result.product_count,
+                        "store_name": result.store_name,
+                        "currency": result.currency,
+                        "filter_status": FILTER_STATUS_UNFILTERED,
+                        "rechecked_at": ts,
+                        "updated_at": ts,
+                    }})
+                    with lock:
+                        counts["shopify"] += 1
+                    log.info(f"重检确认 Shopify: {domain} ({result.product_count} 商品)")
+                elif result is not None and getattr(result, "inconclusive", False):
+                    # 仍被拦/无法确认：保留待确认，记录最近重检时间
+                    col.update_one({"_id": doc["_id"]}, {"$set": {
+                        "rechecked_at": ts,
+                        "updated_at": ts,
+                    }})
+                    with lock:
+                        counts["still_uncertain"] += 1
+                    log.info(f"重检仍无法确认: {domain}")
+                else:
+                    col.update_one({"_id": doc["_id"]}, {"$set": {
+                        "url": url,
+                        "domain": domain,
+                        "platform": "Not Shopify",
+                        "filter_status": FILTER_STATUS_NOT_SHOPIFY,
+                        "rechecked_at": ts,
+                        "updated_at": ts,
+                    }})
+                    with lock:
+                        counts["not_shopify"] += 1
+                    log.info(f"重检确认非 Shopify: {domain}")
+            except Exception as e:
+                log.warning(f"重检异常 {domain}: {e}")
+                with lock:
+                    counts["errors"] += 1
+
+        max_workers = max(1, min(workers, PROXY_DETECT_CONCURRENCY))
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="qmds_recheck") as executor:
+            list(executor.map(_recheck_one, docs))
+
+        db.close()
+        log.info(f"重检完成: Shopify {counts['shopify']}，非 Shopify {counts['not_shopify']}，"
+                 f"仍待确认 {counts['still_uncertain']}，异常 {counts['errors']}")
+        return counts
+
     def export_to_excel(self, stores: list[dict], category: str) -> Optional[Path]:
         """将店铺结果导出到 Excel（追加/去重合并）——与 YSQD 一致"""
         try:
@@ -236,12 +339,8 @@ class DataScraperModule:
         all_raw_urls = []
         url_query_map: dict[str, str] = {}
         for kw in keywords:
-            # 与 YSQD 一致：关键词 + inurl:collections/all
-            variants = [
-                f"{kw} inurl:collections/all",
-                f"{kw} inurl:collections/all - page 123",
-                f"{kw} inurl:collections/all - page 88",
-            ]
+            # 变体由 query_builder 统一构建（多指纹变体族 + 负向站点排除）
+            variants = build_query_variants(kw)
             for query in variants:
                 log.info(f"搜索: {query!r}")
                 raw_result = self.searcher.scrape(query=query, max_pages=max_pages, provider_name=provider_name)
@@ -255,8 +354,8 @@ class DataScraperModule:
         log.info(f"清洗去重后剩余 {len(cleaned_urls)} 个 URL，启动平台检测（{workers} 线程）")
 
         # 多线程平台检测（含二轮复检，与 fetch_shopify_urls_by_keyword 共用同一逻辑）
-        detection_results = self._detect_platforms(cleaned_urls, url_map, workers)
-        not_shopify_count = len(cleaned_urls) - len(detection_results)
+        detection_results, uncertain_urls = self._detect_platforms(cleaned_urls, url_map, workers)
+        not_shopify_count = len(cleaned_urls) - len(detection_results) - len(uncertain_urls)
 
         # 构建最终结果（仅保留 Shopify 店铺）
         stores = []
@@ -293,7 +392,9 @@ class DataScraperModule:
             "total_after_filter": len(cleaned_urls),
             "total_shopify": len(stores),
             "not_shopify": not_shopify_count,
+            "total_uncertain": len(uncertain_urls),
             "stores": stores,
+            "uncertain_stores": uncertain_urls,
             "saved_mongodb": None,
             "saved_excel": None,
             "proxy_available": proxy_count,
@@ -301,6 +402,20 @@ class DataScraperModule:
 
         if save_mongo and stores:
             result["saved_mongodb"] = self.save_to_mongodb(stores, category)
+
+        if save_mongo and uncertain_urls:
+            uncertain_stores = [{
+                "url": url_map.get(u) or u,
+                "domain": extract_domain(u),
+                "platform": "Blocked/待确认",
+                "product_count": 0,
+                "store_name": "",
+                "currency": "USD",
+                "category": category,
+                "search_query": url_query_map.get(u, ""),
+                "source": "google_search",
+            } for u in uncertain_urls]
+            result["saved_uncertain"] = self.save_uncertain_to_mongodb(uncertain_stores, category)
 
         if save_excel and stores:
             path = self.export_to_excel(stores, category)
@@ -371,6 +486,7 @@ class DataScraperModule:
             "total_raw": 0,
             "total_shopify": 0,
             "not_shopify_count": 0,
+            "uncertain_count": 0,
             "new_stores": 0,
             "updated_stores": 0,
         }
@@ -389,6 +505,7 @@ class DataScraperModule:
                 "raw_count": 0,
                 "shopify_count": 0,
                 "not_shopify_count": 0,
+                "uncertain_count": 0,
                 "new_count": 0,
                 "updated_count": 0,
                 "error": None,
@@ -397,15 +514,12 @@ class DataScraperModule:
             try:
                 # 1. 并发搜索该关键词的 URL
                 # Exa 是语义搜索引擎，不识别 Google 运算符（inurl:/- page 等），
-                # 直接用原始关键词搜索，避免拼接变体导致重复调用浪费额度。
+                # 用自然语言意图变体（build_exa_variants）把语义检索偏向店铺页；
+                # 其他 provider 用 Google 变体族（多指纹 + 负向站点排除）。
                 if provider_name == "exa":
-                    variants = [kw]
+                    variants = build_exa_variants(kw)
                 else:
-                    variants = [
-                        f"{kw} inurl:collections/all",
-                        f"{kw} inurl:collections/all - page 123",
-                        f"{kw} inurl:collections/all - page 88",
-                    ]
+                    variants = build_query_variants(kw)
 
                 all_raw_urls = []
                 variant_results = {}  # 存储每个变体的结果
@@ -479,15 +593,35 @@ class DataScraperModule:
                 log.info(f"[{thread_name}] 关键词 {kw!r} 开始平台检测: {len(cleaned_urls)} 个URL")
                 if progress_callback:
                     progress_callback(f"[{kw}] 开始平台检测: {len(cleaned_urls)} 个URL")
-                detection_results = self._detect_platforms(cleaned_urls, url_map, workers)
-                log.info(f"[{thread_name}] 关键词 {kw!r} 平台检测完成: {len(detection_results)} 个Shopify")
+                detection_results, uncertain_urls = self._detect_platforms(cleaned_urls, url_map, workers)
+                uncertain_set = set(uncertain_urls)
+                log.info(f"[{thread_name}] 关键词 {kw!r} 平台检测完成: Shopify {len(detection_results)} 个，待确认 {len(uncertain_urls)} 个")
                 if progress_callback:
-                    progress_callback(f"[{kw}] 平台检测完成: {len(detection_results)} 个Shopify")
+                    progress_callback(f"[{kw}] 平台检测完成: Shopify {len(detection_results)} 个，待确认 {len(uncertain_urls)} 个")
 
                 # 4. 构建店铺数据并存储
                 stores_to_save = []
+                uncertain_stores = []
                 for url in cleaned_urls:
                     if url not in detection_results:
+                        if url in uncertain_set:
+                            # 被拦/网络失败无法确认：不算非 Shopify（可能是 WAF 挡住
+                            # 的真店，如 techniquerecords.com 全程 429），保存为待确认
+                            uncertain_stores.append({
+                                "url": url_map.get(url) or url,
+                                "domain": extract_domain(url),
+                                "platform": "Blocked/待确认",
+                                "product_count": 0,
+                                "store_name": "",
+                                "currency": "USD",
+                                "category": category,
+                                "search_query": kw,
+                                "source": "google_search",
+                            })
+                            with lock:
+                                stats["uncertain_count"] += 1
+                            keyword_result["uncertain_count"] += 1
+                            continue
                         with lock:
                             stats["not_shopify_count"] += 1
                         keyword_result["not_shopify_count"] += 1
@@ -540,6 +674,11 @@ class DataScraperModule:
                     log.info(f"[{thread_name}] 关键词 {kw!r} 存储完成: 新增 {new_count}, 更新 {updated_count}")
                     if progress_callback:
                         progress_callback(f"[{kw}] 存储完成: 新增 {new_count}, 更新 {updated_count}")
+
+                # 5.5 保存"待确认"站点（被拦无法确认，供人工复核）
+                if db and uncertain_stores:
+                    self.save_uncertain_to_mongodb(uncertain_stores, category)
+                    log.info(f"[{thread_name}] 关键词 {kw!r} 待确认站点已保存: {len(uncertain_stores)} 条")
 
                 # 6. 导出 Excel（可选）
                 if save_excel and stores_to_save:
@@ -605,6 +744,7 @@ class DataScraperModule:
             "total_raw": stats["total_raw"],
             "total_shopify": stats["total_shopify"],
             "not_shopify": stats["not_shopify_count"],
+            "total_uncertain": stats["uncertain_count"],
             "new_stores": stats["new_stores"],
             "updated_stores": stats["updated_stores"],
             "skipped_keywords": skipped_keywords,
@@ -628,27 +768,70 @@ class DataScraperModule:
                 domains.add(doc["domain"])
         return domains
 
-    def _detect_platforms(self, urls: list[str], url_map: dict, workers: int) -> dict[str, dict]:
-        """多线程平台检测（workers 并发生效；不确定结果二轮复检）"""
+    def _check_proxy_health(self):
+        """进程内检测一次代理服务是否可用
+
+        代理服务故障时所有检测请求都会超时（status=0），若不做前置探测，
+        用户要等整批请求全部超时才发现。这里用 example.com/meta.json 探活
+        （正常时秒回 404/200），故障时立即打警告，问题一眼可见。
+        """
+        global _proxy_health_checked
+        with _proxy_health_lock:
+            if _proxy_health_checked:
+                return
+            _proxy_health_checked = True
+        try:
+            from qmds.modules.data_scraper.product_crawler import ProxyServiceClient
+            client = ProxyServiceClient(breaker_enabled=False)
+            data, status = client.fetch("https://example.com/meta.json", timeout=5)
+            if status == 0:
+                log.warning("代理服务健康检查失败：example.com/meta.json 也超时——代理服务可能故障，"
+                            "本次检测会大量判为无法确认/非 Shopify，请检查代理服务")
+            elif status in (-1, -2):
+                log.warning(f"代理服务健康检查：并发名额已满/被跳过（status={status}），稍后可能恢复")
+            else:
+                log.info(f"代理服务健康检查正常（example.com/meta.json → status={status}）")
+        except Exception as e:
+            log.warning(f"代理服务健康检查异常: {e}")
+
+    def _detect_platforms(self, urls: list[str], url_map: dict, workers: int) -> tuple[dict[str, dict], list[str]]:
+        """多线程平台检测（workers 并发生效；不确定结果二轮复检）
+
+        返回 (detection_results, uncertain_urls)：
+        - detection_results: 确认 Shopify 的 URL -> 店铺信息
+        - uncertain_urls: 二轮复检后仍无法确认（被拦/网络失败）的 URL。
+          这些站点不按非 Shopify 定案（可能是 WAF 挡住的真店，如
+          techniquerecords.com 全程 429），由调用方保存为"待确认"供人工复核。
+        """
+        self._check_proxy_health()
         detection_results: dict[str, dict] = {}
+        uncertain_urls: list[str] = []
         INCONCLUSIVE = "__inconclusive__"  # 网络失败/被拦截，无法确认
 
         def _detect_single(url: str) -> tuple[str, object]:
             thread_name = threading.current_thread().name
             detect_url = url_map.get(url) or url
             try:
-                result = self.detector.detect(detect_url, url_map=url_map)
-                if result and result.platform.value == "shopify":
-                    log.debug(f"[{thread_name}] 检测 Shopify: {extract_domain(url)} ({result.product_count} 商品)")
-                    return url, {
-                        "platform": "Shopify",
-                        "product_count": result.product_count,
-                        "store_name": result.store_name,
-                        "currency": result.currency,
-                    }
-                if result and getattr(result, "inconclusive", False):
-                    return url, INCONCLUSIVE
-                return url, None
+                # 全局限流：任何时刻最多 PROXY_DETECT_CONCURRENCY 个检测请求
+                # 并发访问代理服务（与 ProxyServiceClient.INFLIGHT_LIMIT 匹配），
+                # 其余排队等待，避免并发超载导致 STATUS_BUSY(-2) 大量无法确认。
+                with _detect_semaphore:
+                    result = self.detector.detect(detect_url, url_map=url_map)
+                    # 注意：DetectionResult.__bool__ 对 UNKNOWN 平台返回 False，
+                    # 不能用 "if result and ..." 判断（否则 inconclusive 结果会被
+                    # 短路当成"非 Shopify"，真店被误杀）。
+                    if result is not None:
+                        if result.platform.value == "shopify":
+                            log.debug(f"[{thread_name}] 检测 Shopify: {extract_domain(url)} ({result.product_count} 商品)")
+                            return url, {
+                                "platform": "Shopify",
+                                "product_count": result.product_count,
+                                "store_name": result.store_name,
+                                "currency": result.currency,
+                            }
+                        if getattr(result, "inconclusive", False):
+                            return url, INCONCLUSIVE
+                    return url, None
             except Exception as e:
                 log.debug(f"[{thread_name}] 检测失败 {url}: {e}")
                 return url, INCONCLUSIVE
@@ -684,21 +867,25 @@ class DataScraperModule:
             time.sleep(2)
             retry_outcomes = _run_pass(inconclusive_urls)
             for u, o in retry_outcomes.items():
-                # 二轮仍不确定则按非 Shopify 定案
-                outcomes[u] = None if o == INCONCLUSIVE else o
+                if o == INCONCLUSIVE:
+                    # 二轮仍被拦截无法确认：不按非 Shopify 定案（可能是 WAF
+                    # 挡住的真店），单独收集，由上层保存为"待确认"待人工复核
+                    uncertain_urls.append(u)
+                else:
+                    outcomes[u] = o
             recovered = sum(1 for o in retry_outcomes.values() if isinstance(o, dict))
             still_inconclusive = sum(1 for o in retry_outcomes.values() if o == INCONCLUSIVE)
             log.info(f"二轮复检完成: 新增 Shopify {recovered} 个")
             if still_inconclusive:
-                log.warning(f"二轮复检后仍有 {still_inconclusive} 个 URL 被拦截无法确认，本次按非 Shopify 跳过")
+                log.warning(f"二轮复检后仍有 {still_inconclusive} 个 URL 被拦截无法确认，已保存为待确认（不计入非 Shopify）")
 
         for url, outcome in outcomes.items():
             if isinstance(outcome, dict):
                 detection_results[url] = outcome
 
         shopify_count = len(detection_results)
-        log.info(f"平台检测完成: {shopify_count}/{len(urls)} 个 Shopify")
-        return detection_results
+        log.info(f"平台检测完成: Shopify {shopify_count}/{len(urls)} 个，待确认 {len(uncertain_urls)} 个")
+        return detection_results, uncertain_urls
 
     def _save_and_check_duplicates(self, db: MongoDBClient, category: str,
                                     stores: list[dict]) -> tuple[int, int, int]:

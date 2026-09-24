@@ -150,6 +150,55 @@ class KeyPool:
         self._index = 0
 
 
+class KeyUsageTracker:
+    """API key 调用次数记录（线程安全，原子持久化到本地 JSON）
+
+    记录每个 key 实际发出的 API 请求次数，用于监控额度消耗
+    （如 serper 免费额度通常 2500 credits/月，可据此判断剩余用量）。
+    数据落盘在 {project_root}/serper_key_usage.json，进程重启不丢失。
+    """
+
+    def __init__(self, filepath: Optional[Path] = None):
+        self._filepath = filepath or (settings.project_root / "serper_key_usage.json")
+        self._counts: dict[str, int] = {}
+        self._lock = threading.Lock()
+        self._load()
+
+    def _load(self):
+        try:
+            if self._filepath.exists():
+                data = json.loads(self._filepath.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    self._counts = {
+                        str(k): int(v) for k, v in data.items()
+                        if str(k) and isinstance(v, (int, float))
+                    }
+        except Exception as e:
+            log.warning(f"加载 key 调用记录失败: {e}")
+
+    def record_call(self, key: str):
+        """记录一次 API 调用（线程安全，立即原子持久化，进程崩溃不丢计数）"""
+        with self._lock:
+            self._counts[key] = self._counts.get(key, 0) + 1
+            self._save_locked()
+
+    def _save_locked(self):
+        try:
+            tmp = self._filepath.with_suffix(".tmp")
+            tmp.write_text(
+                json.dumps(self._counts, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            tmp.replace(self._filepath)
+        except Exception as e:
+            log.warning(f"保存 key 调用记录失败: {e}")
+
+    def summary(self) -> dict:
+        """返回 {key: 累计调用次数}，按次数降序"""
+        with self._lock:
+            return dict(sorted(self._counts.items(), key=lambda kv: -kv[1]))
+
+
 # ── 搜索结果 ──────────────────────────────────────────────
 
 @dataclass
@@ -609,18 +658,41 @@ class BrightDataProvider(SearchProvider):
 
 # ── Serper ────────────────────────────────────────────────
 
+# serper key 调用次数记录（模块级单例，多个 SerperProvider 实例共享同一计数）
+_serper_usage_tracker: Optional[KeyUsageTracker] = None
+
+
+def _get_serper_usage_tracker() -> KeyUsageTracker:
+    global _serper_usage_tracker
+    if _serper_usage_tracker is None:
+        _serper_usage_tracker = KeyUsageTracker()
+    return _serper_usage_tracker
+
+
+def get_serper_key_usage() -> dict:
+    """返回 serper 各 key 的累计调用次数（按次数降序），供监控/展示"""
+    return _get_serper_usage_tracker().summary()
+
+
 class SerperProvider(SearchProvider):
     """Serper Google SERP API
 
     通过 https://google.serper.dev/search POST 请求获取 Google 搜索结果。
     key 通过 X-API-KEY 请求头鉴权，请求体 {"q": query, "page": page}，
     响应 organic 数组的每项含 link 字段即搜索结果 URL。
+    每次发起 API 请求都会记录到 KeyUsageTracker（serper_key_usage.json），
+    便于监控各 key 的额度消耗。
     """
+
+    def __init__(self, config: ProviderConfig, key_pool: KeyPool):
+        super().__init__(config, key_pool)
+        self._usage_tracker = _get_serper_usage_tracker()
 
     def search(self, query: str, page: int = 1) -> list[str]:
         key = self.key_pool.get_key()
         if not key:
             return []
+        self._usage_tracker.record_call(key)  # 记录一次真实 API 调用
         headers = {
             "X-API-KEY": key,
             "Content-Type": "application/json",
@@ -636,6 +708,17 @@ class SerperProvider(SearchProvider):
             if resp.status_code == 429:
                 time.sleep(3)
                 raise ScrapeProviderError("429 限速")
+            if resp.status_code == 400:
+                # Serper 额度用完/超限也返回 400，错误信息常见形如
+                # {"message":"Not enough credits","statusCode":400} 或含 quota/limit。
+                # 识别到"额度/积分不足"即视为 key 耗尽自动注释并轮换；
+                # 参数类 400 则正常抛出便于排查。
+                body = (resp.text or "")[:200]
+                low = body.lower()
+                if any(t in low for t in ("credit", "quota", "limit", "exceed", "paid plan", "not enough")):
+                    self.key_pool.mark_exhausted(key)
+                    raise ScrapeProviderError("400 key 额度用完")
+                raise ScrapeProviderError(f"400 请求错误: {body}")
             resp.raise_for_status()
             data = resp.json()
             urls = []
@@ -747,13 +830,18 @@ class SearchManager:
         raise ScrapeProviderError("所有搜索 API 均不可用（额度用完或无 key）")
 
     def get_status(self) -> list[dict]:
-        """获取所有 provider 状态"""
+        """获取所有 provider 状态（serper 额外附带各 key 累计调用次数）"""
         result = []
         for p in self._providers:
-            result.append({
+            entry = {
                 "name": p.name,
                 "available_keys": p.key_pool.available_count,
                 "total_keys": p.key_pool.total_count,
                 "enabled": p.is_available(),
-            })
+            }
+            if p.name == "serper":
+                usage = get_serper_key_usage()
+                entry["total_calls"] = sum(usage.values())
+                entry["calls_per_key"] = usage
+            result.append(entry)
         return result
