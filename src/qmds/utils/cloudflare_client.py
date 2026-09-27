@@ -69,6 +69,8 @@ def get_scraper():
                         browser={"browser": "chrome", "platform": "windows", "mobile": False},
                         delay=10,
                     )
+                    # 直连兜底不走本地 Clash（环境代理劫持会把连接池打满）
+                    scraper.trust_env = False
                     scraper.headers.update({
                         "User-Agent": random.choice(USER_AGENTS),
                         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",

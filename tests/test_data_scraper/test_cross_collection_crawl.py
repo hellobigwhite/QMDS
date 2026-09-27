@@ -80,7 +80,8 @@ def test_cross_collection_parallel(monkeypatch):
     crawled = []  # (subcategory, domain)
 
     def fake_crawl_site(url_doc, category, site_index, total_sites,
-                        progress_callback=None, stop_event=None, subcategory=""):
+                        progress_callback=None, stop_event=None, subcategory="",
+                        db_pool=None):
         with lock:
             state["active"] += 1
             state["max_active"] = max(state["max_active"], state["active"])
@@ -119,7 +120,8 @@ def test_serial_when_workers_one(monkeypatch):
     lock = threading.Lock()
 
     def fake_crawl_site(url_doc, category, site_index, total_sites,
-                        progress_callback=None, stop_event=None, subcategory=""):
+                        progress_callback=None, stop_event=None, subcategory="",
+                        db_pool=None):
         with lock:
             state["active"] += 1
             state["max_active"] = max(state["max_active"], state["active"])
@@ -156,7 +158,8 @@ def test_max_sites_per_subcategory(monkeypatch):
     done = []
 
     def fake_crawl_site(url_doc, category, site_index, total_sites,
-                        progress_callback=None, stop_event=None, subcategory=""):
+                        progress_callback=None, stop_event=None, subcategory="",
+                        db_pool=None):
         done.append(url_doc["domain"])
         return {"success": True, "saved": 1, "url": url_doc["url"], "domain": url_doc["domain"]}
 

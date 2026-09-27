@@ -197,6 +197,21 @@ def _get_fallback_session() -> _requests.Session:
 _PROXY_SERVICE_URL = settings.proxy_service_url
 _PROXY_SERVICE_KEY = settings.proxy_service_key
 _PROXY_SERVICE_TIMEOUT = 60
+# 共享代理服务 session（懒创建）：复用连接 + 不信任环境代理（本地 Clash），
+# 裸 requests.get 每次新建 TCP/TLS，高并发下握手风暴且被环境代理劫持
+_proxy_service_session = None
+_proxy_service_session_lock = threading.Lock()
+
+
+def _get_proxy_service_session() -> _requests.Session:
+    global _proxy_service_session
+    if _proxy_service_session is None:
+        with _proxy_service_session_lock:
+            if _proxy_service_session is None:
+                _proxy_service_session = _requests.Session()
+                _proxy_service_session.trust_env = False
+                _proxy_service_session.headers.update({"User-Agent": "Mozilla/5.0"})
+    return _proxy_service_session
 
 # 远程代理服务熔断：该服务不可用时逐个域名重试会各等满 _PROXY_SERVICE_TIMEOUT 秒，
 # 连续失败达阈值后进入冷却期，冷却期内直接返回 None 走第2/3级降级。
@@ -223,6 +238,7 @@ def _get_direct_session() -> _requests.Session:
     if _direct_session is not None:
         return _direct_session
     _direct_session = _requests.Session()
+    _direct_session.trust_env = False  # 直连专用：不信任环境代理（本地 Clash）
     adapter = HTTPAdapter(pool_connections=10, pool_maxsize=20)
     _direct_session.mount("http://", adapter)
     _direct_session.mount("https://", adapter)
@@ -258,7 +274,7 @@ def _proxy_service_fetch(url: str) -> Optional[_requests.Response]:
         if time.time() < _proxy_service_down_until:
             return None
     try:
-        resp = _requests.get(
+        resp = _get_proxy_service_session().get(
             _PROXY_SERVICE_URL,
             params={"key": _PROXY_SERVICE_KEY, "url": url},
             timeout=_PROXY_SERVICE_TIMEOUT,

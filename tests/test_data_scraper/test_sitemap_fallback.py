@@ -71,7 +71,7 @@ def make_crawler(monkeypatch, *, meta, probe, page_sleep=True):
     monkeypatch.setattr(crawler, "fetch_meta",
                         lambda url: (meta, "ok" if meta else "absent"))
     monkeypatch.setattr(crawler, "fetch_json",
-                        lambda url, timeout=25, direct_first=False: probe(url))
+                        lambda url, timeout=25, direct_first=False, busy_retries=0: probe(url))
     if page_sleep:
         monkeypatch.setattr(product_crawler, "PAGE_SLEEP_RANGE", (0, 0))
     calls = {}
@@ -443,6 +443,7 @@ class TestProxyServiceCircuitBreaker:
 
     def test_inflight_cap_returns_busy_fast(self, monkeypatch):
         """并发名额满时短暂等待后快速返回 STATUS_BUSY，而不是排队到超时"""
+        monkeypatch.setattr(ProxyServiceClient, "CONCURRENCY_LIMIT_ENABLED", True)
         monkeypatch.setattr(ProxyServiceClient, "QUEUE_WAIT", 0.1)
         client = ProxyServiceClient()
         # 占满全部进程级名额
@@ -462,6 +463,7 @@ class TestProxyServiceCircuitBreaker:
 
     def test_busy_not_counted_as_service_failure(self, monkeypatch):
         """STATUS_BUSY 不计入熔断统计（请求根本没发出去）"""
+        monkeypatch.setattr(ProxyServiceClient, "CONCURRENCY_LIMIT_ENABLED", True)
         monkeypatch.setattr(ProxyServiceClient, "QUEUE_WAIT", 0.05)
         client = ProxyServiceClient()
         held = [ProxyServiceClient._inflight.acquire()
@@ -550,7 +552,7 @@ class TestBlockedNotMisjudged:
                                  (ProxyServiceClient.STATUS_SKIPPED, "blocked")]:
             payload = {"currency": "USD"} if status == 200 else None
             monkeypatch.setattr(crawler, "fetch_json",
-                                lambda url, timeout=15, direct_first=True, proxy_timeout=20:
+                                lambda url, timeout=15, direct_first=True, proxy_timeout=20, busy_retries=0:
                                 (payload, status))
             meta, verdict = crawler.fetch_meta("https://demo.com")
             assert verdict == expected, f"HTTP {status} 应为 {expected}"
