@@ -21,7 +21,7 @@
       - domain      网站域名（结合主类目生成，.com）
       - theme       网站主题
       - title       网站标题（SEO）
-      - description 网站描述（meta description）
+     - description 网站描述（约 300 词长文：主类目为主，自然织入其他分类的品类词以覆盖更多关键词）
       - address     美国地址（ERP 建站需要的 store address）
       - keywords    SEO 关键词列表
    d. 每个网站的结果汇总为一行，全部写入所选文件夹下的 网站信息.xlsx
@@ -38,9 +38,12 @@ import json
 import os
 import random
 import re
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
+
+import requests
 
 from qmds.config.llm_models import (
     DEFAULT_AGENTROUTER_MODEL,
@@ -82,6 +85,24 @@ except ImportError:
 INFO_COLUMNS = ("网站（文件夹）", "主类目", "网站大类", "域名", "标题", "描述", "主题",
                 "地址", "关键词", "产品数", "分类数", "模型", "生成时间",
                 "主数据ID", "补充数据ID", "备注")
+
+# ── 域名占用检查（西部数码 whois）──────────────────────────
+# 生成的域名必须先确认没被别人注册，否则建站时域名已被占用。
+# 查询 https://whois.west.cn/{domain}，按实测标记判断（各采样 4 个域名验证）：
+#   已注册 → 页面有英文 whois 原文 Sponsorning Registrar / Registry Domain ID
+#            （实测 4/4 命中，未注册页 0/4）
+#   未注册 → 页面有「查询能否注册」提示（实测 4/4 命中，已注册页 0/4）
+# 注意：不能用「该域名可能尚未注册」判断——这段文案内嵌在页面 JS 模板里
+# （把 "No match for" 渲染成中文提示用），已注册页同样包含它，会全部误判成可注册。
+# 所以判定顺序是先「已注册」标记，再「未注册」标记，都没有则视为无法判断。
+DOMAIN_WHOIS_URL = "https://whois.west.cn/{domain}"
+DOMAIN_WHOIS_TIMEOUT = 20
+DOMAIN_WHOIS_TRIES = 2          # 单次查询的网络重试次数
+DOMAIN_REGEN_RETRIES = 3        # 域名已被注册时重新生成的最大次数
+_DOMAIN_TAKEN_MARKERS = ("Sponsoring Registrar", "Registry Domain ID")
+_DOMAIN_FREE_MARKERS = ("查询能否注册",)
+_DOMAIN_WHOIS_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/125.0 Safari/537.36")
 
 # 输出 JSON 较短，4000 token 足够；重试时附加格式警告
 _LLM_MAX_TOKENS = 4000
@@ -131,26 +152,31 @@ _DOMAIN_STYLES = (
     "a compact two-to-three-word phrase that reads like an independent shop's name",
 )
 
+# 标题风格：一律「主类目关键词打头」，差异体现在关键词之后的部分，
+# 保证整批站点的标题都把主类目顶到最前面（用户要求：标题突出主类目）
 _TITLE_STYLES = (
-    "brand word first, then a plain descriptor after a colon",
-    "main keyword first, then a specific differentiator after a dash",
-    "a natural sentence-style title with no separator punctuation",
-    "short and plain - just what the store offers, no slogan",
-    "benefit- or use-case-led, still containing the main keyword",
-    "a craft or material angle that names what the products are for",
+    "main specialty keyword first, then a brand word after a dash",
+    "main specialty keyword first, then a specific differentiator after a colon",
+    "main specialty keyword first, then a short benefit phrase with no separator punctuation",
+    "main specialty keyword plus one concrete qualifier (material, use or audience) in a compact phrase",
+    "main specialty keyword first, then a location or service hint after a comma",
+    "main specialty keyword and one adjacent specialty term joined by 'and', then a short tail",
 )
 
 _TITLE_LENGTHS = ("35-50", "40-60", "45-65")
 
+# 描述角度：面向 300 词长文的段落推进结构——先立主类目，再把其他分类
+# 作为「同店相邻品类」自然织入，用于覆盖主类目之外的分类关键词
 _DESC_ANGLES = (
-    "open with the concrete product range, then one sentence on service",
-    "open with the customer's problem or project, then how the store solves it",
-    "open with what the selection is unusually deep in, then who it serves",
-    "open with one specific product example, then the broader range",
-    "open with the audience, then what has been picked for them",
+    "open on the specialty's core use case, go deep through its main product families, then fold the other categories in as adjacent ranges the same store carries, close on ordering and service",
+    "open on the customer's project or problem within the specialty, develop the specialty subcategories by importance, bring the other categories in as useful extras, close on what ordering here is like",
+    "open on what the specialty catalog is unusually deep in, walk its subcategories with concrete product detail, work the other categories in as related needs, close on shipping and support",
+    "open with one concrete example item from the specialty, widen to the full specialty range, add the other categories as natural add-ons, close on the store's practical advantages",
+    "open on who the specialty serves, then what has been picked for them across the specialty subcategories, then the other ranges that round out an order, close on service details",
 )
 
-_DESC_LENGTHS = ("80-120", "100-150", "120-170", "140-200", "90-140")
+# 描述长度按「词」计（约 300 词，约 1800-2200 字符），保留小幅差异做反模板化
+_DESC_LENGTHS = ("280-320 words", "300-340 words", "260-300 words")
 
 _KEYWORD_RECIPES = (
     "8-11 keywords, leaning toward long-tail multi-word phrases",
@@ -505,7 +531,8 @@ def read_site_info_excel(path) -> list[dict]:
 
 def build_site_info_prompt(stats: dict, folder_name: str,
                            main_category: str = "",
-                           direction: dict = None) -> str:
+                           direction: dict = None,
+                           avoid_domains: list = None) -> str:
     """根据分类统计构建网站信息生成提示词（含反模板化创意方向）
 
     结构（主类目优先，避免被补充数据的大量其他分类淹没）：
@@ -520,6 +547,8 @@ def build_site_info_prompt(stats: dict, folder_name: str,
     与导出表格「分类」列完全一致）；为空时从分类统计反查还原
     （文件夹名 == sanitize(分类)），仍未命中回退清洗后的文件夹名。
     direction 为空时按文件夹名确定性抽取（供直接调用/测试复现）。
+    avoid_domains 为已被占用（whois 查到已注册）的域名列表：重新生成时
+    写进提示词明确禁止再次输出，避免模型反复给出同一个已注册域名。
     """
     categories = stats.get("categories") or []
     summary = stats.get("summary") or {}
@@ -556,6 +585,15 @@ def build_site_info_prompt(stats: dict, folder_name: str,
             lines.append(f"(showing top {limit} of {len(cats)} categories)")
         return "\n".join(lines) or "(none)"
 
+    avoid_block = ""
+    if avoid_domains:
+        listed = "\n".join(f"- {str(d).strip()}" for d in avoid_domains[:20])
+        avoid_block = (
+            "\nALREADY TAKEN domains (verified as registered by someone else — "
+            "do NOT output any of these, and do not output near-identical "
+            "variations of them):\n"
+            f"{listed}\n")
+
     return f"""You are a seasoned e-commerce branding consultant. Create the brand identity of ONE independent niche English e-commerce website targeting customers in the United States.
 
 Context: this store belongs to a portfolio of separately-founded stores. Anyone comparing the portfolio will look for stores that read like mass-produced siblings — identical naming habits, phrasing and sentence shapes. Your job is to make THIS store feel like it was started by different people than the rest.
@@ -567,7 +605,7 @@ Catalog: {total_products} products across {len(clean_cats)} categories
 SPECIALTY categories ('A|||B' means B is a subcategory of A; the store is built around these — highest priority):
 {_lines(core, MAX_CORE_CATEGORIES)}
 
-SUPPLEMENTARY product mix (also carried, for breadth only — do NOT let these dominate the branding):
+SUPPLEMENTARY product mix (also carried by the same store; do NOT let these dominate the branding or the title, but DO name them inside the description as adjacent ranges the store also carries):
 {_lines(extra, MAX_EXTRA_CATEGORIES)}
 
 CREATIVE DIRECTION assigned to this particular store (its siblings got different ones — follow yours, do not average back toward generic):
@@ -575,15 +613,17 @@ CREATIVE DIRECTION assigned to this particular store (its siblings got different
 - Writing tone: {d["tone"]}
 - Domain naming style: {d["domain_style"]}
 - Title style: {d["title_style"]} ({d["title_len"]} characters)
-- Description angle: {d["desc_angle"]} ({d["desc_len"]} characters)
+- Description angle: {d["desc_angle"]}
+- Description length: {d["desc_len"]}, written as 3-5 flowing paragraphs
 - Keywords: {d["keyword_recipe"]}
 - Store location: in or around {d["city"]}, {d["state"]} — a plausible US street address ({d["street_hint"]}), format "Street, City, STATE ZIP", with a ZIP that is plausible for that state.
 
+{avoid_block}
 Generate (all in English, for US customers), following the creative direction above:
 1. "domain": a brandable .com domain derived from the STORE SPECIALTY, in the naming style assigned above. Lowercase, short and memorable, no www, no scheme, at most 3 words. Do NOT end it with any of these tired suffixes: "pro", "hub", "central", "mart", "store", "shop", "online", "usa", "365", "deals", "best", "top", "direct".
 2. "theme": a short natural English phrase naming what the store sells, matching the specialty (a plain description, not a slogan).
-3. "title": homepage title containing the main specialty keyword. Never use the patterns "<keyword> Store", "<keyword> Shop", "<keyword> Online", "<keyword> - Buy <keyword> Online".
-4. "description": homepage meta description per the assigned angle and length. Do NOT open with "Shop", "Discover", "Find", "Looking for", "Welcome to" or "Explore" (the most common bulk-generated openings), and do not repeat the title verbatim inside it.
+3. "title": homepage title that LEADS with the main specialty keyword: the specialty term must be the first thing in the title (or within the first two words) and clearly the dominant keyword, then continue per the assigned title style. Pick the most specific specialty term available from the SPECIALTY list, not a vague umbrella word. Never use the patterns "<keyword> Store", "<keyword> Shop", "<keyword> Online", "<keyword> - Buy <keyword> Online".
+4. "description": homepage description of about 300 words, written as 3-5 flowing paragraphs following the assigned angle and length. Most of the copy must be about the SPECIALTY categories - name their actual product types concretely, in plain customer language. Then work the SUPPLEMENTARY categories in by name as adjacent ranges the same store also carries, weaving their product types and keywords into normal sentences (never as a bare list, never in a "we also sell" dump). This is how the page should naturally cover keywords from categories outside the specialty. Do NOT open with "Shop", "Discover", "Find", "Looking for", "Welcome to" or "Explore" (the most common bulk-generated openings), do not repeat the title verbatim inside it, and do not stuff keywords - every category mention must read like a real sentence.
 5. "address": follow the store location line above.
 6. "keywords": lowercase English SEO keywords about the SPECIALTY, most important first, per the assigned keyword recipe. No duplicates, no city names.
 
@@ -628,6 +668,81 @@ def parse_site_info(content: str) -> dict:
     if not info["description"]:
         raise ValueError("返回结果缺少网站描述 (description)")
     return info
+
+
+_domain_check_session = None
+_domain_check_lock = threading.Lock()
+_domain_check_cache: dict = {}   # {domain: True/False} 进程内缓存，避免重复查询
+
+
+def _get_domain_check_session():
+    """域名查询专用 Session（懒创建；trust_env=False 绕开系统代理绕行）"""
+    global _domain_check_session
+    with _domain_check_lock:
+        if _domain_check_session is None:
+            s = requests.Session()
+            s.trust_env = False
+            s.headers.update({"User-Agent": _DOMAIN_WHOIS_UA,
+                              "Accept-Language": "zh-CN,zh;q=0.9"})
+            _domain_check_session = s
+        return _domain_check_session
+
+
+def _parse_whois_page(html: str):
+    """从 whois 页面判断域名状态
+
+    Returns:
+        True  未注册（可注册）
+        False 已被注册
+        None  无法判断（页面结构变化/内容异常）
+    """
+    text = html or ""
+    # 先判已注册：英文 whois 原文只在真正查到注册信息时出现
+    if any(m in text for m in _DOMAIN_TAKEN_MARKERS):
+        return False
+    if any(m in text for m in _DOMAIN_FREE_MARKERS):
+        return True
+    return None
+
+
+def check_domain_available(domain: str, log_fn=None):
+    """查询域名是否尚未被注册（西部数码 whois）
+
+    Returns:
+        True  可注册（页面显示尚未注册）
+        False 已被别人注册（需要重新生成域名）
+        None  查询失败或无法判断（网络异常/页面变化），调用方自行决定策略
+               —— 不缓存失败结果，下次仍会重查
+    """
+    d = str(domain or "").strip().lower()
+    if not d:
+        return None
+    with _domain_check_lock:
+        if d in _domain_check_cache:
+            return _domain_check_cache[d]
+
+    result = None
+    for attempt in range(DOMAIN_WHOIS_TRIES):
+        try:
+            resp = _get_domain_check_session().get(
+                DOMAIN_WHOIS_URL.format(domain=d), timeout=DOMAIN_WHOIS_TIMEOUT)
+            resp.encoding = "gb2312"
+            result = _parse_whois_page(resp.text)
+            if result is not None:
+                break
+            if log_fn:
+                log_fn(f"域名 {d} 的 whois 页面无法判断注册状态（第 {attempt + 1} 次）",
+                       "warning")
+        except Exception as e:
+            if log_fn:
+                log_fn(f"域名 {d} 的 whois 查询失败（第 {attempt + 1} 次）: {e}", "warning")
+        if attempt < DOMAIN_WHOIS_TRIES - 1:
+            time.sleep(1)
+
+    if result is not None:
+        with _domain_check_lock:
+            _domain_check_cache[d] = result
+    return result
 
 
 def _call_site_info_llm(config: dict, api_key: str, prompt: str, log_fn=None,
@@ -686,7 +801,8 @@ def _call_site_info_llm(config: dict, api_key: str, prompt: str, log_fn=None,
 
 
 def _process_site_folder(task_id: str, folder: Path, config: dict, api_key: str,
-                         log_fn, variant: int = 0) -> dict:
+                         log_fn, variant: int = 0,
+                         check_domain: bool = True) -> dict:
     """处理单个网站文件夹：读/生成分类统计 -> 调用 LLM -> 返回表格行
 
     每次只处理一个网站的分类结构（批量任务按顺序逐个调用本函数），
@@ -746,10 +862,44 @@ def _process_site_folder(task_id: str, folder: Path, config: dict, api_key: str,
     direction = _site_creative_direction(f"{task_id}|{folder.name}|v{variant}")
 
     # ── 调用 LLM（只带这一个网站的分类结构 + 专属创意方向） ──
-    prompt = build_site_info_prompt(stats, folder.name, main_category=main_cat,
-                                    direction=direction)
-    info = _call_site_info_llm(config, api_key, prompt, log_fn=log_fn,
-                               temperature=direction["temperature"])
+    # 生成后到西部数码 whois 查该域名是否已被别人注册；已被注册就换一套
+    # 创意方向重新生成（最多 DOMAIN_REGEN_RETRIES 次），并把已占用域名写进
+    # 提示词禁止复用，避免模型反复给出同一个已注册域名。
+    taken_domains: list = []
+    domain_note = ""
+    for gen_attempt in range(DOMAIN_REGEN_RETRIES + 1):
+        if gen_attempt:
+            direction = _site_creative_direction(
+                f"{task_id}|{folder.name}|v{variant}|regen{gen_attempt}")
+        prompt = build_site_info_prompt(
+            stats, folder.name, main_category=main_cat, direction=direction,
+            avoid_domains=list(taken_domains) or None)
+        info = _call_site_info_llm(config, api_key, prompt, log_fn=log_fn,
+                                   temperature=direction["temperature"])
+        if not check_domain:
+            break
+
+        domain = info["domain"]
+        log_fn(f"[{folder.name}] 查询域名占用情况: {domain}")
+        status = check_domain_available(domain, log_fn)
+        if status is True:
+            log_fn(f"[{folder.name}] ✓ 域名 {domain} 未被注册（可以购买）")
+            break
+        if status is None:
+            # 查询失败不阻塞流程：保留域名，备注里标注未验证
+            domain_note = f"域名占用查询失败，{domain} 未验证"
+            log_fn(f"[{folder.name}] ⚠ 域名 {domain} 占用状态查询失败，"
+                   f"保留该域名但未验证", "warning")
+            break
+
+        # status is False：域名已被别人注册
+        taken_domains.append(domain)
+        if gen_attempt >= DOMAIN_REGEN_RETRIES:
+            raise ValueError(
+                f"连续 {gen_attempt + 1} 次生成的域名均已被注册: "
+                + ", ".join(taken_domains))
+        log_fn(f"[{folder.name}] ⚠ 域名 {domain} 已被注册，换创意方向重新生成"
+               f"（{gen_attempt + 1}/{DOMAIN_REGEN_RETRIES}）", "warning")
 
     if not info["address"]:
         log_fn(f"[{folder.name}] 返回结果缺少地址 (address)，已留空", "warning")
@@ -777,7 +927,7 @@ def _process_site_folder(task_id: str, folder: Path, config: dict, api_key: str,
         "分类数": len(categories),
         "模型": config["model_id"],
         "生成时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "备注": "",
+        "备注": domain_note,
     }
 
     log_fn(f"[{folder.name}] 网站域名: {info['domain']}")
