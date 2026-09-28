@@ -21,3 +21,20 @@ def _stub_domain_check(monkeypatch):
         return
     monkeypatch.setattr(site_info_generator, "check_domain_available",
                         lambda domain, log_fn=None: True)
+
+
+@pytest.fixture(autouse=True)
+def _stub_address_pool(monkeypatch):
+    """测试默认不读真实地址库（data/us_addresses.json）
+
+    真实地址库由采集脚本持续增长，直接读它会让测试输出随采集进度变化
+    （城市、地址都不可控）。这里统一返回空库，生成逻辑走「代码生成街道 +
+    模型补 ZIP」的回退分支，测试结果稳定。
+    需要验证真实地址逻辑的测试自己 monkeypatch 覆盖本 fixture
+    （见 tests/test_site_info_real_address.py 与批量城市分散用例）。
+    """
+    try:
+        from qmds.modules.web.services import site_info_generator
+    except Exception:      # 依赖缺失时不影响其他测试
+        return
+    monkeypatch.setattr(site_info_generator, "_load_address_pool", lambda: {})

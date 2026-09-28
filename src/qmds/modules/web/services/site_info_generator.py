@@ -21,7 +21,8 @@
       - domain      网站域名（结合主类目生成，.com）
       - theme       网站主题
       - title       网站标题（SEO）
-     - description 网站描述（约 300 词长文：主类目为主，自然织入其他分类的品类词以覆盖更多关键词）
+     - description 网站描述（SEO meta 描述，约 300 字符的 2-3 句短文：主类目词为主，
+       顺带 1 个相邻品类的词以覆盖更多关键词）
       - address     美国地址（ERP 建站需要的 store address）
       - keywords    SEO 关键词列表
    d. 每个网站的结果汇总为一行，全部写入所选文件夹下的 网站信息.xlsx
@@ -165,18 +166,62 @@ _TITLE_STYLES = (
 
 _TITLE_LENGTHS = ("35-50", "40-60", "45-65")
 
-# 描述角度：面向 300 词长文的段落推进结构——先立主类目，再把其他分类
-# 作为「同店相邻品类」自然织入，用于覆盖主类目之外的分类关键词
+# 人称与句法硬规则（注入提示词，适用于所有输出字段）。
+# 生成的是「网站文案」，一旦出现 We/Our/You 就变成店主自述或对读者喊话，
+# 观感廉价且与站群其它站雷同；统一改成以商店/商品做主语的第三人称陈述。
+# 注意 "warm and conversational" 之类的语气词最容易诱发第一人称，所以这里
+# 明确「语气只影响用词与节奏，不得引入人称」。
+_PERSON_RULES = """WRITING VOICE - applies to EVERY field (title, theme, description, keywords):
+- Write in the THIRD PERSON only. Never use first-person pronouns (I, we, us, our, ours, my, mine) or second-person pronouns (you, your, yours, yourself), including contractions (we're, we've, we'll, you're, you'll, you'd) and possessives.
+- Never address the reader. Imperative calls to action ("Order today", "Browse the range", "Shop now", "Get yours") imply "you" and are equally forbidden.
+- Make a product, material, use, audience or the range the subject of every sentence.
+  BAD:  "We carry yoga mats in cork and rubber. Order today and we'll ship fast."
+  GOOD: "Cork, jute and natural rubber yoga mats make up the core range. Orders ship from Fargo within two days."
+  BAD:  "You'll find the perfect gift for every occasion."
+  GOOD: "Baptism, confirmation and housewarming gifts fill out the religious line."
+- The assigned writing tone shapes word choice and rhythm only; it must never turn into a conversational address to the reader.
+- Every sentence must contain a verb and stand on its own. Never write noun fragments, e.g. "Adjacent fitness mats for strength training." or "Also carry hand tools for the job." - write "Fitness mats for strength training round out the range." instead. Do not begin a sentence with "Adjacent", "Also," or "Plus,".
+- Prefer concrete nouns (materials, product types, uses) over vague praise adjectives ("high-quality", "amazing", "premium").
+- VARY THE SENTENCE LINKING TOO. Never fall back on stock connectives or closing phrases; these make a batch of descriptions read as one template: "round out the range", "round out the selection", "round out the lineup", "join the lineup", "complete the collection", "complement the range", "complement the selection", "complement the lineup", "in this specialty range", "make up the core range", "form the core of this", "for every maker", "catering to every need". Name the adjacent products directly and let them be the subject of their own sentence.
+  BAD:  "Wrenches and pipe cutters round out the range."
+  GOOD: "Wrenches and pipe cutters cover the repair side."
+  BAD:  "Throw pillows and tabletop accents join the lineup."
+  GOOD: "Throw pillows and tabletop accents finish the room setting."
+- VARY THE OPENING. Never begin the description with "The catalog", "This catalog", "Our catalog", "The store", "The shop", "The range", "The collection", "The selection", "The inventory", "The assortment", "The lineup" or with "Discover", "Shop", "Find", "Looking for", "Welcome to", "Explore". Store-word subjects at the start of the sentence are the single clearest bulk-generation fingerprint - start with the products, the material, the use, the audience or the setting instead."""
+
+# 描述角度：SEO meta 描述式短文（约 300 字符 = 2-3 句），推进结构统一为
+# 「立主类目 -> 顺带 1 个相邻品类 -> 一句服务收尾」，差异体现在起句与落点，
+# 保证短文也能覆盖主类目之外的少量品类关键词
 _DESC_ANGLES = (
-    "open on the specialty's core use case, go deep through its main product families, then fold the other categories in as adjacent ranges the same store carries, close on ordering and service",
-    "open on the customer's project or problem within the specialty, develop the specialty subcategories by importance, bring the other categories in as useful extras, close on what ordering here is like",
-    "open on what the specialty catalog is unusually deep in, walk its subcategories with concrete product detail, work the other categories in as related needs, close on shipping and support",
-    "open with one concrete example item from the specialty, widen to the full specialty range, add the other categories as natural add-ons, close on the store's practical advantages",
-    "open on who the specialty serves, then what has been picked for them across the specialty subcategories, then the other ranges that round out an order, close on service details",
+    "name the specialty and its flagship product types in the first sentence, add one adjacent range the store also carries, end on a practical service note",
+    "lead with who the specialty is for and what it does for them, name the main product types, add one related range, close on ordering",
+    "lead with the depth of the specialty catalog and its most specific product families, then one adjacent range, close on shipping or support",
+    "open on one concrete specialty item as an example, widen to the range it belongs to, mention one adjacent range, close on the store's practical advantage",
+    "open on the customer the specialty serves, name what the catalog covers for them, add one related range, close on service",
 )
 
-# 描述长度按「词」计（约 300 词，约 1800-2200 字符），保留小幅差异做反模板化
-_DESC_LENGTHS = ("280-320 words", "300-340 words", "260-300 words")
+# 描述起句方式池（反模板化）：模型极容易把所有站的描述都写成
+# "The catalog supplies/opens/includes/spans ..." 同一句式，因为上面 5 个角度
+# 都在讲「先点出主类目」，而 WRITING VOICE 的正面示例又恰好是 "The catalog spans"。
+# 这里把「第一句的语法主语」也变成随方向抽取的变量，拉开句式分布。
+_DESC_OPENINGS = (
+    "start with the flagship product type itself as the grammatical subject",
+    "start with the material or construction that defines the specialty",
+    "start with the activity, room or setting the products are used in",
+    "start with the trade, hobby or audience the specialty serves",
+    "start with one concrete product example, then widen to the whole range",
+    "start with the range of sizes, styles or finishes on offer",
+    "start with what these products are built to withstand or replace",
+    "start with the everyday occasion or season the products fit",
+    "start with the craft tradition or origin behind the specialty",
+    "start with a specific product family and its most useful variant",
+)
+
+# 描述长度按「字符」计（用户要求约 300 字符，即 SEO meta 描述式短文 ≈ 45-55 词、
+# 2-3 句）。三档贴着 300 做小幅差异（反模板化）。
+# 注意：早期版本误按「词」理解成 300 词长文，生成出来是 1700-2400 字符，
+# 比要求长 6 倍；这里统一按字符，并有 _cap_description_length 兜底。
+_DESC_LENGTHS = ("280-320 characters", "260-300 characters", "290-330 characters")
 
 _KEYWORD_RECIPES = (
     "8-11 keywords, leaning toward long-tail multi-word phrases",
@@ -185,61 +230,208 @@ _KEYWORD_RECIPES = (
     "12-16 keywords, covering the main subcategories",
 )
 
-# 城市池：刻意避开模型最爱扎堆的 Austin/Denver/Portland/Miami 等热门城市，
-# 分散在各州中等城市，让整批站点的地址不呈现同一地理聚集
+# 城市池：美国经济规模靠前的主要城市 + 各州经济中心（用户要求：地址落在
+# 经济发展靠前的城市）。同时覆盖 50 州，避免整批站点地址挤在同几个州
+# （反模板化）。旧版本刻意避开大城市，与用户要求相反，已替换。
 _ADDRESS_CITIES = (
-    ("Huntsville", "AL"), ("Anchorage", "AK"), ("Mesa", "AZ"),
-    ("Fayetteville", "AR"), ("Stockton", "CA"), ("Fort Collins", "CO"),
-    ("Hartford", "CT"), ("Wilmington", "DE"), ("Ocala", "FL"),
-    ("Marietta", "GA"), ("Coeur d'Alene", "ID"), ("Schaumburg", "IL"),
-    ("Carmel", "IN"), ("Cedar Rapids", "IA"), ("Overland Park", "KS"),
-    ("Bowling Green", "KY"), ("Lafayette", "LA"), ("Grand Rapids", "MI"),
-    ("Rochester", "MN"), ("Springfield", "MO"), ("Biloxi", "MS"),
-    ("Billings", "MT"), ("Lincoln", "NE"), ("Sparks", "NV"),
-    ("Manchester", "NH"), ("Cherry Hill", "NJ"), ("Rio Rancho", "NM"),
-    ("Schenectady", "NY"), ("High Point", "NC"), ("Fargo", "ND"),
-    ("Dayton", "OH"), ("Norman", "OK"), ("Salem", "OR"),
-    ("Reading", "PA"), ("Warwick", "RI"), ("Greenville", "SC"),
-    ("Sioux Falls", "SD"), ("Chattanooga", "TN"), ("Tyler", "TX"),
-    ("Ogden", "UT"), ("Burlington", "VT"), ("Roanoke", "VA"),
-    ("Bellingham", "WA"), ("Morgantown", "WV"), ("Appleton", "WI"),
+    # ── 全国经济规模靠前的主要都市 ──
+    ("New York", "NY"), ("Los Angeles", "CA"), ("Chicago", "IL"),
+    ("San Francisco", "CA"), ("San Jose", "CA"), ("San Diego", "CA"),
+    ("Sacramento", "CA"), ("Fresno", "CA"),
+    ("Dallas", "TX"), ("Houston", "TX"), ("Austin", "TX"),
+    ("San Antonio", "TX"), ("Fort Worth", "TX"),
+    ("Boston", "MA"), ("Philadelphia", "PA"), ("Pittsburgh", "PA"),
+    ("Seattle", "WA"), ("Atlanta", "GA"), ("Miami", "FL"),
+    ("Orlando", "FL"), ("Tampa", "FL"), ("Jacksonville", "FL"),
+    ("Phoenix", "AZ"), ("Tucson", "AZ"),
+    ("Minneapolis", "MN"), ("Detroit", "MI"), ("Denver", "CO"),
+    ("Portland", "OR"), ("Charlotte", "NC"), ("Raleigh", "NC"),
+    ("Nashville", "TN"), ("St. Louis", "MO"), ("Kansas City", "MO"),
+    ("Baltimore", "MD"), ("Indianapolis", "IN"), ("Columbus", "OH"),
+    ("Cleveland", "OH"), ("Cincinnati", "OH"), ("Salt Lake City", "UT"),
+    ("Las Vegas", "NV"), ("Milwaukee", "WI"), ("Oklahoma City", "OK"),
+    ("Louisville", "KY"), ("Richmond", "VA"), ("New Orleans", "LA"),
+    ("Hartford", "CT"), ("Providence", "RI"), ("Birmingham", "AL"),
+    ("Omaha", "NE"), ("Des Moines", "IA"), ("Boise", "ID"),
+    ("Charleston", "SC"), ("Little Rock", "AR"), ("Jackson", "MS"),
+    ("Albuquerque", "NM"), ("Wichita", "KS"), ("Newark", "NJ"),
+    ("Honolulu", "HI"), ("Buffalo", "NY"), ("Rochester", "NY"),
+    ("Grand Rapids", "MI"), ("Colorado Springs", "CO"), ("Spokane", "WA"),
+    ("Reno", "NV"), ("Madison", "WI"), ("Tulsa", "OK"),
+    ("Lexington", "KY"), ("Virginia Beach", "VA"), ("Columbia", "SC"),
+    ("Knoxville", "TN"), ("Worcester", "MA"), ("Fort Wayne", "IN"),
+    # ── 其余各州的经济中心（补齐 50 州覆盖）──
+    ("Anchorage", "AK"), ("Wilmington", "DE"), ("Portland", "ME"),
+    ("Billings", "MT"), ("Fargo", "ND"), ("Manchester", "NH"),
+    ("Sioux Falls", "SD"), ("Burlington", "VT"), ("Charleston", "WV"),
     ("Cheyenne", "WY"),
 )
 
-_STREET_HINTS = (
-    "a simple street number and name",
-    "include a Suite or Unit number",
-    "a small commercial-road address (number plus road name)",
+# ── 真实地址库 ────────────────────────────────────────
+# 用户要求：地址必须对应真实存在的房屋（能在地图上查到），不能让模型编造。
+# 地址来源是 scripts/collect_us_addresses.py 从 OpenStreetMap 采集的
+# 「带门牌号的住宅建筑」地址，落库到 data/us_addresses.json：
+#   {"Denver|CO": [["2300 Court Pl", "Denver", "80205"], ...], ...}
+# 生成时直接抽取并原样写进提示词，模型不得改写。
+_US_ADDRESS_PATH = Path(__file__).resolve().parents[5] / "data" / "us_addresses.json"
+# 数据太少的城市（采集不完整）先不用，避免整批站点地址来回重复
+_ADDRESS_MIN_PER_CITY = 10
+
+_address_pool_cache = None
+_address_pool_mtime = None
+_address_pool_lock = threading.Lock()
+
+
+def _load_address_pool() -> dict:
+    """加载真实地址库（按文件 mtime 感知更新）
+
+    地址库由 scripts/collect_us_addresses.py 持续采集，城市会不断增加，所以
+    不能只加载一次就永久缓存——那样后台采集的新城市要重启服务才生效。
+    这里按文件 mtime 判断：没变就用缓存（只花一次 stat），变了就重新加载。
+
+    Returns:
+        {"Denver|CO": [["2300 Court Pl", "Denver", "80205"], ...], ...}
+        文件缺失或损坏时返回空 dict，调用方回退到旧的地址生成方式
+    """
+    global _address_pool_cache, _address_pool_mtime
+    with _address_pool_lock:
+        try:
+            mtime = _US_ADDRESS_PATH.stat().st_mtime
+        except OSError:
+            mtime = None
+        if _address_pool_cache is not None and mtime == _address_pool_mtime:
+            return _address_pool_cache
+        try:
+            raw = json.loads(_US_ADDRESS_PATH.read_text(encoding="utf-8"))
+            pool = {k: v for k, v in raw.items()
+                    if isinstance(v, list) and len(v) >= _ADDRESS_MIN_PER_CITY}
+            _address_pool_cache = pool
+            _address_pool_mtime = mtime
+            if pool:
+                total = sum(len(v) for v in pool.values())
+                log.info(f"真实地址库已加载: {len(pool)} 个城市 / {total} 条")
+            else:
+                log.warning(f"真实地址库为空或数据不足: {_US_ADDRESS_PATH}")
+        except Exception as e:
+            # 采集脚本可能正好在写文件，读到半个 JSON：保留上一次可用数据
+            if _address_pool_cache:
+                log.warning(f"真实地址库重载失败，继续用上一次的数据: {e}")
+            else:
+                log.warning(f"真实地址库加载失败（{_US_ADDRESS_PATH}）: {e}")
+                _address_pool_cache = {}
+            _address_pool_mtime = mtime      # 避免每次调用都重试同一个坏文件
+        return _address_pool_cache
+
+
+def _city_of(address: str) -> str:
+    """从 "412 Oak St, Denver, CO 80205" 里取出城市名（取不到时返回空串）"""
+    parts = [p.strip() for p in str(address or "").split(",")]
+    return parts[-2] if len(parts) >= 2 else ""
+
+
+def _pick_real_address(rng, exclude_cities=None) -> tuple:
+    """从真实地址库里随机抽一条
+
+    Args:
+        exclude_cities: 本次不要选的城市名集合。同一个类目的网站要落到不同城市
+            （一批同类目站挤在同一个城市甚至同一条街，是站群最明显的指纹之一）。
+
+    Returns:
+        (完整地址, 城市, 州) 或 ("", "", "")（地址库不可用时）
+    """
+    pool = _load_address_pool()
+    if not pool:
+        return "", "", ""
+    keys = sorted(pool)
+    if exclude_cities:
+        available = [k for k in keys if k.split("|")[0] not in exclude_cities]
+        # 城市都被该类目用完了（地址库城市数 < 该类目网站数）时退回全量，
+        # 宁可重复城市也要保证地址真实存在
+        keys = available or keys
+    city_key = rng.choice(keys)
+    street, osm_city, zipcode = rng.choice(pool[city_key])
+    # "10811-10819 S Racine Ave" 是整排房屋的号段，取起始号才是单个房屋地址
+    num, _, rest = street.partition(" ")
+    if "-" in num and rest:
+        street = f"{num.split('-')[0]} {rest}"
+    state = city_key.split("|")[-1]
+    return f"{street}, {osm_city}, {state} {zipcode}", osm_city, state
+
+
+# 街道名池：全部为住宅街道（树种/自然名 + 住宅路型），用户要求「房屋地址、
+# 不要大马路」。注意刻意不含 Road/Highway/Boulevard/Parkway/Commerce 等
+# 商业干道味的路型。
+# 门牌号与街道名由代码随机生成后写进地址（而不是给模型示例让它自己编）：
+# 实测给完整示例时模型会直接照抄（"733 Sunset Way"、"2215 Birch Court, Apt 4B"
+# 在多条结果里重复出现），导致整批站点地址雷同。
+_STREET_NAMES = (
+    "Oak Street", "Maple Avenue", "Cedar Lane", "Birch Court", "Willow Drive",
+    "Elm Street", "Pine Avenue", "Spruce Lane", "Aspen Court", "Juniper Drive",
+    "Magnolia Avenue", "Sycamore Lane", "Chestnut Street", "Walnut Avenue",
+    "Hickory Lane", "Laurel Court", "Poplar Street", "Dogwood Drive",
+    "Hawthorne Avenue", "Jasmine Lane", "Rosemary Court", "Clover Drive",
+    "Sunset Way", "Sunrise Lane", "Meadow Court", "Brookside Drive",
+    "Fairview Terrace", "Highland Avenue", "Ridge Circle", "Valley Lane",
+    "Lakeview Drive", "Hillcrest Drive", "Stonebridge Lane", "Windermere Court",
+    "Foxglove Lane", "Bluebell Court", "Wren Drive", "Robin Lane",
+    "Sparrow Court", "Heron Drive", "Autumn Lane", "Summerfield Court",
+    "Winterberry Lane", "Springview Drive", "Orchard Lane", "Grove Street",
 )
 
+# 单元号：多数住宅地址没有单元号，所以空串占多数
+_STREET_UNITS = ("", "", "", "", "Apt 2A", "Apt 4B", "Apt 12", "Unit 3",
+                 "Unit 12", "Unit 204")
 
-def _site_creative_direction(key: str) -> dict:
+
+def _site_creative_direction(key: str, exclude_cities=None) -> dict:
     """按稳定哈希种子为单个网站抽取创意方向（品牌声线/命名/文案/地理）
 
     种子取 key 的 SHA-256（Python 内建 hash 受 PYTHONHASHSEED 影响不稳定，
     不能用于跨进程可复现的方向）。同一 key 结果固定；key 中含任务 nonce
     （task_id 含时间戳）时，重跑批次会得到不同的方向组合。
 
+    Args:
+        exclude_cities: 不要选的城市名集合，用于把同一类目的网站分散到不同城市
+
     Returns:
         {"voice", "tone", "domain_style", "title_style", "title_len",
          "desc_angle", "desc_len", "keyword_recipe", "city", "state",
-         "street_hint", "temperature"} — 全部为提示词文本与采样参数
+         "street", "address", "desc_opening", "temperature"} — 全部为提示词文本与采样参数
+         （address 非空时是真实存在的住宅地址，优先使用；street 仅作回退）
     """
     seed = int(hashlib.sha256(str(key).encode("utf-8")).hexdigest()[:16], 16)
     rng = random.Random(seed)
-    city, state = rng.choice(_ADDRESS_CITIES)
+    # 优先用真实地址库里抽出的住宅地址（100% 对应真实房屋）；
+    # 地址库缺失时退回「代码生成街道 + 模型补 ZIP」的旧方式（不保证真实存在）
+    real_address, real_city, real_state = _pick_real_address(rng, exclude_cities)
+    if real_address:
+        city, state = real_city, real_state
+    else:
+        city_pool = _ADDRESS_CITIES
+        if exclude_cities:
+            city_pool = ([c for c in _ADDRESS_CITIES if c[0] not in exclude_cities]
+                         or _ADDRESS_CITIES)
+        city, state = rng.choice(city_pool)
+    # 街道行由代码生成（住宅街道 + 随机门牌号 + 可选单元号），保证每站不同、
+    # 且不会出现大马路；模型只负责拼上城市/州/ZIP
+    street = f"{rng.randint(3, 9899)} {rng.choice(_STREET_NAMES)}"
+    unit = rng.choice(_STREET_UNITS)
+    if unit:
+        street = f"{street}, {unit}"
     return {
+        "address": real_address,
         "voice": rng.choice(_BRAND_VOICES),
         "tone": rng.choice(_TONES),
         "domain_style": rng.choice(_DOMAIN_STYLES),
         "title_style": rng.choice(_TITLE_STYLES),
         "title_len": rng.choice(_TITLE_LENGTHS),
         "desc_angle": rng.choice(_DESC_ANGLES),
+        "desc_opening": rng.choice(_DESC_OPENINGS),
         "desc_len": rng.choice(_DESC_LENGTHS),
         "keyword_recipe": rng.choice(_KEYWORD_RECIPES),
         "city": city,
         "state": state,
-        "street_hint": rng.choice(_STREET_HINTS),
+        "street": street,
         # 温度在 0.7-0.95 间抖动：进一步拉开同批站点输出分布
         "temperature": round(rng.uniform(0.7, 0.95), 2),
     }
@@ -594,6 +786,27 @@ def build_site_info_prompt(stats: dict, folder_name: str,
             "variations of them):\n"
             f"{listed}\n")
 
+    # 地址规则：地址库命中时给出真实存在的住宅地址并要求逐字照抄；未命中
+    # （地址库不可用）时退回「代码生成街道 + 模型补 ZIP」的旧方式
+    if d.get("address"):
+        address_rule = (
+            f'- Store address: use EXACTLY this real, existing US residential address: '
+            f'"{d["address"]}". Copy it character for character into the "address" field - '
+            f'do not rename the street, do not change the house number, city, state or ZIP, '
+            f'never append a unit number, and never substitute another address. '
+            f'It is a real home address that has to stay findable on a map.')
+        address_field = ('5. "address": copy the real store address given above EXACTLY '
+                         '(same characters, same ZIP, nothing appended).')
+    else:
+        address_rule = (
+            f'- Store location: {d["city"]}, {d["state"]}. The address MUST be '
+            f'"{d["street"]}, {d["city"]}, {d["state"]} <ZIP>" — copy that street line EXACTLY '
+            f'as given (do not rename the street, do not change the house number, do not drop '
+            f'the unit number), and choose a ZIP that is plausible for {d["city"]}. This is a '
+            f'private residential home address: it must not look like a business park, a '
+            f'warehouse or a highway address.')
+        address_field = '5. "address": follow the store location line above.'
+
     return f"""You are a seasoned e-commerce branding consultant. Create the brand identity of ONE independent niche English e-commerce website targeting customers in the United States.
 
 Context: this store belongs to a portfolio of separately-founded stores. Anyone comparing the portfolio will look for stores that read like mass-produced siblings — identical naming habits, phrasing and sentence shapes. Your job is to make THIS store feel like it was started by different people than the rest.
@@ -614,17 +827,20 @@ CREATIVE DIRECTION assigned to this particular store (its siblings got different
 - Domain naming style: {d["domain_style"]}
 - Title style: {d["title_style"]} ({d["title_len"]} characters)
 - Description angle: {d["desc_angle"]}
-- Description length: {d["desc_len"]}, written as 3-5 flowing paragraphs
+- Description opening: {d["desc_opening"]} — the first sentence must actually follow this, and it must NOT start with a store word ("The catalog", "The store", "The range", "This collection"...).
+- Description length: {d["desc_len"]}, written as ONE short paragraph of 2-3 sentences (no line breaks). Target the middle of the range (about 300 characters, 45-55 words): never exceed 330 characters and do not fall below 250.
 - Keywords: {d["keyword_recipe"]}
-- Store location: in or around {d["city"]}, {d["state"]} — a plausible US street address ({d["street_hint"]}), format "Street, City, STATE ZIP", with a ZIP that is plausible for that state.
+{address_rule}
+
+{_PERSON_RULES}
 
 {avoid_block}
 Generate (all in English, for US customers), following the creative direction above:
 1. "domain": a brandable .com domain derived from the STORE SPECIALTY, in the naming style assigned above. Lowercase, short and memorable, no www, no scheme, at most 3 words. Do NOT end it with any of these tired suffixes: "pro", "hub", "central", "mart", "store", "shop", "online", "usa", "365", "deals", "best", "top", "direct".
 2. "theme": a short natural English phrase naming what the store sells, matching the specialty (a plain description, not a slogan).
 3. "title": homepage title that LEADS with the main specialty keyword: the specialty term must be the first thing in the title (or within the first two words) and clearly the dominant keyword, then continue per the assigned title style. Pick the most specific specialty term available from the SPECIALTY list, not a vague umbrella word. Never use the patterns "<keyword> Store", "<keyword> Shop", "<keyword> Online", "<keyword> - Buy <keyword> Online".
-4. "description": homepage description of about 300 words, written as 3-5 flowing paragraphs following the assigned angle and length. Most of the copy must be about the SPECIALTY categories - name their actual product types concretely, in plain customer language. Then work the SUPPLEMENTARY categories in by name as adjacent ranges the same store also carries, weaving their product types and keywords into normal sentences (never as a bare list, never in a "we also sell" dump). This is how the page should naturally cover keywords from categories outside the specialty. Do NOT open with "Shop", "Discover", "Find", "Looking for", "Welcome to" or "Explore" (the most common bulk-generated openings), do not repeat the title verbatim inside it, and do not stuff keywords - every category mention must read like a real sentence.
-5. "address": follow the store location line above.
+4. "description": homepage meta description of about 300 CHARACTERS (characters, NOT words) - one short paragraph of 2-3 sentences, roughly 45-55 words, following the assigned angle and length. LENGTH IS A HARD LIMIT: stay inside the assigned range and never exceed 330 characters - count as you write. Lead with the main specialty keyword and name its most concrete product types in plain customer language; if it fits naturally, mention ONE adjacent range the same store also carries (name the products, never a bare category list and never a "we also sell" dump). Every extra word costs budget, so pick the highest-value keywords instead of listing categories. Never cite product counts or catalog numbers (no "120 products", no "50+ styles") - the description is customer-facing copy, not a catalog summary. Follow the WRITING VOICE rules: make a product, material, use or audience the subject of each sentence (never open with a store word such as "The catalog"), never "we", "our" or "you", and EVERY sentence must contain a verb (no noun fragments such as "Leashes, collars and grooming tools also available."). Do NOT open with "Shop", "Discover", "Find", "Looking for", "Welcome to" or "Explore" (the most common bulk-generated openings), do not repeat the title verbatim inside it, and do not stuff keywords - every category mention must read like a real sentence.
+{address_field}
 6. "keywords": lowercase English SEO keywords about the SPECIALTY, most important first, per the assigned keyword recipe. No duplicates, no city names.
 
 Never use these clichés anywhere: "one-stop shop", "go-to destination", "look no further", "elevate your", "wide range of high-quality", "unbeatable prices", "shop with confidence", "your journey starts here", "curated for you".
@@ -668,6 +884,145 @@ def parse_site_info(content: str) -> dict:
     if not info["description"]:
         raise ValueError("返回结果缺少网站描述 (description)")
     return info
+
+
+# ── 文案人称校验 ──────────────────────────────────────
+# 提示词已要求第三人称，但模型仍可能写成店主自述（"We carry..."）或对读者
+# 喊话（"You'll find..."）。生成后扫一遍，命中就带针对性提示重试一次。
+# "us" 单独用小写匹配：大写的 US 是国家缩写，不是人称代词。
+_PERSON_PRONOUN_RE = re.compile(
+    r"\b(?:i|we|our|ours|my|mine|you|your|yours|yourself|yourselves|"
+    r"we're|we've|we'll|we'd|i'm|i've|i'll|i'd|you're|you've|you'll|you'd)\b",
+    re.IGNORECASE)
+_US_PRONOUN_RE = re.compile(r"\bus\b")          # 只认小写 us（US = 美国）
+_PERSON_CHECK_FIELDS = ("title", "theme", "description")
+
+# 模板化开头：描述以「商店/目录/范围」这类词作主语开头，是站群最明显的批量生成
+# 指纹（"The catalog supplies ..."，一批站读起来一模一样）。生成后检测，命中就重试。
+_TEMPLATE_OPENING_RE = re.compile(
+    r"^\W*(?:the|this|our|its|a)\s+(?:\w+\s+)?"     # 允许一个插入词: "The plumbing catalog"
+    r"(?:catalog|catalogue|store|shop|range|collection|selection|inventory|"
+    r"assortment|lineup|line-up|line|company|site|website|marketplace)\b",
+    re.IGNORECASE)
+_TEMPLATE_OPENING_FIELDS = ("description",)
+
+_QUALITY_RETRY_HINT = (
+    "\n\n⚠️ 上次输出未通过质量校验，必须同时修正以下所有问题：\n"
+    "- 不得出现第一/第二人称（we / our / us / you / your 及缩写），不得对读者喊话（如 \"Order today\"）；\n"
+    "- description 的第一句不得以商店词作主语开头（The catalog / The store / The range / "
+    "This collection / Our selection / The inventory 等），要用具体商品、材质、用途、人群或场景开头；\n"
+    "- 句子必须完整（不得是名词碎片），description 控制在指定字符区间内。")
+
+
+def _find_person_pronouns(text: str) -> list:
+    """返回文案中出现的第一/第二人称代词（去重排序），用于生成后的质量校验"""
+    if not text:
+        return []
+    found = {w.lower() for w in _PERSON_PRONOUN_RE.findall(str(text))}
+    if _US_PRONOUN_RE.search(str(text)):
+        found.add("us")
+    return sorted(found)
+
+
+def _find_template_opening(text: str) -> str:
+    """返回描述开头命中的模板化短语（空串表示合格）"""
+    m = _TEMPLATE_OPENING_RE.match(str(text or ""))
+    return m.group(0).strip() if m else ""
+
+
+def _find_quality_issues(info: dict) -> list:
+    """生成后的文案质量校验，返回问题描述列表（空列表 = 通过）
+
+    1) 第一/第二人称（提示词要求全篇第三人称）；
+    2) 描述以「The catalog / The store / The range」等商店词开头——批量生成指纹，
+       一批站读起来是同一个句式。
+    """
+    issues = []
+    for field in _PERSON_CHECK_FIELDS:
+        pronouns = _find_person_pronouns(info.get(field))
+        if pronouns:
+            issues.append(f"{field} 含第一/第二人称 {'/'.join(pronouns)}")
+    for field in _TEMPLATE_OPENING_FIELDS:
+        opening = _find_template_opening(info.get(field))
+        if opening:
+            issues.append(f"{field} 以模板化开头「{opening}」")
+    return issues
+
+
+def _regenerate_on_quality_issues(info: dict, config: dict, api_key: str,
+                                  prompt: str, direction: dict, log_fn,
+                                  folder_name: str) -> dict:
+    """文案未通过质量校验（人称 / 模板化开头）时带针对性提示重新生成一次
+
+    Returns:
+        重试且合格的新结果；未违规 / 重试失败 / 重试后仍违规时返回原结果
+    """
+    issues = _find_quality_issues(info)
+    if not issues:
+        return info
+
+    log_fn(f"[{folder_name}] ⚠ 文案未通过校验：{'；'.join(issues)}，重新生成", "warning")
+    try:
+        retry_info = _call_site_info_llm(
+            config, api_key, prompt + _QUALITY_RETRY_HINT, log_fn=log_fn,
+            temperature=direction["temperature"])
+    except Exception as e:
+        log_fn(f"[{folder_name}] 质量重试失败，沿用原结果: {e}", "warning")
+        return info
+
+    still = _find_quality_issues(retry_info)
+    if still:
+        log_fn(f"[{folder_name}] ⚠ 重试后仍未通过（{'；'.join(still)}），沿用原结果", "warning")
+        return info
+    log_fn(f"[{folder_name}] ✓ 重试后文案已修正")
+    return retry_info
+
+
+# ── 描述长度兜底 ──────────────────────────────────────
+# 描述是 SEO meta 描述，要求约 300 字符（≤330）。模型偶尔写成几百词的段落，
+# 超长时按完整句子截断，避免出现半句话，同时保证成品落在要求长度附近。
+# 顺带把换行折叠成空格：meta 描述应当是一行。
+_DESC_CHAR_CAP = 340
+
+
+def _cap_description_length(desc: str, max_chars: int = _DESC_CHAR_CAP,
+                            log_fn=None, folder_name: str = "") -> str:
+    """描述超长时按完整句子截断（兜底，正常应靠提示词约束）
+
+    Args:
+        desc: 描述原文
+        max_chars: 允许的最大字符数
+        log_fn: 日志回调
+        folder_name: 仅用于日志
+
+    Returns:
+        单行、且不超过 max_chars 的描述；超长时截断到最后一个完整句子
+    """
+    if not desc:
+        return desc
+    text = " ".join(str(desc).split())          # 折叠换行/多余空白
+    if len(text) <= max_chars:
+        return text
+
+    # 按句末标点切分，尽量保留完整句子
+    sentences = [s for s in re.findall(r"[^.!?]*[.!?]+\s*|[^.!?]+$", text) if s.strip()]
+    kept: list = []
+    count = 0
+    for s in sentences:
+        if kept and count + len(s) > max_chars:
+            break
+        kept.append(s)
+        count += len(s)
+
+    result = "".join(kept).strip() if kept else ""
+    if not result or len(result) > max_chars:
+        # 第一句就超长（或整段没有句末标点）：按字符硬截断到词边界
+        result = text[:max_chars].rsplit(" ", 1)[0].rstrip(",;:") + "."
+
+    if log_fn:
+        log_fn(f"[{folder_name}] 描述超长（{len(text)} 字符 > {max_chars} 字符），"
+               f"已截断到 {len(result)} 字符", "warning")
+    return result
 
 
 _domain_check_session = None
@@ -802,7 +1157,8 @@ def _call_site_info_llm(config: dict, api_key: str, prompt: str, log_fn=None,
 
 def _process_site_folder(task_id: str, folder: Path, config: dict, api_key: str,
                          log_fn, variant: int = 0,
-                         check_domain: bool = True) -> dict:
+                         check_domain: bool = True,
+                         exclude_cities=None) -> dict:
     """处理单个网站文件夹：读/生成分类统计 -> 调用 LLM -> 返回表格行
 
     每次只处理一个网站的分类结构（批量任务按顺序逐个调用本函数），
@@ -811,6 +1167,9 @@ def _process_site_folder(task_id: str, folder: Path, config: dict, api_key: str,
 
     variant 用于域名冲突重试：变化创意方向的随机种子（换一套品牌声线/
     命名风格/城市），常规生成恒为 0，同一 (task_id, folder) 内重试幂等。
+
+    exclude_cities: 同一类目下已经用过的城市，本次不要再选，让同类目的网站
+    分散到不同城市（站群指纹）；地址库城市不够时会自动退回允许重复。
     """
     # ── 读取分类统计（不存在时自动生成） ──
     stats_path = folder / STATS_FILE_NAME
@@ -859,7 +1218,8 @@ def _process_site_folder(task_id: str, folder: Path, config: dict, api_key: str,
                "或缺失）", "warning")
 
     # ── 创意方向（反模板化）：task_id 含时间戳，重跑批次方向组合会变化 ──
-    direction = _site_creative_direction(f"{task_id}|{folder.name}|v{variant}")
+    direction = _site_creative_direction(f"{task_id}|{folder.name}|v{variant}",
+                                         exclude_cities=exclude_cities)
 
     # ── 调用 LLM（只带这一个网站的分类结构 + 专属创意方向） ──
     # 生成后到西部数码 whois 查该域名是否已被别人注册；已被注册就换一套
@@ -870,12 +1230,22 @@ def _process_site_folder(task_id: str, folder: Path, config: dict, api_key: str,
     for gen_attempt in range(DOMAIN_REGEN_RETRIES + 1):
         if gen_attempt:
             direction = _site_creative_direction(
-                f"{task_id}|{folder.name}|v{variant}|regen{gen_attempt}")
+                f"{task_id}|{folder.name}|v{variant}|regen{gen_attempt}",
+                exclude_cities=exclude_cities)
         prompt = build_site_info_prompt(
             stats, folder.name, main_category=main_cat, direction=direction,
             avoid_domains=list(taken_domains) or None)
         info = _call_site_info_llm(config, api_key, prompt, log_fn=log_fn,
                                    temperature=direction["temperature"])
+        # 文案质量校验：出现 we/our/you 或模板化开头就重写一次
+        # （在域名检查之前，确保查的是最终域名）
+        info = _regenerate_on_quality_issues(
+            info, config, api_key, prompt, direction, log_fn, folder.name)
+        # 地址必须是地址库里那条真实地址：模型重写时若擅自改动，强制改回来
+        want_addr = str(direction.get("address") or "").strip()
+        if want_addr and str(info.get("address") or "").strip() != want_addr:
+            log_fn(f"[{folder.name}] 模型改动了真实地址，已还原为 {want_addr}", "warning")
+            info["address"] = want_addr
         if not check_domain:
             break
 
@@ -900,6 +1270,10 @@ def _process_site_folder(task_id: str, folder: Path, config: dict, api_key: str,
                 + ", ".join(taken_domains))
         log_fn(f"[{folder.name}] ⚠ 域名 {domain} 已被注册，换创意方向重新生成"
                f"（{gen_attempt + 1}/{DOMAIN_REGEN_RETRIES}）", "warning")
+
+    # 描述长度兜底：模型偶尔写到 400+ 词，超过用户要求的「300 词左右」
+    info["description"] = _cap_description_length(
+        info["description"], log_fn=log_fn, folder_name=folder.name)
 
     if not info["address"]:
         log_fn(f"[{folder.name}] 返回结果缺少地址 (address)，已留空", "warning")
@@ -1070,8 +1444,83 @@ def collect_site_folders(root) -> list[Path]:
     return [s for s in sites if not s.name.lower().startswith("extra")]
 
 
+def _store_row(rows: list, row_index: dict, site_name: str, row: dict) -> None:
+    """把某网站的结果写进结果表：已有该站的行就原地替换，否则追加
+
+    重跑任务时同一网站不能堆出多行（上次失败的行这次成功了要覆盖掉）。
+    """
+    if site_name in row_index:
+        rows[row_index[site_name]] = row
+    else:
+        row_index[site_name] = len(rows)
+        rows.append(row)
+
+
+# 单个网站生成失败（LLM 报错 / 返回格式异常 / 域名冲突）时的自动重试次数。
+# 每次重试都换一套创意方向（variant 递增），因此重试会得到不同的域名与文案。
+_SITE_GEN_RETRIES = 3
+
+
+def _category_key(folder_name: str) -> str:
+    """文件夹名 -> 类目分组键
+
+    同一个类目可能被分成多个网站文件夹（"Faucets_1"、"Faucets_2"），
+    文件夹名不同但类目相同，所以要剥掉结尾的序号再分组，否则同一类目的
+    网站会被当成不同类目、照样挤在同一个城市。
+    """
+    name = _clean_main_category(folder_name).lower()
+    return re.sub(r"[\s_-]*\d+$", "", name).strip() or name
+
+
+def _generate_site_row(task_id: str, site: Path, config: dict, api_key: str,
+                       log_fn, used_domains: set, variant_start: int = 0,
+                       exclude_cities=None) -> dict:
+    """生成单个网站的网站信息，失败或域名重复时自动重试
+
+    用户要求「生成失败的再次运行」：单站失败不再直接记一行失败，而是换一套
+    创意方向重试若干次（含批内域名重复的情况），全部失败才记失败。
+
+    Returns:
+        该网站的信息行（含「域名」「标题」等列）
+
+    Raises:
+        InterruptedError: 任务被停止
+        Exception: 重试用尽后的最后一次错误
+    """
+    last_error = None
+    for attempt in range(_SITE_GEN_RETRIES):
+        variant = variant_start + attempt
+        try:
+            row = _process_site_folder(task_id, site, config, api_key, log_fn,
+                                       variant=variant,
+                                       exclude_cities=exclude_cities)
+        except InterruptedError:
+            raise
+        except Exception as e:
+            last_error = e
+            if attempt < _SITE_GEN_RETRIES - 1:
+                delay = 3 * (attempt + 1)
+                log_fn(f"[{site.name}] 第 {attempt + 1} 次生成失败: {e}；"
+                       f"{delay}s 后自动重试（换创意方向）", "warning")
+                time.sleep(delay)
+                continue
+            raise
+
+        domain = str(row.get("域名") or "").strip()
+        if domain and domain in used_domains:
+            last_error = ValueError(f"域名 {domain} 与其他网站重复（已重试 {_SITE_GEN_RETRIES} 次）")
+            if attempt < _SITE_GEN_RETRIES - 1:
+                log_fn(f"[{site.name}] 域名 {domain} 与已生成网站重复，换创意方向重试",
+                       "warning")
+                continue
+            raise last_error
+        return row
+    raise last_error or RuntimeError("网站信息生成失败")
+
+
 def run_batch_site_info_task(task_id: str, folder, model_value: str = "",
-                             model_id_override: str = "", site_db=None):
+                             model_id_override: str = "", site_db=None,
+                             only_empty: bool = True):
     """批量 AI 生成网站信息后台任务体
 
     遍历所选文件夹下所有「最后一层文件夹」（每个 = 一个网站的数据），
@@ -1080,12 +1529,17 @@ def run_batch_site_info_task(task_id: str, folder, model_value: str = "",
     读取/生成该网站的分类统计 -> LLM 生成域名/标题/描述等 -> 汇总为一行，
     全部结果写入所选文件夹下的 网站信息.xlsx（每个网站一行）。
     每完成一个网站就落盘一次（中断也能保留已生成的行）；
-    失败的网站在表中以「备注」列记录原因，不影响其余网站。
+    失败的网站会换创意方向自动重试，仍失败才以「备注」列记录原因，不影响其余网站。
+
+    only_empty=True（默认）时是增量模式：已经有网站信息（域名列非空）的网站直接
+    跳过、不覆盖；上次失败留下的行（域名列为空）仍算「网站信息为空」，所以重跑
+    任务就是对失败项的再次运行。
 
     Args:
         task_id: 任务 ID
         folder: 父文件夹路径（如数据分配输出的分配文件夹）
         model_value / model_id_override / site_db: 同 run_site_info_task
+        only_empty: 只生成网站信息为空的网站（默认 True）
     """
     folder = Path(folder)
     own_db = site_db is None
@@ -1121,34 +1575,69 @@ def run_batch_site_info_task(task_id: str, folder, model_value: str = "",
         api_key = get_llm_api_key(config, site_db)
         _log(f"使用模型: {config['label']}（{config['model_id']} @ {config['base_url']}）")
 
-        # ── 按顺序逐个网站生成，逐行累积写入表格 ──
+        # ── 增量模式：读出已有结果，只生成「网站信息为空」的网站 ──
         out_path = folder / INFO_FILE_NAME
         rows: list[dict] = []
+        if out_path.exists():
+            try:
+                rows = read_site_info_excel(out_path)
+            except Exception as e:
+                _log(f"读取已有 {INFO_FILE_NAME} 失败，将全部重新生成: {e}", "warning")
+                rows = []
+        # 网站名 -> 行下标：重跑时原地替换该站的行，避免同一网站堆出多行
+        row_index = {str(r.get("网站（文件夹）") or "").strip(): i
+                     for i, r in enumerate(rows)}
+        # 域名列非空 = 这个网站的网站信息已生成过，跳过不覆盖；
+        # 上次失败的行域名列为空，仍算「为空」，所以重跑即重试失败项
+        done = {name for name, idx in row_index.items()
+                if str(rows[idx].get("域名") or "").strip()}
+        skipped = 0
+        if only_empty and done:
+            _log(f"增量模式：已有 {len(done)} 个网站信息，跳过它们，"
+                 f"只生成信息为空的网站（共 {len(sites)} 个网站）")
+        # 批内域名去重：已生成过的域名也要计入，避免新站撞上老站的域名
+        used_domains: set[str] = {
+            str(rows[idx].get("域名") or "").strip() for idx in row_index.values()
+        } - {""}
+        # 同一类目的网站要分到不同城市。先按已有结果回填该类目已用过的城市，
+        # 否则重跑时新站会又落回老站的城市。
+        cities_by_category: dict[str, set[str]] = {}
+        for name, idx in row_index.items():
+            city = _city_of(rows[idx].get("地址"))
+            if name and city:
+                cities_by_category.setdefault(
+                    _category_key(name) or name, set()).add(city)
+
+        # ── 按顺序逐个网站生成，逐行累积写入表格 ──
         succeeded: list[Path] = []
         failed: list[tuple[str, str]] = []
-        used_domains: set[str] = set()  # 批内域名去重（站群最明显的指纹之一）
         for i, site in enumerate(sites):
             if task_manager.is_stopped(task_id):
                 task_manager.update(task_id, status="stopped", message="任务已停止")
                 return
+            if only_empty and site.name in done:
+                skipped += 1
+                task_manager.update(
+                    task_id, progress=int(i / len(sites) * 100),
+                    message=f"[{i + 1}/{len(sites)}] 跳过（已有网站信息）: {site.name}")
+                _log(f"[{i + 1}/{len(sites)}] 跳过（已有网站信息）: {site.name}")
+                continue
             task_manager.update(
                 task_id, progress=int(i / len(sites) * 100),
                 message=f"[{i + 1}/{len(sites)}] 正在生成: {site.name}")
             try:
                 _log(f"[{i + 1}/{len(sites)}] 开始生成网站信息: {site.name}")
-                row = _process_site_folder(task_id, site, config, api_key, _log)
-                if row["域名"] in used_domains:
-                    # 域名与已生成网站重复：换一套创意方向重试一次
-                    _log(f"[{i + 1}/{len(sites)}] ⚠ {site.name} 域名 "
-                         f"{row['域名']} 与已生成网站重复，更换创意方向重新生成",
-                         "warning")
-                    row = _process_site_folder(task_id, site, config, api_key,
-                                               _log, variant=1)
-                    if row["域名"] in used_domains:
-                        raise ValueError(
-                            f"域名 {row['域名']} 与其他网站重复（两次生成均冲突）")
-                used_domains.add(row["域名"])
-                rows.append(row)
+                cat_key = _category_key(site.name) or site.name
+                used_cities = cities_by_category.setdefault(cat_key, set())
+                row = _generate_site_row(task_id, site, config, api_key, _log,
+                                         used_domains, exclude_cities=used_cities)
+                used_domains.add(str(row.get("域名") or "").strip())
+                city = _city_of(row.get("地址"))
+                if city:
+                    used_cities.add(city)
+                    _log(f"[{i + 1}/{len(sites)}] 类目「{cat_key}」已用城市 "
+                         f"{len(used_cities)} 个，本站落在 {city}")
+                _store_row(rows, row_index, site.name, row)
                 succeeded.append(site)
                 _log(f"[{i + 1}/{len(sites)}] ✓ {site.name} 完成: "
                      f"{row['域名']} | {row['标题']}")
@@ -1158,18 +1647,22 @@ def run_batch_site_info_task(task_id: str, folder, model_value: str = "",
             except Exception as e:
                 failed.append((site.name, str(e)))
                 log.error(f"网站 {site.name} 信息生成失败: {e}")
-                _log(f"[{i + 1}/{len(sites)}] ✗ {site.name} 生成失败: {e}（继续下一个）",
-                     "error")
-                # 失败也占一行（备注列记录原因），表格里一目了然
-                rows.append({"网站（文件夹）": site.name, "备注": f"生成失败: {e}"})
+                _log(f"[{i + 1}/{len(sites)}] ✗ {site.name} 生成失败: {e}"
+                     f"（已重试 {_SITE_GEN_RETRIES} 次，继续下一个）", "error")
+                # 失败也占一行（备注列记录原因）；域名为空，重跑任务会再次尝试
+                _store_row(rows, row_index, site.name,
+                           {"网站（文件夹）": site.name, "备注": f"生成失败: {e}"})
             # 每完成一个网站就落盘，中断/失败也能保留已生成的行
             _write_info_excel(out_path, rows)
 
         # ── 汇总 ──
         parts = [f"完成: 批量生成 {len(succeeded)}/{len(sites)} 个网站信息"]
+        if skipped:
+            parts.append(f"（跳过已有 {skipped}）")
         if failed:
             parts.append(f"（失败 {len(failed)}: "
-                         + ", ".join(n for n, _ in failed) + "）")
+                         + ", ".join(n for n, _ in failed) + "；"
+                         "重新运行任务会自动重试这些网站）")
         summary = "".join(parts) + f" -> {out_path}"
         if not succeeded and failed:
             task_manager.update(task_id, status="failed", message=summary, progress=100)

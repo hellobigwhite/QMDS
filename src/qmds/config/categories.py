@@ -454,6 +454,118 @@ STANDARD_SUBCATEGORIES: dict[str, list[str]] = {
 }
 
 
+# ── 类目补充关键词（taxonomy 之外、业内明确属于该类目的商品）──────
+#
+# 背景：Google Product Taxonomy 的宗教类目只收录到 Prayer Beads / Prayer Cards /
+# Religious Altars / Religious Veils / Tarot Cards 等少量条目，像十字架项链、
+# 念珠手串、圣牌这类「宗教 + 珠宝」的常见商品完全没有收录，导致精准类目筛选
+# 时这些 collection 匹配不到宗教类目，被漏掉或归到珠宝类目。
+#
+# 为什么不能直接把这些词写进 data/categories/*.txt：
+#   taxonomy 的匹配是「单词交集」——写入 "Cross Necklace" 会让通用词 necklace
+#   变成宗教类目的关键词，于是所有项链 collection 都会被误判成宗教类目。
+# 所以这里用「短语级」匹配：短语里的每个词都要在标题中整词出现（词序无关），
+# "cross necklace" 只命中同时含 cross 和 necklace 的标题，单独 "Gold Necklaces"
+# 或 "Cross Training Shoes" 都不会命中。
+#
+# 两个消费方共用本表：
+#   1. data_scraper/category_matcher.match_title（精准类目筛选）
+#   2. utils/site_classifier（站点主营类目判断）
+# 短语分词：非字母数字一律视为分隔符（"Cross & Rosary Necklaces" -> cross/rosary/necklaces）
+_EXTRA_PHRASE_SPLIT_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _singularize_word(word: str) -> str:
+    """轻量去复数（与 utils.site_classifier.normalize_text 同规则）
+
+    让词表只需写一种形式即可命中单复数标题（"Kippahs"/"Kippah"、
+    "Rosaries"/"Rosary"、"Crosses"/"Cross"）。以 ss 结尾的词（cross/glass）
+    不去 s。
+    """
+    if len(word) > 4:
+        if word.endswith("ies"):
+            return word[:-3] + "y"
+        if word.endswith(("ses", "xes", "zes", "ches", "shes")):
+            return word[:-2]
+        if word.endswith("es"):
+            return word[:-1]
+        if word.endswith("s") and not word.endswith("ss"):
+            return word[:-1]
+    return word
+
+CATEGORY_EXTRA_PHRASES: dict[str, tuple[str, ...]] = {
+    "religious_ceremonial": (
+        # ── 宗教专有词：单独出现即可判定（非宗教语境几乎不会使用）──
+        "rosary", "rosaries",
+        "crucifix", "crucifixes",
+        "mezuzah", "mezuza", "menorah", "menorahs",
+        "kippah", "kippot", "yarmulke", "yarmulkes", "tallit", "tallis",
+        "chalice", "chalices", "hymnal", "hymnals", "siddur",
+        "quran", "koran", "talmud", "torah", "sutra", "mala beads",
+        "communion", "communion cups", "communion wafers",
+        "prayer beads", "prayer cards", "prayer shawl", "prayer shawls",
+        "prayer mat", "prayer mats", "prayer rug", "prayer rugs",
+        "incense burner", "incense burners", "incense holder", "incense holders",
+        "incense sticks", "incense cones",
+        "smudge stick", "smudge sticks",
+        "bible", "bibles", "bible cover", "bible covers", "bible case",
+        "bible study", "bible journal", "scripture", "scriptures",
+        "devotional", "devotionals",
+        "christian", "catholic", "jewish", "judaica", "muslim", "islamic",
+        "buddhist", "hindu", "sikh",
+        "christening", "baptism", "first communion", "confirmation gift",
+        "confirmation gifts",
+        # ── 宗教珠宝/饰品：与首饰词共现才判定，避免 "cross training" 之类误判 ──
+        "cross necklace", "cross necklaces", "cross pendant", "cross pendants",
+        "cross bracelet", "cross bracelets", "cross earring", "cross earrings",
+        "cross ring", "cross rings", "cross charm", "cross charms",
+        "cross jewelry", "cross jewellery",
+        "crucifix necklace", "crucifix pendant", "crucifix bracelet",
+        "crucifix earrings", "crucifix ring",
+        "rosary necklace", "rosary bracelet", "rosary bracelets",
+        "rosary ring", "rosary rings", "rosary pouch", "rosary case",
+        "religious necklace", "religious necklaces", "religious pendant",
+        "religious pendants", "religious bracelet", "religious bracelets",
+        "religious jewelry", "religious jewellery", "religious charm",
+        "religious charms", "religious ring", "religious rings",
+        "religious earrings", "religious gift", "religious gifts",
+        "saint pendant", "saint pendants", "saint medal", "saint medals",
+        "saint bracelet", "saint necklace", "patron saint",
+        "bible verse necklace", "bible verse bracelet", "bible verse ring",
+        "bible verse jewelry", "faith necklace", "faith bracelet", "faith jewelry",
+    ),
+}
+
+
+def match_category_extra_phrases(category: str, text: str) -> bool:
+    """类目补充关键词短语匹配（见 CATEGORY_EXTRA_PHRASES）
+
+    匹配规则：短语里的每个词都要在 text 中整词出现（词序无关，忽略大小写
+    与标点）。整词比较保证 "cross" 不会命中 "crossbody"，短语共现保证
+    "necklace" 单独出现不会命中宗教类目。
+
+    Args:
+        category: 一级分类简化名（如 "religious_ceremonial"）
+        text: 待匹配文本（collection 标题 / 站点描述等）
+
+    Returns:
+        是否命中该类目的任一补充短语
+    """
+    phrases = CATEGORY_EXTRA_PHRASES.get(category)
+    if not phrases or not text:
+        return False
+    # 标题与词表都做同样的去复数，词表只需写一种形式
+    words = {_singularize_word(w)
+             for w in _EXTRA_PHRASE_SPLIT_RE.split(str(text).lower()) if w}
+    if not words:
+        return False
+    for phrase in phrases:
+        parts = [_singularize_word(p) for p in phrase.split()]
+        if parts and all(p in words for p in parts):
+            return True
+    return False
+
+
 def get_standard_subcategories(category: str) -> set[str]:
     """获取一级分类的标准子分类集合（含 DEFAULT_SUBCATEGORY='other'）
 

@@ -13,7 +13,7 @@ from typing import Optional
 
 import pandas as pd
 
-from qmds.config.categories import SHOPIFY_CATEGORIES
+from qmds.config.categories import SHOPIFY_CATEGORIES, match_category_extra_phrases
 from qmds.config.settings import settings
 from qmds.utils.http_client import HttpClient
 from qmds.utils.language import is_non_english_text
@@ -407,6 +407,10 @@ class SiteClassifier:
         for cat in SHOPIFY_CATEGORIES:
             leaves = load_category_leaves(cat)
             if normalized in leaves:
+                matched.append(cat)
+            elif match_category_extra_phrases(cat, text):
+                # taxonomy 未收录但业内属于该类目的商品（如宗教珠宝：
+                # 十字架项链/念珠/圣牌），短语级匹配避免通用词误判
                 matched.append(cat)
 
         return matched

@@ -9,6 +9,7 @@
 - 批量任务域名去重：冲突时换创意方向重试一次，仍冲突则明确失败。
 """
 
+import re
 import shutil
 import uuid
 from pathlib import Path
@@ -20,6 +21,14 @@ from qmds.modules.web.services import site_info_generator
 from qmds.modules.web.services.site_info_generator import (
     INFO_FILE_NAME,
     _ADDRESS_CITIES,
+    _DESC_CHAR_CAP,
+    _DESC_LENGTHS,
+    _QUALITY_RETRY_HINT,
+    _cap_description_length,
+    _find_person_pronouns,
+    _find_quality_issues,
+    _find_template_opening,
+    _regenerate_on_quality_issues,
     _site_creative_direction,
     build_site_info_prompt,
     read_site_info_excel,
@@ -102,15 +111,42 @@ def test_creative_direction_stable_and_varies():
     assert _site_creative_direction("taskA|Faucets|v1") != d1
 
 
-def test_creative_direction_city_pool_spread():
-    """城市池覆盖足够多的州（地址地理分散，不扎堆热门城市）"""
-    states = {state for _city, state in _ADDRESS_CITIES}
-    assert len(states) >= 40
-    # 刻意避开模型最爱扎堆的城市
-    banned = {"austin", "denver", "portland", "miami", "seattle", "chicago",
-              "new york", "los angeles", "san francisco", "boston"}
-    for city, _state in _ADDRESS_CITIES:
-        assert city.lower() not in banned
+def test_creative_direction_city_pool_major_economies():
+    """城市池是美国经济靠前的城市 + 各州经济中心（用户要求），且覆盖多州"""
+    cities = {city for city, _state in _ADDRESS_CITIES}
+    # 经济规模靠前的主要都市必须在池内（旧版刻意排除它们，与要求相反）
+    for city in ("New York", "Los Angeles", "Chicago", "Houston", "Dallas",
+                 "San Francisco", "Boston", "Seattle", "Atlanta", "Miami",
+                 "Phoenix", "Philadelphia", "San Jose", "Minneapolis"):
+        assert city in cities, city
+    assert len(_ADDRESS_CITIES) >= 60, "城市池过小，批量生成容易重复"
+    # 仍保持地理分散：避免整批站点地址挤在同几个州
+    assert len({state for _city, state in _ADDRESS_CITIES}) >= 45
+
+
+def test_street_is_residential_and_differs_per_site():
+    """街道行由代码生成：住宅街道、无大马路、各站不重复"""
+    banned = re.compile(
+        r"\b(main|highway|hwy|blvd|boulevard|parkway|pkwy|road|rd|route|"
+        r"commerce|industrial|corporate|business)\b", re.I)
+    streets = []
+    for i in range(60):
+        d = _site_creative_direction(f"addr-test|{i}|v0")
+        street = d["street"]
+        streets.append(street)
+        assert banned.search(street) is None, street          # 不含大马路/商业路型
+        assert re.match(r"^\d{1,4} [A-Z]", street), street    # 门牌号 + 街道名
+        assert ", Suite" not in street, street                # 住宅地址不用 Suite
+    assert len(set(streets)) >= 50, "街道应随网站变化，避免整批雷同"
+
+
+def test_prompt_requires_copying_the_street_line(monkeypatch):
+    """地址库不可用时的回退文案：原样照抄代码生成的街道行"""
+    monkeypatch.setattr(site_info_generator, "_address_pool_cache", {})
+    prompt = build_site_info_prompt(STATS, "Faucets")
+    assert "copy that street line EXACTLY as given" in prompt
+    assert "private residential home address" in prompt
+    assert "must not look like a business park, a warehouse or a highway address" in prompt
 
 
 # ── 提示词：创意方向 + 反指纹规则 ─────────────────────
@@ -123,9 +159,10 @@ def test_prompt_contains_direction_and_rules():
         "domain_style": "a two-word compound of two real English words",
         "title_style": "brand word first, then a plain descriptor after a colon",
         "title_len": "40-60", "desc_angle": "open with the concrete product range",
+        "desc_opening": "start with the material or construction that defines the specialty",
         "desc_len": "100-150", "keyword_recipe": "10-14 keywords, head terms first",
         "city": "Fort Collins", "state": "CO",
-        "street_hint": "a simple street number and name",
+        "street": "412 Oak Street",
         "temperature": 0.82,
     }
     prompt = build_site_info_prompt(STATS, "Toilets_Toilet_Tank_Lids",
@@ -243,7 +280,7 @@ def test_batch_domain_dedup_reroll(workdir, monkeypatch):
 
     # 冲突重试有告警日志
     logs = [e.get("message", "") for e in task_manager.get_logs(task_id)]
-    assert any("重新生成" in m for m in logs)
+    assert any("重复" in m and "重试" in m for m in logs)
 
 
 def test_batch_domain_dedup_gives_up(workdir, monkeypatch):
@@ -276,6 +313,126 @@ def test_batch_domain_dedup_gives_up(workdir, monkeypatch):
     # 站点按字母序处理：Door_Hardware 先成功，Faucets 两次冲突失败
     assert by_site["Door_Hardware"]["域名"] == "always-same.com"
     assert "重复" in by_site["Faucets"]["备注"]
+
+
+def test_batch_only_generates_sites_with_empty_info(workdir, monkeypatch):
+    """增量模式：已有网站信息的网站跳过不动，只生成信息为空的网站"""
+    _make_site(workdir, "Faucets", "Bathroom|||Faucets")
+    _make_site(workdir, "Door_Hardware", "Hardware|||Door Hardware")
+    # 预置结果表：Faucets 已有信息（要保留），Door_Hardware 上次失败（要重生成）
+    site_info_generator._write_info_excel(workdir / INFO_FILE_NAME, [
+        {"网站（文件夹）": "Faucets", "域名": "keep-me.com", "标题": "Old title"},
+        {"网站（文件夹）": "Door_Hardware", "备注": "生成失败: boom"},
+    ])
+
+    calls = []
+
+    def fake_llm(config, api_key, prompt, log_fn=None, **kwargs):
+        calls.append(prompt)
+        return {"domain": "new-door.com", "theme": "T", "title": "Title",
+                "description": "Cork mats anchor the studio range.",
+                "address": "1 Main St, Fort Collins, CO 80521", "keywords": ["k"]}
+
+    monkeypatch.setattr(site_info_generator, "_call_site_info_llm", fake_llm)
+
+    task_id = "test_only_empty"
+    task_manager.create(task_id, "site_info", "test")
+    site_info_generator.run_batch_site_info_task(
+        task_id, workdir, "agentrouter", "live-model-x",
+        site_db=StubSiteDB({"agentrouter_api_key": "sk-ar-test"}))
+
+    task = task_manager.get(task_id)
+    assert task["status"] == "completed", task_manager.get_logs(task_id)
+    assert len(calls) == 1, "只应为信息为空的网站调用模型"
+
+    rows = read_site_info_excel(workdir / INFO_FILE_NAME)
+    assert len(rows) == 2, "不应为跳过的网站新增行"
+    by_site = {r["网站（文件夹）"]: r for r in rows}
+    assert by_site["Faucets"]["域名"] == "keep-me.com"       # 已有信息未被覆盖
+    assert by_site["Door_Hardware"]["域名"] == "new-door.com"  # 空的重生成了
+    logs = [e.get("message", "") for e in task_manager.get_logs(task_id)]
+    assert any("跳过（已有网站信息）" in m for m in logs)
+
+
+def test_batch_retries_failed_site_then_succeeds(workdir, monkeypatch):
+    """单个网站生成失败会自动重试（换创意方向），重试成功则照常写入"""
+    _make_site(workdir, "Faucets", "Bathroom|||Faucets")
+
+    calls = []
+
+    def fake_llm(config, api_key, prompt, log_fn=None, **kwargs):
+        calls.append(prompt)
+        if len(calls) == 1:
+            raise RuntimeError("api 502 bad gateway")
+        return {"domain": "retry-ok.com", "theme": "T", "title": "Title",
+                "description": "Brass faucets anchor the bath range.",
+                "address": "1 Main St, Fort Collins, CO 80521", "keywords": ["k"]}
+
+    monkeypatch.setattr(site_info_generator, "_call_site_info_llm", fake_llm)
+    monkeypatch.setattr(site_info_generator.time, "sleep", lambda _s: None)  # 免等待
+
+    task_id = "test_retry_site"
+    task_manager.create(task_id, "site_info", "test")
+    site_info_generator.run_batch_site_info_task(
+        task_id, workdir, "agentrouter", "live-model-x",
+        site_db=StubSiteDB({"agentrouter_api_key": "sk-ar-test"}))
+
+    task = task_manager.get(task_id)
+    assert task["status"] == "completed", task_manager.get_logs(task_id)
+    assert len(calls) == 2, "第一次失败后应自动重试一次"
+    assert "批量生成 1/1" in task["message"]
+    assert "失败" not in task["message"]
+
+    rows = read_site_info_excel(workdir / INFO_FILE_NAME)
+    assert len(rows) == 1 and rows[0]["域名"] == "retry-ok.com"
+    logs = [e.get("message", "") for e in task_manager.get_logs(task_id)]
+    assert any("自动重试" in m for m in logs)
+
+
+def test_batch_spreads_same_category_across_cities(workdir, monkeypatch):
+    """同一类目的多个网站要分到不同城市"""
+    for i in (1, 2, 3):
+        _make_site(workdir, f"Faucets_{i}", "Bathroom|||Faucets")
+
+    # 三个城市的真实地址库
+    pool = {f"City{c}|CO": [[f"{100 + c} Oak St", f"City{c}", f"8020{c}"]] * 12
+            for c in (1, 2, 3)}
+    monkeypatch.setattr(site_info_generator, "_load_address_pool", lambda: pool)
+
+    calls = []
+
+    def fake_llm(config, api_key, prompt, log_fn=None, **kwargs):
+        calls.append(prompt)
+        m = re.search(r'residential address: "([^"]+)"', prompt)
+        return {"domain": f"site{len(calls)}.com", "theme": "T", "title": "Title",
+                "description": "Brass faucets anchor the bath range.",
+                "address": m.group(1) if m else "", "keywords": ["k"]}
+
+    monkeypatch.setattr(site_info_generator, "_call_site_info_llm", fake_llm)
+
+    task_id = "test_city_spread"
+    task_manager.create(task_id, "site_info", "test")
+    site_info_generator.run_batch_site_info_task(
+        task_id, workdir, "agentrouter", "live-model-x",
+        site_db=StubSiteDB({"agentrouter_api_key": "sk-ar-test"}))
+
+    task = task_manager.get(task_id)
+    assert task["status"] == "completed", task_manager.get_logs(task_id)
+    rows = read_site_info_excel(workdir / INFO_FILE_NAME)
+    assert len(rows) == 3
+    cities = [site_info_generator._city_of(r.get("地址")) for r in rows]
+    assert len(set(cities)) == 3, f"同类目网站应分散到不同城市，实际: {cities}"
+
+
+def test_store_row_replaces_in_place():
+    """同一网站重跑时原地替换该行，不会堆出多行"""
+    rows = [{"网站（文件夹）": "A", "备注": "生成失败: x"}]
+    index = {"A": 0}
+    site_info_generator._store_row(rows, index, "A",
+                                   {"网站（文件夹）": "A", "域名": "a.com"})
+    assert len(rows) == 1 and rows[0]["域名"] == "a.com"
+    site_info_generator._store_row(rows, index, "B", {"网站（文件夹）": "B"})
+    assert len(rows) == 2 and index["B"] == 1
 
 
 # ── 网站大类：数据表 自定义分类 列聚合 ─────────────────────
@@ -422,3 +579,186 @@ def test_batch_task_fills_major_category(workdir, monkeypatch):
     # 日志中体现聚合结果
     logs = [e.get("message", "") for e in task_manager.get_logs(task_id)]
     assert any("网站大类" in m and "动物" in m for m in logs)
+
+# ── 描述长度：按「字符」计（约 300 字符的 SEO meta 描述）──────
+
+def test_desc_lengths_are_characters_within_cap():
+    """长度档位按字符计，且上限不超过兜底阈值"""
+    for spec in _DESC_LENGTHS:
+        assert "characters" in spec, spec
+        assert "words" not in spec, spec
+        upper = int(spec.split()[0].split("-")[1])
+        assert upper <= _DESC_CHAR_CAP, spec
+        assert 250 <= upper <= 340, spec          # 贴着「约 300 字符」
+
+
+def test_prompt_asks_for_characters_not_words():
+    """提示词明确按字符、单段 2-3 句，并给出硬上限"""
+    prompt = build_site_info_prompt(STATS, "Toilets_Toilet_Tank_Lids")
+    assert "300 CHARACTERS (characters, NOT words)" in prompt
+    assert "never exceed 330 characters" in prompt
+    assert "ONE short paragraph of 2-3 sentences" in prompt
+    # 不能再出现按词计的长文要求
+    assert "about 300 words" not in prompt
+    assert "flowing paragraphs" not in prompt
+
+
+def test_cap_description_keeps_short_text_and_flattens_newlines():
+    text = "Short meta description for the store."
+    assert _cap_description_length(text) == text
+    assert _cap_description_length("Line one.\n\nLine two.") == "Line one. Line two."
+    assert _cap_description_length("") == ""
+    assert _cap_description_length(None) is None
+
+
+def test_cap_description_truncates_to_complete_sentence():
+    """超长描述截断到完整句子，且不超过上限"""
+    long_desc = ("First sentence about the specialty and its main product types. "
+                 + "Second sentence padding " + "pad " * 80
+                 + ". Third sentence that should never survive the cap.")
+    assert len(long_desc) > _DESC_CHAR_CAP
+
+    logs = []
+    result = _cap_description_length(long_desc, log_fn=lambda m, lvl="info": logs.append(m),
+                                     folder_name="Faucets")
+    assert len(result) <= _DESC_CHAR_CAP
+    assert result.endswith(".")
+    assert "Third sentence" not in result
+    assert result.startswith("First sentence about the specialty")
+    assert any("描述超长" in m for m in logs)
+
+
+def test_cap_description_handles_single_overlong_sentence():
+    """极端情况：第一句就超长时按字符截断到词边界"""
+    one_long = "word " * 200
+    result = _cap_description_length(one_long)
+    assert len(result) <= _DESC_CHAR_CAP + 1
+    assert result.endswith(".")
+    assert "wordword" not in result            # 没有切断单词
+
+# ── 第三人称：提示词规则 + 生成后人称校验 ───────────────
+
+def test_prompt_forbids_first_and_second_person():
+    """提示词明确第三人称，并给出正反例、禁祈使句、禁残句"""
+    prompt = build_site_info_prompt(STATS, "Toilets_Toilet_Tank_Lids")
+    assert "WRITING VOICE - applies to EVERY field" in prompt
+    assert "Write in the THIRD PERSON only" in prompt
+    assert "Never address the reader" in prompt
+    assert '"Order today", "Browse the range", "Shop now", "Get yours"' in prompt
+    assert 'BAD:  "We carry yoga mats' in prompt          # 反例
+    assert 'GOOD: "Cork, jute and natural rubber yoga mats' in prompt  # 正例
+    assert "Every sentence must contain a verb and stand on its own" in prompt
+    assert "Never write noun fragments" in prompt
+    assert "conversational address to the reader" in prompt
+
+
+def test_find_person_pronouns():
+    assert _find_person_pronouns("We carry yoga mats and our prices are low.") == ["our", "we"]
+    assert _find_person_pronouns("You'll find the perfect gift for your home.") == ["you", "your"]
+    assert _find_person_pronouns("Order today and we'll ship fast.") == ["we"]
+    assert _find_person_pronouns("Give us a call.") == ["us"]
+    # 第三人称写法不应命中
+    assert _find_person_pronouns("The catalog spans cork and rubber mats.") == []
+    # US 是国家缩写，不是人称代词
+    assert _find_person_pronouns("Orders ship from the US within two days.") == []
+    assert _find_person_pronouns("") == []
+    assert _find_person_pronouns(None) == []
+
+
+def _info(**kw):
+    base = {"domain": "example.com", "theme": "plumbing parts", "title": "Plumbing Supplies",
+            "description": "Faucets and shut-off valves make up the plumbing core range.",
+            "address": "1 Main St, Norman, OK 73069", "keywords": ["plumbing supplies"]}
+    base.update(kw)
+    return base
+
+
+def test_quality_retry_skipped_when_clean(monkeypatch):
+    """文案合格（无人称、无模板开头）时不额外调用 LLM"""
+    calls = []
+    monkeypatch.setattr(site_info_generator, "_call_site_info_llm",
+                        lambda *a, **k: calls.append(1) or _info())
+    logs = []
+    info = _info()
+    out = _regenerate_on_quality_issues(
+        info, {}, "k", "prompt", {"temperature": 0.8},
+        lambda m, lvl="info": logs.append(m), "Site")
+    assert out is info and calls == [] and logs == []
+
+
+def test_quality_retry_replaces_bad_copy(monkeypatch):
+    """命中原人称时重写一次，并采用重写后的第三人称结果"""
+    good = _info(description="Rosary beads and brass censers fill the devotional range.")
+    def fake_llm(config, api_key, prompt, log_fn=None, **kw):
+        assert _QUALITY_RETRY_HINT in prompt           # 带上针对性提示
+        return good
+    monkeypatch.setattr(site_info_generator, "_call_site_info_llm", fake_llm)
+    logs = []
+    bad = _info(description="We carry rosary beads and you'll love our brass censers.")
+    out = _regenerate_on_quality_issues(
+        bad, {}, "k", "prompt", {"temperature": 0.8},
+        lambda m, lvl="info": logs.append(m), "Site")
+    assert out is good
+    assert any("未通过校验" in m for m in logs)
+    assert any("文案已修正" in m for m in logs)
+
+
+def test_template_opening_triggers_retry(monkeypatch):
+    """描述以「The catalog ...」等商店词开头时判为模板化并重写"""
+    good = _info(description="Cork and rubber yoga mats anchor the studio range.")
+    monkeypatch.setattr(site_info_generator, "_call_site_info_llm",
+                        lambda *a, **k: good)
+    logs = []
+    bad = _info(description="The catalog supplies yoga mats, blocks and straps.")
+    out = _regenerate_on_quality_issues(
+        bad, {}, "k", "prompt", {"temperature": 0.8},
+        lambda m, lvl="info": logs.append(m), "Site")
+    assert out is good
+    assert any("模板化开头" in m for m in logs)
+
+
+def test_find_template_opening():
+    """模板化开头的识别规则"""
+    assert _find_template_opening("The catalog supplies yoga mats.") == "The catalog"
+    assert _find_template_opening("This store stocks faucets.") == "This store"
+    assert _find_template_opening("The plumbing catalog spans valves.") == "The plumbing catalog"
+    assert _find_template_opening("Our selection covers brass fittings.") == "Our selection"
+    # 以商品/材质/用途开头都合格
+    assert _find_template_opening("Cork yoga mats anchor the range.") == ""
+    assert _find_template_opening("Brass fittings and PEX tubing cover repairs.") == ""
+    assert _find_template_opening("") == ""
+
+
+def test_find_quality_issues_reports_both_kinds():
+    issues = _find_quality_issues(_info(description="We supply mats."))
+    assert len(issues) == 1 and "第一/第二人称" in issues[0]
+    issues = _find_quality_issues(_info(description="The catalog supplies mats."))
+    assert len(issues) == 1 and "模板化开头" in issues[0]
+    assert _find_quality_issues(_info()) == []
+
+
+def test_quality_retry_keeps_original_when_still_bad(monkeypatch):
+    """重试后仍含人称时沿用原结果（不无限重试）"""
+    monkeypatch.setattr(site_info_generator, "_call_site_info_llm",
+                        lambda *a, **k: _info(description="We still write like this."))
+    logs = []
+    bad = _info(description="We carry rosary beads.")
+    out = _regenerate_on_quality_issues(
+        bad, {}, "k", "prompt", {"temperature": 0.8},
+        lambda m, lvl="info": logs.append(m), "Site")
+    assert out is bad
+    assert any("重试后仍未通过" in m for m in logs)
+
+
+def test_quality_retry_survives_llm_failure(monkeypatch):
+    """重试调用抛异常时沿用原结果，不中断整个生成流程"""
+    def boom(*a, **k):
+        raise RuntimeError("api down")
+    monkeypatch.setattr(site_info_generator, "_call_site_info_llm", boom)
+    logs = []
+    bad = _info(description="We carry rosary beads.")
+    out = _regenerate_on_quality_issues(
+        bad, {}, "k", "prompt", {"temperature": 0.8},
+        lambda m, lvl="info": logs.append(m), "Site")
+    assert out is bad
+    assert any("质量重试失败" in m for m in logs)

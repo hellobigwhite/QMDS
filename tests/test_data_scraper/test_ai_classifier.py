@@ -208,6 +208,19 @@ class TestBuildPrompt:
         prompt = build_prompt("T", "D", "N", "S", "K", homepage_content="live content")
         assert "live content" in prompt
 
+    def test_prompt_has_religious_jewelry_rules(self):
+        """宗教珠宝归宗教类目；普通时尚珠宝不被拉进宗教类目（反向保护）"""
+        prompt = build_prompt("T", "D", "N", "S", "K")
+        # 子类目清单里的指引
+        assert "religious jewelry" in prompt
+        assert "cross necklaces" in prompt
+        assert 'use "Worship Items"' in prompt
+        # 正向规则：宗教珠宝即使戴在身上/贵金属也算宗教类目
+        assert 'Do NOT classify them as Apparel & Accessories > Jewelry' in prompt
+        # 反向规则：普通时尚珠宝必须留在 Apparel & Accessories
+        assert "MUST stay in Apparel & Accessories > Jewelry" in prompt
+        assert "not from a single product name" in prompt
+
     def test_prompt_with_collection_titles(self):
         prompt = build_prompt("T", "D", "N", "S", "K", collection_titles=["Coll1", "Coll2"])
         assert "Coll1" in prompt

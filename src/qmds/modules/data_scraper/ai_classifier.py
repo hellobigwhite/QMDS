@@ -694,12 +694,15 @@ Categories to choose from (primary > allowed subcategories). The subcategory MUS
 19. Vehicles & Parts > Car Parts, Motorcycle Parts, Auto Accessories, Tires
 20. Mature > Adult Toys, Lingerie, Adult Content, Adult Novelties, Adult Gifts
 21. Religious & Ceremonial > Incense & Candles, Ritual Supplies, Worship Items, Ceremonial Objects, Religious Texts
+    (religious jewelry - cross necklaces, rosary bracelets, saint medals, bible verse rings, crucifixes - belongs to THIS category, use "Worship Items")
 
 IMPORTANT classification rules:
 - The primary category MUST be one of the 21 specific categories listed above. Do NOT invent categories.
 - First, determine if the store is a COMPREHENSIVE store (sells MULTIPLE unrelated categories, e.g. both electronics and clothing). If so, set category to "综合站" and list subcategories as an array.
 - For a NON-comprehensive (specialty) store: choose the single best-matching primary category, and choose exactly ONE subcategory from the allowed list for that category. The subcategory MUST be copied VERBATIM from the list (including spaces, ampersands, and capitalization). Do NOT invent, translate, split, merge, or rephrase subcategories. Do NOT return multiple subcategories for a specialty store.
 - If none of the listed subcategories fits, use "Other" as the subcategory.
+- Religious & devotional goods (cross necklaces, rosary bracelets, saint medals, prayer beads, crucifixes, bibles, hymnals, communion ware, incense burners, church supplies) belong to "Religious & Ceremonial" with subcategory "Worship Items" (or the closest allowed subcategory), EVEN THOUGH they are worn as jewelry or made of gold/silver. Do NOT classify them as Apparel & Accessories > Jewelry.
+- Conversely, ordinary fashion jewelry with no religious character (plain gold necklaces, diamond rings, gemstone bracelets, watches) MUST stay in Apparel & Accessories > Jewelry. Only move a store into Religious & Ceremonial when the religious character is clear from the store itself, not from a single product name.
 
 ALSO check if this store belongs to a "black-five" (high-risk/prohibited) category:
 - Weapons/Guns/Ammunition: firearms, ammunition, tactical gear, self-defense weapons

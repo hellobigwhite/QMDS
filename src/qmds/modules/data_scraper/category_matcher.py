@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Optional
 from functools import lru_cache
 
+from qmds.config.categories import match_category_extra_phrases
 from qmds.utils.logger import get_logger
 
 log = get_logger("category_matcher")
@@ -72,6 +73,10 @@ def match_title(category: str, title: str) -> bool:
     匹配规则：
     1. 完全匹配：title 在分类名称集合中
     2. 单词匹配：title 和分类名称有相同的单词（长度>=3，排除通用词）
+    3. 补充关键词短语匹配：taxonomy 未收录但业内明确属于该类目的商品，
+       如宗教类目的十字架项链/念珠/圣牌（见
+       config.categories.CATEGORY_EXTRA_PHRASES）。短语级匹配保证通用词
+       （necklace 等）不会单独把标题判进该类目。
     """
     if not title:
         return False
@@ -89,20 +94,19 @@ def match_title(category: str, title: str) -> bool:
     title_words = set(title_lower.split())
     # 过滤掉过短和通用词
     title_words = {w for w in title_words if len(w) >= 3 and w not in excluded_words}
-    
-    if not title_words:
-        return False
-    
-    for name in names:
-        # 分类名也要拆分为单词
-        name_words = set(name.split())
-        name_words = {w for w in name_words if len(w) >= 3 and w not in excluded_words}
-        
-        if not name_words:
-            continue
-        
-        # 检查是否有交集（单词级别匹配）
-        if title_words & name_words:
-            return True
-    
-    return False
+
+    if title_words:
+        for name in names:
+            # 分类名也要拆分为单词
+            name_words = set(name.split())
+            name_words = {w for w in name_words if len(w) >= 3 and w not in excluded_words}
+
+            if not name_words:
+                continue
+
+            # 检查是否有交集（单词级别匹配）
+            if title_words & name_words:
+                return True
+
+    # 3. 补充关键词短语匹配（taxonomy 之外，如宗教珠宝）
+    return match_category_extra_phrases(category, title_lower)
