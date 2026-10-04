@@ -39,6 +39,10 @@ CRAWL_STATUS_UNCRAWLED = "uncrawled"    # 未爬取
 CRAWL_STATUS_CRAWLED = "crawled"        # 已爬取
 CRAWL_STATUS_FAILED = "crawl_failed"    # 爬取失败
 
+# filtered 记录的人工审核状态（手动筛选精准类目：逐个浏览网站后的决策标记）
+REVIEW_STATUS_PENDING = "pending"   # 未审核（默认；老数据无该字段同样视为未审核）
+REVIEW_STATUS_KEPT = "kept"         # 人工浏览后确认保留
+
 # filtered_failed 集合的过滤原因枚举
 FILTER_FAIL_REASON_NON_ENGLISH = "non_english"            # 非英文站
 FILTER_FAIL_REASON_BLACK_FIVE = "black_five"              # 黑五类
@@ -370,6 +374,8 @@ class MongoDBClient:
                 counts["uncrawled"] = col.count_documents({"crawl_status": CRAWL_STATUS_UNCRAWLED})
                 counts["crawled"] = col.count_documents({"crawl_status": CRAWL_STATUS_CRAWLED})
                 counts["crawl_failed"] = col.count_documents({"crawl_status": CRAWL_STATUS_FAILED})
+                # 人工审核进度（手动筛选精准类目：逐个浏览后的保留标记）
+                counts["kept"] = col.count_documents({"review_status": REVIEW_STATUS_KEPT})
                 total = col.count_documents({})
                 self._counters_col().update_one(
                     {"_id": prefix},
@@ -1409,7 +1415,8 @@ class MongoDBClient:
             }},
         )
 
-    def get_filtered_stores(self, category: str, limit: int = 100, skip: int = 0, subcategory: str = "") -> list[dict]:
+    def get_filtered_stores(self, category: str, limit: int = 100, skip: int = 0, subcategory: str = "",
+                            review_status: str = "") -> list[dict]:
         """获取指定分类的 filtered 店铺数据（未爬取的）
 
         Args:
@@ -1417,12 +1424,15 @@ class MongoDBClient:
             limit: 返回记录数限制
             skip: 跳过记录数（分页用）
             subcategory: 二级分类名称（空字符串归入 "other"）
+            review_status: 人工审核状态筛选（"" 全部 / "pending" 未审核 / "kept" 已保留）
 
         Returns:
             店铺数据列表
         """
         col = self.filtered_col(category, subcategory)
-        docs = col.find({"crawl_status": CRAWL_STATUS_UNCRAWLED}).sort("created_at", -1).skip(skip).limit(limit)
+        query = {"crawl_status": CRAWL_STATUS_UNCRAWLED}
+        query.update(self._review_status_query(review_status))
+        docs = col.find(query).sort("created_at", -1).skip(skip).limit(limit)
         return list(docs)
 
     def get_filtered_count(self, category: str, subcategory: str = "") -> int:
@@ -1430,6 +1440,185 @@ class MongoDBClient:
         prefix = make_collection_prefix(category, subcategory)
         doc = self._counters_col().find_one({"_id": prefix}, {"counts.uncrawled": 1, "_id": 0})
         return (doc.get("counts", {}) or {}).get("uncrawled", 0) if doc else 0
+
+    # ── 人工审核（手动筛选精准类目：逐个浏览网站后决策） ──────────
+
+    @staticmethod
+    def _review_status_query(review_status: str = "") -> dict:
+        """构造人工审核状态查询条件（老数据无 review_status 字段同样视为未审核）"""
+        if review_status == REVIEW_STATUS_KEPT:
+            return {"review_status": REVIEW_STATUS_KEPT}
+        if review_status == REVIEW_STATUS_PENDING:
+            return {"review_status": {"$ne": REVIEW_STATUS_KEPT}}
+        return {}
+
+    def get_filtered_review_queue(self, category: str, subcategory: str = "",
+                                  review_status: str = REVIEW_STATUS_PENDING,
+                                  limit: int = 500, skip: int = 0) -> list[dict]:
+        """获取人工审核队列（按域名 + collection 排序，同一店铺的链接相邻便于逐个浏览）
+
+        Args:
+            category: 一级分类名称
+            subcategory: 二级分类名称（空字符串归入 "other"）
+            review_status: "" 全部 / "pending" 未审核（默认）/ "kept" 已保留
+            limit: 队列长度上限
+            skip: 跳过记录数
+
+        Returns:
+            记录列表（含 _id / domain / url / collection_title / collection_handle / review_status）
+        """
+        col = self.filtered_col(category, subcategory)
+        query = {"crawl_status": CRAWL_STATUS_UNCRAWLED}
+        query.update(self._review_status_query(review_status))
+        docs = col.find(query).sort([("domain", ASCENDING), ("collection_handle", ASCENDING)]) \
+            .skip(skip).limit(limit)
+        return list(docs)
+
+    def get_filtered_review_counts(self, category: str, subcategory: str = "") -> dict:
+        """统计人工审核进度（口径：crawl_status=uncrawled）
+
+        Returns:
+            {"total": n, "kept": n, "pending": n}
+        """
+        col = self.filtered_col(category, subcategory)
+        base = {"crawl_status": CRAWL_STATUS_UNCRAWLED}
+        total = col.count_documents(base)
+        kept = col.count_documents({**base, "review_status": REVIEW_STATUS_KEPT})
+        return {"total": total, "kept": kept, "pending": total - kept}
+
+    def mark_filtered_review(self, category: str, subcategory: str, doc_ids: list,
+                             review_status: str = REVIEW_STATUS_KEPT) -> dict:
+        """批量标记人工审核结果（保留 / 取消保留），同步 _counters.kept
+
+        Args:
+            category: 一级分类名称
+            subcategory: 二级分类名称（空字符串归入 "other"）
+            doc_ids: 文档 _id 字符串列表
+            review_status: REVIEW_STATUS_KEPT 保留 / REVIEW_STATUS_PENDING 取消保留
+
+        Returns:
+            {"marked": 实际变更条数, "unchanged": 状态未变的条数}
+        """
+        from bson import ObjectId
+
+        status = REVIEW_STATUS_KEPT if review_status == REVIEW_STATUS_KEPT else REVIEW_STATUS_PENDING
+        col = self.filtered_col(category, subcategory)
+        object_ids = []
+        for doc_id in doc_ids:
+            try:
+                object_ids.append(ObjectId(doc_id))
+            except Exception:
+                continue
+        if not object_ids:
+            return {"marked": 0, "unchanged": 0}
+
+        docs = list(col.find({"_id": {"$in": object_ids}},
+                             {"review_status": 1, "subcategory": 1}))
+        ts = datetime.utcnow().isoformat()
+        changed_ids = []
+        transitions: dict[str, int] = {}
+        for doc in docs:
+            old_status = doc.get("review_status") or REVIEW_STATUS_PENDING
+            if old_status == status:
+                continue
+            changed_ids.append(doc["_id"])
+            prefix = make_collection_prefix(category, doc.get("subcategory") or subcategory)
+            delta = 1 if status == REVIEW_STATUS_KEPT else -1
+            transitions[prefix] = transitions.get(prefix, 0) + delta
+
+        if changed_ids:
+            if status == REVIEW_STATUS_KEPT:
+                update = {"$set": {"review_status": status, "review_time": ts, "updated_at": ts}}
+            else:
+                update = {"$set": {"updated_at": ts}, "$unset": {"review_status": "", "review_time": ""}}
+            col.update_many({"_id": {"$in": changed_ids}}, update)
+            for prefix, delta in transitions.items():
+                if delta:
+                    self._inc_counters(prefix, {"kept": delta})
+
+        return {"marked": len(changed_ids), "unchanged": len(docs) - len(changed_ids)}
+
+    def move_filtered_records(self, category: str, doc_ids: list, subcategory: str,
+                              target_category: str, target_subcategory: str) -> dict:
+        """把 filtered 记录迁移到目标集合（支持跨一级/二级分类）
+
+        规则：目标集合写入（同 domain+collection_handle 已存在则合并覆盖），
+        源集合删除，两侧 _counters 同步修正（total / filtered / crawl_status / kept）。
+
+        Args:
+            category: 源一级分类名称
+            doc_ids: 文档 _id 字符串列表
+            subcategory: 源二级分类名称（空字符串归入 "other"）
+            target_category: 目标一级分类名称
+            target_subcategory: 目标二级分类名称（空字符串归入 "other"）
+
+        Returns:
+            {"moved": 新增到目标集合的条数, "merged": 合并进目标已有记录的条数,
+             "errors": [失败原因, ...]}
+        """
+        from bson import ObjectId
+
+        target_sub = normalize_subcategory(target_subcategory)
+        source_sub = normalize_subcategory(subcategory)
+        if target_category == category and target_sub == source_sub:
+            return {"moved": 0, "merged": 0, "errors": ["目标类目与当前类目相同，未执行迁移"]}
+
+        src_col = self.filtered_col(category, subcategory)
+        tgt_col = self.filtered_col(target_category, target_sub)
+        self.ensure_indexes(target_category, target_sub)
+        tgt_prefix = make_collection_prefix(target_category, target_sub)
+        ts = datetime.utcnow().isoformat()
+
+        moved = 0
+        merged = 0
+        errors: list[str] = []
+        for doc_id in doc_ids:
+            try:
+                oid = ObjectId(doc_id)
+            except Exception:
+                errors.append(f"非法记录 ID: {doc_id}")
+                continue
+            doc = src_col.find_one({"_id": oid})
+            if not doc:
+                errors.append(f"记录不存在: {doc_id}")
+                continue
+
+            src_prefix = make_collection_prefix(category, doc.get("subcategory") or subcategory)
+            crawl_status = doc.get("crawl_status", CRAWL_STATUS_UNCRAWLED)
+            new_doc = {k: v for k, v in doc.items() if k != "_id"}
+            new_doc.update({
+                "category": target_category,
+                "subcategory": target_sub,
+                "moved_from": src_prefix,
+                "moved_at": ts,
+                "updated_at": ts,
+            })
+
+            result = tgt_col.update_one(
+                {"domain": new_doc.get("domain", ""),
+                 "collection_handle": new_doc.get("collection_handle", "")},
+                {"$set": new_doc},
+                upsert=True,
+            )
+            if result.upserted_id:
+                self._set_counter_type(tgt_prefix, "filtered", target_category, target_sub)
+                incs = {"filtered": 1, crawl_status: 1}
+                if new_doc.get("review_status") == REVIEW_STATUS_KEPT:
+                    incs["kept"] = 1
+                self._inc_counters(tgt_prefix, incs, doc_delta=1)
+                moved += 1
+            else:
+                merged += 1
+
+            if src_col.delete_one({"_id": oid}).deleted_count:
+                decs = {"filtered": -1, crawl_status: -1}
+                if doc.get("review_status") == REVIEW_STATUS_KEPT:
+                    decs["kept"] = -1
+                self._inc_counters(src_prefix, decs, doc_delta=-1)
+
+        log.info(f"filtered 迁移 [{make_collection_prefix(category, source_sub)} -> {tgt_prefix}]: "
+                 f"新增 {moved}, 合并 {merged}, 失败 {len(errors)}")
+        return {"moved": moved, "merged": merged, "errors": errors}
 
     # ── 综合站集合（comprehensive_stores） ─────────────────
 
@@ -1631,12 +1820,16 @@ class MongoDBClient:
         """
         from bson import ObjectId
         col = self.filtered_col(category, subcategory)
-        doc = col.find_one({"_id": ObjectId(doc_id)}, {"crawl_status": 1, "subcategory": 1})
+        doc = col.find_one({"_id": ObjectId(doc_id)},
+                           {"crawl_status": 1, "subcategory": 1, "review_status": 1})
         result = col.delete_one({"_id": ObjectId(doc_id)})
         if result.deleted_count > 0 and doc:
             prefix = make_collection_prefix(category, doc.get("subcategory", "other"))
             crawl_status = doc.get("crawl_status", CRAWL_STATUS_UNCRAWLED)
-            self._inc_counters(prefix, {"filtered": -1, crawl_status: -1}, doc_delta=-1)
+            incs = {"filtered": -1, crawl_status: -1}
+            if doc.get("review_status") == REVIEW_STATUS_KEPT:
+                incs["kept"] = -1
+            self._inc_counters(prefix, incs, doc_delta=-1)
         return result.deleted_count > 0
 
     def delete_filtered_many(self, category: str, doc_ids: list[str], subcategory: str = "") -> int:
@@ -1653,7 +1846,8 @@ class MongoDBClient:
         from bson import ObjectId
         col = self.filtered_col(category, subcategory)
         object_ids = [ObjectId(id) for id in doc_ids]
-        docs = list(col.find({"_id": {"$in": object_ids}}, {"crawl_status": 1, "subcategory": 1}))
+        docs = list(col.find({"_id": {"$in": object_ids}},
+                             {"crawl_status": 1, "subcategory": 1, "review_status": 1}))
         result = col.delete_many({"_id": {"$in": object_ids}})
         if result.deleted_count > 0:
             sub_counts: dict[str, dict] = {}
@@ -1662,9 +1856,11 @@ class MongoDBClient:
                 prefix = make_collection_prefix(category, sub)
                 if prefix not in sub_counts:
                     sub_counts[prefix] = {"filtered": 0, "uncrawled": 0, "crawled": 0,
-                                          "crawl_failed": 0, "_deleted": 0}
+                                          "crawl_failed": 0, "kept": 0, "_deleted": 0}
                 sub_counts[prefix]["filtered"] -= 1
                 sub_counts[prefix][doc.get("crawl_status", CRAWL_STATUS_UNCRAWLED)] -= 1
+                if doc.get("review_status") == REVIEW_STATUS_KEPT:
+                    sub_counts[prefix]["kept"] -= 1
                 sub_counts[prefix]["_deleted"] += 1
             for prefix, incs in sub_counts.items():
                 doc_delta = incs.pop("_deleted")

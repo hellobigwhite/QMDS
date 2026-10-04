@@ -193,7 +193,7 @@ def collect_site_tables(folder) -> list[Path]:
 
     审核应用后网站数据表名为 data_main{分类}_part{N}_*.xlsx（主数据）与
     data_{分类}_supp_part{N}_*.xlsx（补充数据）；其他文件（分类统计.xlsx、
-    网站信息.xlsx 等）不上传。
+    域名统计.xlsx、网站信息.xlsx 等）不上传。
 
     排序：主数据表（data_main 前缀）必须排在补充数据之前 —— ERP 站群
     系统要求先上传主数据建立站点基础，再上传补充数据（否则服务器返回

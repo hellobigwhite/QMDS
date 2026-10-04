@@ -14,6 +14,10 @@
    - Sheet「汇总」：文件夹、统计时间、表格数、产品总数、分类总数等概要。
 
 写入的 分类统计.xlsx 由 site_info_generator 读取，用于 AI 生成网站信息。
+
+此外同一次扫描还会生成 域名统计.xlsx（generate_domain_stats）：统计该网站
+下每个「原站域名」有多少商品（含主数据/补充数据拆分与占比），用于核对
+各域名在网站间的分布。两份统计表都会在扫描时被跳过，不会被当成数据表。
 """
 
 import os
@@ -38,6 +42,11 @@ LEVEL_COLUMNS = ("一级分类", "二级分类", "三级分类")
 
 # 分类统计表的数据列
 STATS_COLUMNS = ("分类", *LEVEL_COLUMNS, "产品数", "占比(%)")
+
+# 原站域名统计表文件名与数据列（同一数据分配流程里与分类统计表一起生成）
+DOMAIN_STATS_FILE_NAME = "域名统计.xlsx"
+DOMAIN_STATS_COLUMNS = ("原站域名", "商品数", "占比(%)", "主数据条数", "补充数据条数",
+                        "涉及分类数")
 
 # AI 生成网站信息写入的结果表格（批量任务汇总表/单网站表，扫描时一并跳过）
 INFO_FILE_NAME = "网站信息.xlsx"
@@ -65,7 +74,8 @@ def _is_scannable(path: Path) -> bool:
     """可统计的表格：.xlsx、非 Excel 临时锁文件、非结果文件（统计表/网站信息表）"""
     return (path.suffix.lower() == ".xlsx"
             and not path.name.startswith("~$")
-            and path.name not in (STATS_FILE_NAME, INFO_FILE_NAME))
+            and path.name not in (STATS_FILE_NAME, DOMAIN_STATS_FILE_NAME,
+                                  INFO_FILE_NAME))
 
 
 def _rglob_xlsx(folder: Path) -> list[Path]:
@@ -252,6 +262,206 @@ def _safe_int(v, default: int = 0) -> int:
         return int(f)
     except (TypeError, ValueError):
         return default
+
+
+# ── 原站域名统计（每个网站下各原站域名有多少商品） ─────────────
+
+def count_file_domains(filepath: Path):
+    """流式统计单个表格的原站域名列
+
+    返回 (域名计数 Counter, 总行数, 空域名行数, {域名: set(分类)})；
+    表格没有「原站域名」列时抛 ValueError（调用方决定跳过）。
+    """
+    from openpyxl import load_workbook
+
+    from qmds.modules.web.services.data_allocator import (
+        DOMAIN_COLUMN,
+        detect_category_column,
+    )
+
+    wb = load_workbook(winpath.long_path(filepath), read_only=True, data_only=True)
+    try:
+        ws = wb.worksheets[0]
+        rows = ws.iter_rows(values_only=True)
+        header = next(rows, None)
+        if not header:
+            raise ValueError("表格为空或格式不正确")
+
+        header_list = [str(c) if c is not None else "" for c in header]
+        if DOMAIN_COLUMN not in header_list:
+            raise ValueError(f"表格中未找到「{DOMAIN_COLUMN}」列")
+
+        dom_idx = header_list.index(DOMAIN_COLUMN)
+        cat_col = detect_category_column(header)
+        cat_idx = list(header).index(cat_col) if cat_col is not None else None
+
+        counter: Counter = Counter()
+        dom_cats: dict[str, set] = {}
+        total = 0
+        empty = 0
+        for row in rows:
+            if row is None:
+                continue
+            if all(v is None or str(v).strip() == "" for v in row):
+                continue  # 跳过整行空行
+            total += 1
+            val = row[dom_idx] if dom_idx < len(row) else None
+            sval = str(val).strip() if val is not None else ""
+            if not sval:
+                empty += 1
+                continue
+            counter[sval] += 1
+            if cat_idx is not None:
+                cval = row[cat_idx] if cat_idx < len(row) else None
+                scat = str(cval).strip() if cval is not None else ""
+                if scat:
+                    dom_cats.setdefault(sval, set()).add(scat)
+        return counter, total, empty, dom_cats
+    finally:
+        wb.close()
+
+
+def aggregate_folder_domains(files, log_fn=None, stop_check=None) -> dict:
+    """聚合多个表格的原站域名统计（主数据表按文件名 main 前缀区分）
+
+    返回:
+        {
+            "counts": Counter{域名: 商品数}（跨表累加，不含空域名）,
+            "main_counts"/"supp_counts": Counter{域名: 条数},
+            "dom_categories": {域名: set(分类)},
+            "total_rows", "empty_domains",
+            "files": [(文件名, 行数), ...], "skipped": [(文件名, 原因), ...],
+        }
+    """
+    counts: Counter = Counter()
+    main_counts: Counter = Counter()
+    supp_counts: Counter = Counter()
+    dom_categories: dict[str, set] = {}
+    total_rows = 0
+    empty_domains = 0
+    file_rows: list[tuple[str, int]] = []
+    skipped: list[tuple[str, str]] = []
+
+    for fp in files:
+        if stop_check and stop_check():
+            raise InterruptedError("任务被用户停止")
+        fp = Path(fp)
+        try:
+            counter, total, empty, dom_cats = count_file_domains(fp)
+        except Exception as e:  # 单个表格失败不影响整体
+            skipped.append((fp.name, str(e)))
+            if log_fn:
+                log_fn(f"跳过域名统计 {fp.name}: {e}", "warning")
+            continue
+        counts.update(counter)
+        # 主数据表命名为 main{分类}.xlsx；补充数据表为 {分类}_supp.xlsx
+        # （拆表后为 ..._supp_part1_XX.xlsx）—— 用文件名区分主/补充
+        is_main = (fp.name.startswith("main")
+                   and "_supp" not in fp.name.lower())
+        (main_counts if is_main else supp_counts).update(counter)
+        for dom, cats in dom_cats.items():
+            dom_categories.setdefault(dom, set()).update(cats)
+        total_rows += total
+        empty_domains += empty
+        file_rows.append((fp.name, total))
+        if log_fn:
+            log_fn(f"已统计域名 {fp.name}: {total} 行，{len(counter)} 个原站域名")
+
+    return {
+        "counts": counts,
+        "main_counts": main_counts,
+        "supp_counts": supp_counts,
+        "dom_categories": dom_categories,
+        "total_rows": total_rows,
+        "empty_domains": empty_domains,
+        "files": file_rows,
+        "skipped": skipped,
+    }
+
+
+def build_domain_rows(agg: dict) -> list[dict]:
+    """域名计数 -> 统计表行（按商品数降序，含占比与主/补充拆分）"""
+    counts = agg["counts"]
+    main_counts = agg.get("main_counts") or {}
+    supp_counts = agg.get("supp_counts") or {}
+    dom_categories = agg.get("dom_categories") or {}
+    classified = sum(counts.values())
+    rows = []
+    for dom, cnt in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
+        rows.append({
+            "原站域名": dom,
+            "商品数": int(cnt),
+            "占比(%)": round(cnt / classified * 100, 2) if classified else 0.0,
+            "主数据条数": int(main_counts.get(dom, 0)),
+            "补充数据条数": int(supp_counts.get(dom, 0)),
+            "涉及分类数": len(dom_categories.get(dom, ())),
+        })
+    return rows
+
+
+def write_domain_stats_excel(out_path: Path, agg: dict, folder_label: str = "") -> Path:
+    """把域名统计写入 域名统计.xlsx（两个 Sheet：域名统计 + 汇总）"""
+    import pandas as pd
+
+    out_path = Path(out_path)
+    counts = agg["counts"]
+    rows = build_domain_rows(agg)
+    top_dom, top_cnt = (max(counts.items(), key=lambda kv: kv[1]) if counts else ("", 0))
+
+    df_stats = pd.DataFrame(rows, columns=list(DOMAIN_STATS_COLUMNS))
+    df_summary = pd.DataFrame([
+        ("数据文件夹", folder_label or out_path.parent.name),
+        ("统计时间", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        ("数据表格数", len(agg.get("files", []))),
+        ("跳过表格数", len(agg.get("skipped", []))),
+        ("商品总数", agg.get("total_rows", 0)),
+        ("有域名商品数", sum(counts.values())),
+        ("无域名商品数", agg.get("empty_domains", 0)),
+        ("原站域名总数", len(counts)),
+        ("商品数最多的域名", f"{top_dom}（{top_cnt} 条）" if top_dom else ""),
+    ], columns=["指标", "值"])
+
+    with pd.ExcelWriter(winpath.long_path(out_path), engine="openpyxl") as writer:
+        df_stats.to_excel(writer, sheet_name="域名统计", index=False)
+        df_summary.to_excel(writer, sheet_name="汇总", index=False)
+        ws = writer.book["域名统计"]
+        for i, col in enumerate(DOMAIN_STATS_COLUMNS, start=1):
+            width = max(len(str(col)) * 2 + 2, 14)
+            ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = width
+    return out_path
+
+
+def generate_domain_stats(folder, log_fn=None, stop_check=None) -> dict | None:
+    """统计一个网站数据文件夹下每个原站域名的商品数并写出 域名统计.xlsx
+
+    返回 {"domains", "rows", "top", "path"}；文件夹里没有可统计的表格或
+    所有表格都没有「原站域名」列时返回 None（不写文件）。
+    """
+    folder = Path(folder)
+    files = collect_stats_files(folder)
+    if not files:
+        return None
+
+    agg = aggregate_folder_domains(files, log_fn=None, stop_check=stop_check)
+    if agg["total_rows"] <= 0:
+        if log_fn:
+            log_fn(f"域名统计跳过 {folder.name}: 表格中没有「原站域名」列", "warning")
+        return None
+
+    out_path = write_domain_stats_excel(folder / DOMAIN_STATS_FILE_NAME, agg,
+                                        folder_label=folder.name)
+    counts = agg["counts"]
+    top = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
+    return {
+        "domains": len(counts),
+        "rows": agg["total_rows"],
+        "top": top,
+        "path": out_path,
+        "counts": counts,
+        "empty_domains": agg["empty_domains"],
+        "files": agg["files"],
+        "skipped": agg["skipped"],
+    }
 
 
 def read_stats_excel(path) -> dict:

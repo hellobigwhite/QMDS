@@ -22,6 +22,9 @@ from qmds.modules.web.services.category_tasks import (
 from qmds.modules.web.services.data_allocator import (
     MAX_API_CATEGORIES,
     count_excel_categories,
+    count_excel_categories_with_domains,
+    plan_allocation,
+    plan_allocation_to_sites,
     resolve_export_file,
     run_allocation_task,
 )
@@ -765,6 +768,19 @@ def api_product_data_file_categories():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+def _form_flag(name: str, default: bool = False) -> bool:
+    """解析复选框布尔值
+
+    模板里复选框前有一个 <input type="hidden" name=... value="off">，勾选时浏览器
+    会同时提交 off 与 on（隐藏字段在前），因此不能用 request.form.get 取第一个值：
+    只要提交值里出现 "on" 即为勾选；字段完全缺失时用 default。
+    """
+    values = request.form.getlist(name)
+    if not values:
+        return default
+    return "on" in values
+
+
 def _parse_portion_size(raw, default, min_value=1):
     """解析数值参数（非法值回退默认值）"""
     try:
@@ -789,17 +805,22 @@ def product_data_allocate():
     # 分配后批量拆表选项（移植自 BB 批量拆表工具）
     # 主数据表格不设上限；补充数据按 supp_rows_per_file 拆分（默认 5000）
     split_options = {
-        "enabled": request.form.get("split_enabled") == "on",
+        "enabled": _form_flag("split_enabled", default=False),
         "supp_rows_per_file": _parse_portion_size(request.form.get("supp_rows_per_file"),
                                                   5000),
         "suffix_mode": request.form.get("split_suffix_mode", "none"),
         "custom_suffix": (request.form.get("split_custom_suffix") or "").strip(),
-        "remove_source": request.form.get("split_remove_source") != "off",
+        # 拆分完成后删除分配产生的 main/supp 表（默认勾选；在统计之前删除，
+        # 避免统计把源表与分卷重复计数）
+        "remove_source": _form_flag("split_remove_source", default=True),
     }
     # 原站域名约束：每个主分类分到的补充数据中同一原站域名最多
     # max_domain_count 条（默认 5000；0 表示不限制）
     max_domain_count = _parse_portion_size(request.form.get("max_domain_count"),
                                            5000, min_value=0)
+    # 剩余数据均分到各网站（网页端默认勾选）：份数多于主分类个数时同一网站
+    # 获得多份补充表，不再产生未绑定主分类的额外补充（extra）
+    distribute_to_sites = _form_flag("distribute_sites", default=True)
     if split_options["suffix_mode"] not in ("none", "custom", "part"):
         split_options["suffix_mode"] = "none"
     if split_options["suffix_mode"] != "custom":
@@ -828,15 +849,118 @@ def product_data_allocate():
         task_id,
         lambda: run_allocation_task(task_id, file_path, main_categories,
                                     min_size, max_size, split_threshold,
-                                    split_options, max_domain_count))
+                                    split_options, max_domain_count,
+                                    distribute_to_sites))
     msg = f"数据分配任务已启动: {filename}（{len(main_categories)} 个主分类）"
     if split_options["enabled"]:
         msg += f"，分配完成后将批量拆表（主数据不设上限，补充数据每份 {split_options['supp_rows_per_file']} 条）"
     if max_domain_count and max_domain_count > 0:
-        msg += f"，补充数据中同一原站域名每份最多 {max_domain_count} 条"
-    msg += "，拆表后自动统计每个网站数据的分类结构（分类统计.xlsx）"
+        scope = "每个网站（累计所有补充表）" if distribute_to_sites else "每份补充表"
+        msg += f"，{scope}中同一原站域名最多 {max_domain_count} 条"
+    if distribute_to_sites:
+        msg += "，剩余数据均分到各网站（不生成额外补充）"
+    msg += "，拆表后自动统计每个网站的分类结构（分类统计.xlsx）与原站域名商品数（域名统计.xlsx）"
+
     flash(msg, "info")
     return redirect(url_for("product_data.product_data_export"))
+
+
+
+
+@bp.route("/product-data/allocate-preview", methods=["POST"])
+def product_data_allocate_preview():
+    """数据分配预测：按当前参数返回每个网站将拿到的数据量（只读，不写文件）
+
+    用于提交前查看预测的分配结果（每站主数据/补充数据/份数/合计、同域名
+    上限、是否会生成额外补充），以便调整参数避免生成 extra。
+    """
+    folder = request.form.get("folder", "").strip()
+    filename = request.form.get("file", "").strip()
+    main_categories = [c for c in request.form.getlist("main_categories") if c.strip()]
+    min_size = _parse_portion_size(request.form.get("min_size"), 40000)
+    max_size = _parse_portion_size(request.form.get("max_size"), 50000)
+    split_threshold = _parse_portion_size(request.form.get("split_threshold"), 3000,
+                                          min_value=0)
+    max_domain_count = _parse_portion_size(request.form.get("max_domain_count"),
+                                           5000, min_value=0)
+    distribute_to_sites = _form_flag("distribute_sites", default=True)
+
+    if not folder or not filename:
+        return jsonify({"ok": False, "error": "请选择文件夹和表格文件"}), 400
+    if not main_categories:
+        return jsonify({"ok": False, "error": "请至少勾选一个主分类"}), 400
+    if max_size <= min_size:
+        return jsonify({"ok": False, "error": "每份最多条数必须大于最少条数"}), 400
+
+    try:
+        file_path = resolve_export_file(folder, filename)
+    except FileNotFoundError as e:
+        return jsonify({"ok": False, "error": f"文件不存在或已移动: {e}"}), 404
+
+    try:
+        # 流式统计（含原站域名分布），不把整表读进内存
+        col, total, cats, category_domains = count_excel_categories_with_domains(file_path)
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:
+        log.error(f"预测数据分配失败: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+    warnings: list = []
+    domain_col_present = category_domains is not None
+    if not domain_col_present:
+        if max_domain_count:
+            warnings.append("表格中未找到「原站域名」列，原站域名数量约束不生效")
+        max_domain_count = 0
+
+    category_counts = dict(cats)
+    try:
+        if distribute_to_sites:
+            plan = plan_allocation_to_sites(
+                category_counts, main_categories, min_size, max_size,
+                split_threshold, category_domains, max_domain_count)
+            sites = plan["sites"]
+            extra_portions = 0
+        else:
+            plan = plan_allocation(
+                category_counts, main_categories, min_size, max_size,
+                split_threshold, category_domains, max_domain_count)
+            portions = plan["portions"]
+            sites = []
+            for i, t in enumerate(plan["main_tables"]):
+                supp = portions[i]["total"] if i < len(portions) else 0
+                sites.append({
+                    "category": t["category"],
+                    "main_rows": t["count"],
+                    "supp_rows": supp,
+                    "supp_parts": 1 if supp else 0,
+                    "total_rows": t["count"] + supp,
+                    "domain_max_rows": {},
+                })
+            extra_portions = max(0, len(portions) - len(plan["main_tables"]))
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+    data = {
+        "distribute": distribute_to_sites,
+        "total_rows": total,
+        "category_column": col,
+        "domain_column": domain_col_present,
+        "main_category_count": len(plan["main_tables"]),
+        "remaining_total": plan["remaining_total"],
+        "file_count": plan["file_count"] if distribute_to_sites else len(plan["portions"]),
+        "target_size": plan["target_size"],
+        "extra_portions": extra_portions,
+        "sites": sites,
+        "site_total_rows": sum(s["total_rows"] for s in sites),
+        "domain_limit": plan["domain_limit"],
+        "split_categories": plan["split_categories"],
+        "warnings": warnings + list(plan["warnings"]),
+        "min_size": min_size,
+        "max_size": max_size,
+        "split_threshold": split_threshold,
+    }
+    return jsonify({"ok": True, "data": data})
 
 
 @bp.route("/product-data/site-info", methods=["POST"])

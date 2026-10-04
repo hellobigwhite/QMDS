@@ -56,6 +56,7 @@ from qmds.config.llm_models import (
     get_llm_system_message,
 )
 from qmds.modules.web.services.category_stats import (
+    DOMAIN_STATS_FILE_NAME,
     INFO_FILE_NAME,
     STATS_FILE_NAME,
     aggregate_folder_categories,
@@ -501,7 +502,9 @@ def resolve_main_category(site_folder, categories) -> str:
                     n = e.name
                     if not e.is_file() or not n.lower().endswith(".xlsx"):
                         continue
-                    if n.startswith("~$") or n in (STATS_FILE_NAME, INFO_FILE_NAME):
+                    if n.startswith("~$") or n in (STATS_FILE_NAME,
+                                                    DOMAIN_STATS_FILE_NAME,
+                                                    INFO_FILE_NAME):
                         continue
                     if n.startswith("data_"):
                         n = n[len("data_"):]

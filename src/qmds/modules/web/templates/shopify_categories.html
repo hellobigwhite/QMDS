@@ -3,7 +3,10 @@
 <div class="card" style="max-width:1200px;margin:0 auto;">
     <h2>🎯 手动筛选精准类目</h2>
     <p class="text-muted" style="margin-bottom:16px;">
-        人工手动筛选：批量添加或删除 collection URL 到 filtered 集合
+        人工手动筛选：批量添加或删除 collection URL 到 filtered 集合。<br>
+        在下方二级分类数据区可<b>批量打开选中的网站</b>边看边筛选，或进入
+        <b>🔎 逐个审核</b> 模式：每浏览一个网站后选择「保留」或「移到其他类目」，
+        系统自动打开下一个，并把决策写入审核状态（已保留 / 未审核）。
     </p>
 
     <form method="post" action="/shopify/filter-categories">
@@ -111,18 +114,55 @@
 {% if selected_subcategory %}
 <div class="card" style="max-width:1200px;margin:20px auto 0;">
     <h2>📊 {{ selected_category }} / {{ selected_subcategory }} - 筛选后的精准类目数据</h2>
-    <p class="text-muted" style="margin-bottom:16px;">
+    <p class="text-muted" style="margin-bottom:12px;">
         数据来源: <code>qmds_url_stores.{{ selected_category }}__{{ selected_subcategory }}</code> |
-        总数: <strong>{{ filtered_total }}</strong> 条
+        未爬取总数: <strong>{{ filtered_total }}</strong> 条 |
+        人工审核: 已保留 <strong>{{ review_counts.kept }}</strong> / 未审核 <strong>{{ review_counts.pending }}</strong>
     </p>
-    
+
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px;">
+        <span class="text-muted" style="font-size:13px;">审核状态筛选：</span>
+        <a class="btn btn-sm {% if not review_filter %}btn-primary{% else %}btn-secondary{% endif %}"
+           href="/shopify/filter-categories?category={{ selected_category }}&subcategory={{ selected_subcategory }}">全部 ({{ review_counts.total }})</a>
+        <a class="btn btn-sm {% if review_filter == 'pending' %}btn-primary{% else %}btn-secondary{% endif %}"
+           href="/shopify/filter-categories?category={{ selected_category }}&subcategory={{ selected_subcategory }}&review=pending">未审核 ({{ review_counts.pending }})</a>
+        <a class="btn btn-sm {% if review_filter == 'kept' %}btn-primary{% else %}btn-secondary{% endif %}"
+           href="/shopify/filter-categories?category={{ selected_category }}&subcategory={{ selected_subcategory }}&review=kept">已保留 ({{ review_counts.kept }})</a>
+        <a class="btn btn-sm btn-info" style="margin-left:auto;"
+           href="/shopify/filter-categories/review?category={{ selected_category }}&subcategory={{ selected_subcategory }}&review={{ review_filter or 'pending' }}"
+           title="逐个打开网站浏览，边看边决定保留或移动">🔎 逐个审核（批量打开网站）</a>
+    </div>
+
     {% if filtered_stores %}
-    <form method="post" action="/shopify/filter-categories?category={{ selected_category }}&subcategory={{ selected_subcategory }}" id="batchForm">
-        <input type="hidden" name="action" value="delete_selected">
+    <form method="post" action="{{ url_for('shopify.shopify_filter_batch') }}" id="batchForm">
+        <input type="hidden" name="action" id="batchAction" value="keep">
+        <input type="hidden" name="category" value="{{ selected_category }}">
         <input type="hidden" name="subcategory" value="{{ selected_subcategory }}">
-        <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center;">
-            <button type="submit" class="btn btn-danger" onclick="return confirm('确定删除选中的记录吗？')">批量删除选中</button>
-            <span class="text-muted" style="font-size:13px;">勾选后点击批量删除</span>
+        <input type="hidden" name="review" value="{{ review_filter }}">
+
+        <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <button type="button" class="btn btn-info" onclick="openSelected()">🌐 批量打开选中</button>
+            <label class="text-muted" style="font-size:13px;">每批
+                <input type="number" id="openBatch" value="10" min="1" max="{{ max_open_tabs }}" style="width:64px;">
+                个（上限 {{ max_open_tabs }}）
+            </label>
+            <button type="submit" class="btn btn-primary" data-action="keep">✅ 批量保留</button>
+            <button type="submit" class="btn btn-secondary" data-action="unkeep">↩ 取消保留</button>
+            <button type="submit" class="btn btn-danger" data-action="delete" onclick="return confirm('确定删除选中的记录吗？')">🗑 批量删除选中</button>
+            <span class="text-muted" style="font-size:13px;">勾选后执行</span>
+        </div>
+
+        <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px;background:#fafafa;border:1px solid #dee2e6;border-radius:8px;">
+            <span style="font-size:13px;font-weight:600;">📁 把选中的移到类目：</span>
+            <select name="target_category" id="moveTargetCat">
+                {% for cat in categories %}
+                <option value="{{ cat }}" {% if cat == selected_category %}selected{% endif %}>{{ cat }}</option>
+                {% endfor %}
+            </select>
+            <input type="text" name="target_subcategory" id="moveTargetSub" list="targetSubOptions"
+                   placeholder="二级分类（可新建）" style="min-width:180px;">
+            <datalist id="targetSubOptions"></datalist>
+            <button type="submit" class="btn btn-primary" data-action="move" onclick="return confirmMove()">📁 移动并保存</button>
         </div>
         
         <div style="overflow-x:auto;">
@@ -136,6 +176,7 @@
                         <th>Collection Handle</th>
                         <th>Collection URL</th>
                         <th>二级分类</th>
+                        <th>审核状态</th>
                         <th>来源</th>
                         <th>操作</th>
                     </tr>
@@ -143,7 +184,7 @@
                 <tbody>
                     {% for store in filtered_stores %}
                     <tr>
-                        <td><input type="checkbox" name="selected_ids" value="{{ store._id }}" class="select-item"></td>
+                        <td><input type="checkbox" name="selected_ids" value="{{ store._id }}" class="select-item" data-url="{{ store.url }}"></td>
                         <td>{{ loop.index }}</td>
                         <td><strong>{{ store.domain }}</strong></td>
                         <td>{{ store.collection_title or '-' }}</td>
@@ -156,6 +197,13 @@
                             {% endif %}
                         </td>
                         <td>{{ store.subcategory or '-' }}</td>
+                        <td>
+                            {% if store.review_status == 'kept' %}
+                            <span style="color:#2e7d32;">已保留</span>
+                            {% else %}
+                            <span style="color:#ef6c00;">未审核</span>
+                            {% endif %}
+                        </td>
                         <td>{{ store.source or '-' }}</td>
                         <td style="white-space:nowrap;">
                             <a href="/shopify/filter-categories/{{ selected_category }}/{{ store._id }}/edit?subcategory={{ selected_subcategory }}" class="btn btn-sm btn-secondary">编辑</a>
@@ -193,9 +241,88 @@
 {% endif %}
 
 <script>
+const MAX_OPEN_TABS = {{ max_open_tabs }};
+const TARGET_SUBS = {{ subcategory_options|tojson }};
+const CURRENT_CATEGORY = {{ selected_category|tojson }};
+const CURRENT_SUBCATEGORY = {{ selected_subcategory|tojson }};
+
 function toggleSelectAll(source) {
     const checkboxes = document.querySelectorAll('.select-item');
     checkboxes.forEach(cb => cb.checked = source.checked);
+}
+
+// 批量打开选中的 collection URL（单批上限 MAX_OPEN_TABS，避免弹窗拦截）
+function openSelected() {
+    const boxes = Array.from(document.querySelectorAll('.select-item:checked'));
+    if (!boxes.length) {
+        alert('请先勾选要打开的记录');
+        return;
+    }
+    const input = document.getElementById('openBatch');
+    let limit = parseInt(input && input.value ? input.value : '10', 10);
+    if (isNaN(limit) || limit < 1) limit = 1;
+    limit = Math.min(limit, MAX_OPEN_TABS);
+
+    let blocked = 0;
+    boxes.slice(0, limit).forEach(cb => {
+        const url = cb.dataset.url;
+        if (!url) return;
+        const w = window.open(url, '_blank');
+        if (!w) blocked += 1;
+    });
+    if (boxes.length > limit) {
+        alert('已打开前 ' + limit + ' 个标签页，还剩 ' + (boxes.length - limit) +
+              ' 个未打开（单批上限 ' + MAX_OPEN_TABS + '，可再次点击继续）');
+    }
+    if (blocked) {
+        alert('有 ' + blocked + ' 个窗口被浏览器拦截，请允许本网站弹出窗口后重试');
+    }
+}
+
+// 批量表单：按点击的按钮切换 action（无数据时表单不存在，需判空）
+const batchForm = document.getElementById('batchForm');
+if (batchForm) {
+    batchForm.addEventListener('submit', function (e) {
+        const btn = e.submitter;
+        if (btn && btn.dataset && btn.dataset.action) {
+            document.getElementById('batchAction').value = btn.dataset.action;
+        }
+    });
+}
+
+// 「移到类目」目标二级分类候选：随一级分类切换
+function refreshTargetSubs() {
+    const catSelect = document.getElementById('moveTargetCat');
+    const subInput = document.getElementById('moveTargetSub');
+    const subList = document.getElementById('targetSubOptions');
+    if (!catSelect || !subInput || !subList) return;
+    const list = TARGET_SUBS[catSelect.value] || [];
+    subList.innerHTML = list.map(s => '<option value="' + s + '"></option>').join('');
+    subInput.value = '';
+}
+
+function confirmMove() {
+    const catSelect = document.getElementById('moveTargetCat');
+    const subInput = document.getElementById('moveTargetSub');
+    if (!catSelect || !subInput) return false;
+    const cat = catSelect.value;
+    const sub = (subInput.value || '').trim() || 'other';
+    const count = document.querySelectorAll('.select-item:checked').length;
+    if (!count) {
+        alert('请先勾选要移动的记录');
+        return false;
+    }
+    if (cat === CURRENT_CATEGORY && sub === CURRENT_SUBCATEGORY) {
+        alert('目标类目与当前类目相同，请选择其他类目');
+        return false;
+    }
+    return confirm('确定把选中的 ' + count + ' 条记录移到 ' + cat + '__' + sub + ' 吗？');
+}
+
+const moveTargetCat = document.getElementById('moveTargetCat');
+if (moveTargetCat) {
+    moveTargetCat.addEventListener('change', refreshTargetSubs);
+    refreshTargetSubs();
 }
 
 function confirmAiFilter() {

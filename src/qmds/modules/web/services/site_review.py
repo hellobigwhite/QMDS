@@ -26,6 +26,7 @@ from datetime import datetime
 from pathlib import Path
 
 from qmds.modules.web.services.category_stats import (
+    DOMAIN_STATS_FILE_NAME,
     INFO_FILE_NAME,
     STATS_FILE_NAME,
     read_stats_excel,
@@ -105,8 +106,8 @@ def collect_data_tables(site_folder) -> dict:
         if p.name.startswith("~$"):
             continue
         base = _base_name(p)
-        if base in (STATS_FILE_NAME, INFO_FILE_NAME):
-            continue
+        if base in (STATS_FILE_NAME, DOMAIN_STATS_FILE_NAME, INFO_FILE_NAME):
+            continue  # 统计/结果文件不参与数据表处理
         (mains if _table_kind(base) == "main" else supps).append(p)
     mains.sort(key=lambda p: _natural_key(_base_name(p)))
     supps.sort(key=lambda p: _natural_key(_base_name(p)))

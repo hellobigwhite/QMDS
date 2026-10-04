@@ -1,0 +1,265 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card" style="max-width:1100px;margin:0 auto;">
+    <h2>🔎 逐个审核：{{ category }} / {{ subcategory }}</h2>
+    <p class="text-muted" style="margin-bottom:12px;">
+        队列按域名排序（同一店铺的 collection 相邻）。打开网站浏览后选择
+        <b>保留</b> 或 <b>移到其他类目</b>，勾选「自动打开下一个」时会连续打开下一个网站，边看边决策。<br>
+        快捷键：<code>K</code> 保留 · <code>M</code> 跳到类目选择 · <code>S</code> 跳过 · <code>D</code> 删除 · <code>O</code> 打开当前网站
+    </p>
+
+    <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:13px;margin-bottom:12px;">
+        <div style="padding:6px 12px;background:#e3f2fd;border-radius:6px;color:#1565c0;">
+            集合待审核：<b>{{ counts.pending }}</b> 条（已保留 {{ counts.kept }} / 共 {{ counts.total }}）
+        </div>
+        <div style="padding:6px 12px;background:#f1f8e9;border-radius:6px;color:#33691e;">
+            本次队列：<b>{{ queue|length }}</b> 条<span class="text-muted">（最多加载 {{ queue_limit }} 条）</span>
+        </div>
+        <div style="padding:6px 12px;background:#f5f5f5;border-radius:6px;">
+            本次已处理：<span id="doneCount">0</span> / {{ queue|length }}
+        </div>
+    </div>
+</div>
+
+<div class="card" style="max-width:1100px;margin:20px auto 0;" id="currentCard">
+    <div id="emptyBox" style="padding:24px;text-align:center;color:#999;display:none;">
+        <p style="font-size:16px;">🎉 队列已处理完毕</p>
+        <p style="font-size:13px;margin-top:8px;">
+            本次会话：保留 <span id="statKept">0</span> 条 ·
+            移动 <span id="statMoved">0</span> 条 ·
+            删除 <span id="statDeleted">0</span> 条 ·
+            跳过 <span id="statSkipped">0</span> 条
+        </p>
+        <p style="margin-top:12px;">
+            <a class="btn btn-secondary" href="/shopify/filter-categories?category={{ category }}&subcategory={{ subcategory }}">返回列表</a>
+        </p>
+    </div>
+
+    <div id="itemBox">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;">
+            <h2 style="margin:0;" id="domainText">-</h2>
+            <span class="text-muted" style="font-size:13px;">第 <b id="posText">1</b> / <span id="queueLen">{{ queue|length }}</span> 条</span>
+        </div>
+        <table style="margin-top:12px;">
+            <tr><th style="width:140px;">Collection 标题</th><td id="titleText">-</td></tr>
+            <tr><th>Collection Handle</th><td><code id="handleText">-</code></td></tr>
+            <tr><th>Collection URL</th><td><a id="siteLink" href="#" target="_blank" rel="noopener">-</a></td></tr>
+            <tr><th>审核状态</th><td id="reviewText">未审核</td></tr>
+        </table>
+
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:16px;align-items:center;">
+            <a class="btn btn-info" id="openLink" href="#" target="_blank" rel="noopener">🌐 打开网站（O）</a>
+            <button type="button" class="btn btn-primary" id="keepBtn">✅ 保留并下一个（K）</button>
+            <button type="button" class="btn btn-secondary" id="skipBtn">⏭ 跳过（S）</button>
+            <button type="button" class="btn btn-danger" id="deleteBtn">🗑 删除并下一个（D）</button>
+            <label style="margin-left:auto;font-size:13px;cursor:pointer;">
+                <input type="checkbox" id="autoOpen" checked> 自动打开下一个网站
+            </label>
+        </div>
+
+        <div style="margin-top:16px;padding:12px;border:1px solid #dee2e6;border-radius:8px;background:#fafafa;">
+            <div style="font-size:13px;font-weight:600;margin-bottom:8px;">📁 移到其他类目（浏览后判定它不属于当前类目时使用）</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                <select id="moveCat" style="min-width:200px;">
+                    {% for cat in categories %}
+                    <option value="{{ cat }}" {% if cat == category %}selected{% endif %}>{{ cat }}</option>
+                    {% endfor %}
+                </select>
+                <input type="text" id="moveSub" list="subOptions" placeholder="二级分类（可新建）"
+                       value="{{ subcategory }}" style="min-width:200px;">
+                <datalist id="subOptions"></datalist>
+                <button type="button" class="btn btn-primary" id="moveBtn">📁 移到该类目并下一个（M）</button>
+            </div>
+            <div class="text-muted" style="font-size:12px;margin-top:6px;">
+                迁移会把该 collection 记录搬到 <code>{一级分类}__{二级分类}</code> 集合（同款已存在则合并覆盖），并同步集合计数。
+            </div>
+        </div>
+
+        <div style="margin-top:16px;">
+            <div style="font-size:13px;font-weight:600;margin-bottom:6px;">本次浏览记录</div>
+            <ul id="logList" style="font-size:13px;color:#555;margin:0;padding-left:20px;"></ul>
+        </div>
+    </div>
+</div>
+
+<script>
+const QUEUE = {{ queue|tojson }};
+const SUBCATS = {{ subcategory_options|tojson }};
+const CATEGORY = {{ category|tojson }};
+const SUBCATEGORY = {{ subcategory|tojson }};
+const ACTION_URL = {{ url_for('shopify.shopify_filter_review_action')|tojson }};
+
+let idx = 0;
+const stats = {kept: 0, moved: 0, deleted: 0, skipped: 0};
+
+function nextIndex(from) {
+    for (let i = from; i < QUEUE.length; i++) {
+        if (!QUEUE[i].done) return i;
+    }
+    return -1;
+}
+
+function doneCount() {
+    return QUEUE.filter(it => it.done).length;
+}
+
+function refreshSubOptions(resetValue) {
+    const cat = document.getElementById('moveCat').value;
+    const list = SUBCATS[cat] || [];
+    document.getElementById('subOptions').innerHTML =
+        list.map(s => '<option value="' + s + '"></option>').join('');
+    if (resetValue) {
+        document.getElementById('moveSub').value = (cat === CATEGORY && SUBCATEGORY !== 'other')
+            ? SUBCATEGORY : (list.includes('other') ? '' : '');
+    }
+}
+
+function render() {
+    const item = QUEUE[idx];
+    document.getElementById('doneCount').textContent = doneCount();
+    document.getElementById('statKept').textContent = stats.kept;
+    document.getElementById('statMoved').textContent = stats.moved;
+    document.getElementById('statDeleted').textContent = stats.deleted;
+    document.getElementById('statSkipped').textContent = stats.skipped;
+
+    if (!item) {
+        document.getElementById('itemBox').style.display = 'none';
+        document.getElementById('emptyBox').style.display = 'block';
+        return;
+    }
+    document.getElementById('itemBox').style.display = 'block';
+    document.getElementById('emptyBox').style.display = 'none';
+    document.getElementById('domainText').textContent = item.domain || '(未知域名)';
+    document.getElementById('titleText').textContent = item.title || '-';
+    document.getElementById('handleText').textContent = item.handle || '-';
+    const link = document.getElementById('siteLink');
+    link.href = item.url;
+    link.textContent = item.url;
+    document.getElementById('openLink').href = item.url;
+    document.getElementById('reviewText').innerHTML = item.kept
+        ? '<span style="color:#2e7d32;">已保留</span>'
+        : '<span style="color:#ef6c00;">未审核</span>';
+    document.getElementById('posText').textContent = doneCount() + 1;
+}
+
+function addLog(item, label) {
+    const li = document.createElement('li');
+    li.textContent = (item.domain || '(未知域名)') + ' / ' + (item.handle || '-') + ' — ' + label;
+    document.getElementById('logList').prepend(li);
+}
+
+function toast(message, level) {
+    const box = document.createElement('div');
+    box.textContent = message;
+    box.style.cssText = 'position:fixed;top:16px;right:16px;z-index:9999;padding:10px 16px;border-radius:6px;' +
+        'color:#fff;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,.2);background:' +
+        (level === 'error' ? '#d32f2f' : '#2e7d32');
+    document.body.appendChild(box);
+    setTimeout(() => box.remove(), 2600);
+}
+
+async function act(action, extra, label) {
+    const item = QUEUE[idx];
+    if (!item) return;
+
+    // 先同步开一个空白窗口：等待接口返回后再写入下一个 URL，避免被弹窗拦截
+    let w = null;
+    if (document.getElementById('autoOpen').checked) {
+        w = window.open('about:blank', '_blank');
+        if (w) {
+            try {
+                w.document.write('<title>正在打开下一个网站…</title>' +
+                    '<p style="font-family:sans-serif;padding:24px;">正在打开下一个网站…</p>');
+            } catch (e) { /* 跨域/被拦截时忽略 */ }
+        }
+    }
+
+    const body = Object.assign({
+        action: action, category: CATEGORY, subcategory: SUBCATEGORY, doc_ids: [item.id]
+    }, extra || {});
+
+    let ok = false;
+    try {
+        const resp = await fetch(ACTION_URL, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body)
+        });
+        const data = await resp.json();
+        if (data.ok) {
+            ok = true;
+            item.done = true;
+            const key = action === 'move' ? 'moved' : (action === 'delete' ? 'deleted' : 'kept');
+            stats[key] += 1;
+            addLog(item, label || data.message || action);
+        } else {
+            toast(data.message || '操作失败', 'error');
+        }
+    } catch (err) {
+        toast('请求失败: ' + err, 'error');
+    }
+
+    if (!ok) {
+        if (w) w.close();
+        return;
+    }
+
+    idx = nextIndex(idx + 1);
+    render();
+    if (w) {
+        const nxt = QUEUE[idx];
+        if (nxt) { w.location.href = nxt.url; } else { w.close(); }
+    }
+}
+
+function skip() {
+    const item = QUEUE[idx];
+    if (!item) return;
+    stats.skipped += 1;
+    addLog(item, '跳过');
+    idx = nextIndex(idx + 1);
+    render();
+}
+
+function moveCurrent() {
+    const cat = document.getElementById('moveCat').value;
+    const sub = document.getElementById('moveSub').value.trim();
+    if (cat === CATEGORY && (sub || 'other') === SUBCATEGORY) {
+        toast('目标类目与当前类目相同', 'error');
+        return;
+    }
+    act('move', {target_category: cat, target_subcategory: sub}, '移到 ' + cat + '__' + (sub || 'other'));
+}
+
+function deleteCurrent() {
+    const item = QUEUE[idx];
+    if (!item) return;
+    if (!confirm('确定删除 ' + (item.domain || '') + ' / ' + (item.handle || '') + ' 这条记录吗？')) return;
+    act('delete', null, '删除');
+}
+
+document.getElementById('keepBtn').addEventListener('click', () => act('keep', null, '保留'));
+document.getElementById('skipBtn').addEventListener('click', skip);
+document.getElementById('moveBtn').addEventListener('click', moveCurrent);
+document.getElementById('deleteBtn').addEventListener('click', deleteCurrent);
+document.getElementById('moveCat').addEventListener('change', () => refreshSubOptions(true));
+
+document.addEventListener('keydown', (e) => {
+    if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return;
+    const k = (e.key || '').toLowerCase();
+    if (k === 'k') { e.preventDefault(); act('keep', null, '保留'); }
+    else if (k === 's') { e.preventDefault(); skip(); }
+    else if (k === 'd') { e.preventDefault(); deleteCurrent(); }
+    else if (k === 'm') { e.preventDefault(); document.getElementById('moveCat').focus(); }
+    else if (k === 'o') {
+        e.preventDefault();
+        const item = QUEUE[idx];
+        if (item) window.open(item.url, '_blank');
+    }
+});
+
+idx = nextIndex(0);
+refreshSubOptions(false);
+render();
+</script>
+{% endblock %}

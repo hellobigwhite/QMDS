@@ -17,7 +17,15 @@ from qmds.config.categories import (
     parse_collection_prefix,
 )
 from qmds.config.search_providers import SERIAL_SEARCH_PROVIDERS
+from qmds.db.mongodb import REVIEW_STATUS_KEPT, REVIEW_STATUS_PENDING
 from qmds.modules.web.db_helpers import get_mongo_db
+from qmds.modules.web.services.filtered_review import (
+    MAX_OPEN_TABS,
+    REVIEW_QUEUE_LIMIT,
+    build_review_queue,
+    normalize_review_filter,
+    resolve_move_target,
+)
 from qmds.modules.web.task_manager import make_progress_callback, task_manager
 from qmds.utils.http_client import HttpClient
 from qmds.utils.logger import get_logger
@@ -279,9 +287,13 @@ def api_shopify_unfiltered_get(category, domain):
 def shopify_filter_categories():
     selected_category = request.args.get("category", "")
     selected_subcategory = request.args.get("subcategory", "")
+    # 人工审核状态筛选："" 全部 / "pending" 未审核 / "kept" 已保留
+    review_filter = normalize_review_filter(request.args.get("review", ""))
     filtered_stores = []
     filtered_total = 0
     available_subcategories = []
+    review_counts = {"total": 0, "kept": 0, "pending": 0}
+    subcategory_options: dict = {}
 
     # 获取每个一级分类的 unfiltered 数量
     unfiltered_counts = {}
@@ -292,13 +304,27 @@ def shopify_filter_categories():
     except Exception as e:
         log.error(f"获取 unfiltered 数量失败: {e}")
 
+    # 各一级分类下已有的二级分类（「移到其他类目」下拉用，一次扫描 _counters 分组）
+    try:
+        for item in db.list_filtered_categories_with_sub():
+            subcategory_options.setdefault(item.get("category", ""), []).append(
+                item.get("subcategory", DEFAULT_SUBCATEGORY))
+        for cat in subcategory_options:
+            subcategory_options[cat] = sorted(set(subcategory_options[cat]))
+    except Exception as e:
+        log.error(f"获取二级分类选项失败: {e}")
+
     if selected_category:
         try:
             # 获取该一级分类下所有可用的二级分类
             available_subcategories = db.list_filtered_subcategories(selected_category)
+            subcategory_options.setdefault(selected_category, available_subcategories)
             if selected_subcategory:
-                filtered_stores = db.get_filtered_stores(selected_category, limit=100, subcategory=selected_subcategory)
+                filtered_stores = db.get_filtered_stores(
+                    selected_category, limit=100, subcategory=selected_subcategory,
+                    review_status=review_filter)
                 filtered_total = db.get_filtered_count(selected_category, selected_subcategory)
+                review_counts = db.get_filtered_review_counts(selected_category, selected_subcategory)
         except Exception as e:
             log.error(f"查询 filtered 数据失败: {e}")
 
@@ -783,7 +809,11 @@ def shopify_filter_categories():
                            available_subcategories=available_subcategories,
                            filtered_stores=filtered_stores,
                            filtered_total=filtered_total,
-                           unfiltered_counts=unfiltered_counts)
+                           unfiltered_counts=unfiltered_counts,
+                           review_filter=review_filter,
+                           review_counts=review_counts,
+                           subcategory_options=subcategory_options,
+                           max_open_tabs=MAX_OPEN_TABS)
 
 
 @bp.route("/shopify/filter-categories/<category>/<doc_id>/edit", methods=["GET", "POST"])
@@ -967,6 +997,166 @@ def shopify_filter_delete(category, doc_id):
     finally:
         db.close()
     return redirect(url_for("shopify.shopify_filter_categories", category=category, subcategory=subcategory))
+
+
+@bp.route("/shopify/filter-categories/batch", methods=["POST"])
+def shopify_filter_batch():
+    """列表页批量动作：保留 / 取消保留 / 移到其他类目 / 删除选中
+
+    由 shopify_categories.html 的 batchForm 提交，处理后带 flash 回到原列表
+    （保留当前的二级分类与审核状态筛选）。
+    """
+    category = (request.form.get("category") or "").strip()
+    subcategory = (request.form.get("subcategory") or "").strip()
+    action = (request.form.get("action") or "").strip()
+    review_filter = normalize_review_filter(request.form.get("review", ""))
+    selected_ids = [i for i in request.form.getlist("selected_ids") if i.strip()]
+    target_category = (request.form.get("target_category") or "").strip()
+    target_subcategory = (request.form.get("target_subcategory") or "").strip()
+
+    back = url_for("shopify.shopify_filter_categories", category=category,
+                   subcategory=subcategory, review=review_filter)
+
+    if not category or not selected_ids:
+        flash("请先勾选要处理的记录", "error")
+        return redirect(back)
+
+    db = get_mongo_db()
+    try:
+        if action == "keep":
+            result = db.mark_filtered_review(category, subcategory, selected_ids, REVIEW_STATUS_KEPT)
+            flash(f"已标记保留 {result['marked']} 条"
+                  + (f"（{result['unchanged']} 条已是保留状态）" if result["unchanged"] else ""), "success")
+        elif action == "unkeep":
+            result = db.mark_filtered_review(category, subcategory, selected_ids, REVIEW_STATUS_PENDING)
+            flash(f"已取消保留 {result['marked']} 条", "success")
+        elif action == "move":
+            tgt_cat, tgt_sub = resolve_move_target(category, subcategory,
+                                                   target_category, target_subcategory)
+            result = db.move_filtered_records(category, selected_ids, subcategory, tgt_cat, tgt_sub)
+            msg = f"已移动到 {tgt_cat}__{tgt_sub}: {result['moved']} 条"
+            if result["merged"]:
+                msg += f"（{result['merged']} 条与目标已有记录合并）"
+            flash(msg, "success")
+            for err in result["errors"][:5]:
+                flash(err, "error")
+        elif action == "delete":
+            count = db.delete_filtered_many(category, selected_ids, subcategory=subcategory)
+            flash(f"已删除 {count} 条记录", "success")
+        else:
+            flash(f"未知操作: {action}", "error")
+    except ValueError as e:
+        flash(str(e), "error")
+    except Exception as e:
+        log.error(f"批量审核操作失败: {e}")
+        flash(f"操作失败: {e}", "error")
+    return redirect(back)
+
+
+def _filtered_subcategory_options(db) -> dict:
+    """各一级分类下已有的二级分类（「移到其他类目」下拉用）"""
+    options: dict = {}
+    try:
+        for item in db.list_filtered_categories_with_sub():
+            options.setdefault(item.get("category", ""), []).append(
+                item.get("subcategory", DEFAULT_SUBCATEGORY))
+        options = {cat: sorted(set(subs)) for cat, subs in options.items()}
+    except Exception as e:
+        log.error(f"获取二级分类选项失败: {e}")
+    return options
+
+
+@bp.route("/shopify/filter-categories/review", methods=["GET"])
+def shopify_filter_review():
+    """逐个人工审核：批量打开网站 → 保留 / 移到其他类目 / 删除
+
+    队列按域名排序（同一店铺的 collection 相邻），默认只加载未审核记录。
+    """
+    category = (request.args.get("category") or "").strip()
+    subcategory = (request.args.get("subcategory") or DEFAULT_SUBCATEGORY).strip()
+    review_filter = normalize_review_filter(request.args.get("review", "")) or REVIEW_STATUS_PENDING
+
+    if not category:
+        flash("请先选择一级分类", "error")
+        return redirect(url_for("shopify.shopify_filter_categories"))
+
+    db = get_mongo_db()
+    queue = []
+    counts = {"total": 0, "kept": 0, "pending": 0}
+    try:
+        docs = db.get_filtered_review_queue(category, subcategory,
+                                            review_status=review_filter,
+                                            limit=REVIEW_QUEUE_LIMIT)
+        queue = build_review_queue(docs)
+        counts = db.get_filtered_review_counts(category, subcategory)
+    except Exception as e:
+        log.error(f"加载审核队列失败: {e}")
+        flash(f"加载审核队列失败: {e}", "error")
+
+    return render_template("shopify_filter_review.html",
+                           categories=SHOPIFY_CATEGORIES,
+                           category=category,
+                           subcategory=subcategory,
+                           review_filter=review_filter,
+                           queue=queue,
+                           counts=counts,
+                           subcategory_options=_filtered_subcategory_options(db),
+                           max_open_tabs=MAX_OPEN_TABS,
+                           queue_limit=REVIEW_QUEUE_LIMIT)
+
+
+@bp.route("/shopify/filter-categories/review-action", methods=["POST"])
+def shopify_filter_review_action():
+    """审核动作 JSON API（审核页逐个决策用）：keep / unkeep / move / delete"""
+    data = request.get_json(silent=True) or request.form
+    action = (data.get("action") or "").strip()
+    category = (data.get("category") or "").strip()
+    subcategory = (data.get("subcategory") or "").strip()
+    doc_ids = data.get("doc_ids") or []
+    if isinstance(doc_ids, str):
+        doc_ids = [d.strip() for d in doc_ids.split(",") if d.strip()]
+    target_category = (data.get("target_category") or "").strip()
+    target_subcategory = (data.get("target_subcategory") or "").strip()
+
+    if not category or not doc_ids:
+        return jsonify({"ok": False, "message": "缺少分类或记录 ID"}), 400
+
+    db = get_mongo_db()
+    try:
+        if action == "keep":
+            result = db.mark_filtered_review(category, subcategory, doc_ids, REVIEW_STATUS_KEPT)
+            affected = result["marked"]
+            message = f"已保留 {result['marked']} 条"
+        elif action == "unkeep":
+            result = db.mark_filtered_review(category, subcategory, doc_ids, REVIEW_STATUS_PENDING)
+            affected = result["marked"]
+            message = f"已取消保留 {result['marked']} 条"
+        elif action == "move":
+            tgt_cat, tgt_sub = resolve_move_target(category, subcategory,
+                                                   target_category, target_subcategory)
+            result = db.move_filtered_records(category, doc_ids, subcategory, tgt_cat, tgt_sub)
+            affected = result["moved"] + result["merged"]
+            message = f"已移动到 {tgt_cat}__{tgt_sub}（{affected} 条）"
+            if result["errors"]:
+                message += "；" + "；".join(result["errors"][:3])
+        elif action == "delete":
+            affected = db.delete_filtered_many(category, doc_ids, subcategory=subcategory)
+            message = f"已删除 {affected} 条"
+        else:
+            return jsonify({"ok": False, "message": f"未知操作: {action}"}), 400
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    except Exception as e:
+        log.error(f"审核动作失败: {e}")
+        return jsonify({"ok": False, "message": f"操作失败: {e}"}), 500
+
+    try:
+        counts = db.get_filtered_review_counts(category, subcategory)
+    except Exception:
+        counts = {"total": 0, "kept": 0, "pending": 0}
+
+    return jsonify({"ok": True, "action": action, "affected": affected,
+                    "message": message, "counts": counts})
 
 
 @bp.route("/shopify/subcategory-management")

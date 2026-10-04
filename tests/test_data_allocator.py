@@ -16,15 +16,20 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from qmds.modules.web.services.data_allocator import (
+    assign_portions_to_sites,
     count_excel_categories,
     detect_category_column,
     plan_allocation,
     run_allocation_task,
     sanitize_filename,
+    supplement_file_name,
 )
 
 EXPORT_COLUMNS = ["SKU", "Name", "Description", "Regular price", "Categories",
                   "Images", "cf_opingts", "自定义分类", "原站域名", "分布网站识别", "语言"]
+
+# 分配流程自动生成的统计表（不是订单数据表，读取时应跳过）
+STATS_FILES = ("分类统计.xlsx", "域名统计.xlsx")
 
 
 @pytest.fixture
@@ -397,7 +402,7 @@ def test_run_allocation_task(workdir):
     # 结构: 每个主分类一个数据文件夹（主数据 + 补充数据同文件夹），额外补充 extra{N}
     folders = {d.name for d in out_dir.iterdir() if d.is_dir()}
     assert folders == {"Main_One", "Main_Two", "extra1", "extra2"}, folders
-    assert list(out_dir.glob("*.xlsx")) == []
+    assert [p.name for p in out_dir.glob("*.xlsx")] == ["分配汇总.xlsx"]
 
     # 主数据表: main 前缀命名，只含对应分类
     main1 = pd.read_excel(out_dir / "Main_One" / "mainMain_One.xlsx", engine="openpyxl")
@@ -465,8 +470,7 @@ def test_run_allocation_task_with_split(workdir):
                    and d.name.startswith("export_split_分配_"))
 
     # 拆分后源表格被删除；主数据与补充数据的分卷都在同一分类文件夹内
-    xlsx_left = list(out_dir.glob("*.xlsx"))
-    assert xlsx_left == [], xlsx_left
+    assert [p.name for p in out_dir.glob("*.xlsx")] == ["分配汇总.xlsx"]
     folders = {d.name for d in out_dir.iterdir() if d.is_dir()}
     assert folders == {"Main_One", "Main_Two", "extra1", "extra2"}, folders
 
@@ -500,12 +504,12 @@ def test_run_allocation_task_with_split(workdir):
     for p in extra_files:
         assert not any("\u4e00" <= ch <= "\u9fff" for ch in p.stem), p.stem
 
-    # 全部数据不重不漏（分类统计.xlsx 是统计文件，非数据表，跳过）
+    # 全部数据不重不漏（分类统计/域名统计是统计文件，非数据表，跳过）
     all_skus = []
     for d in out_dir.iterdir():
         if d.is_dir():
             for p in d.glob("*.xlsx"):
-                if p.name == "分类统计.xlsx":
+                if p.name in STATS_FILES:
                     continue
                 all_skus.extend(pd.read_excel(p, engine="openpyxl")["SKU"])
     assert len(all_skus) == len(df)
@@ -531,10 +535,11 @@ def test_run_allocation_task_split_disabled(workdir):
     # 每个主分类一个文件夹: main 前缀主数据 + _supp 补充数据 + 分类统计
     folders = {d.name for d in out_dir.iterdir() if d.is_dir()}
     assert folders == {"Main_One"}, folders
-    assert list(out_dir.glob("*.xlsx")) == []
+    assert [p.name for p in out_dir.glob("*.xlsx")] == ["分配汇总.xlsx"]
     names = sorted(p.name for p in (out_dir / "Main_One").glob("*.xlsx"))
-    # 分配完成后自动生成网站分类统计（默认开启）
-    assert names == ["Main_One_supp.xlsx", "mainMain_One.xlsx", "分类统计.xlsx"], names
+    # 分配完成后自动生成网站分类统计与域名统计（默认开启）
+    assert names == ["Main_One_supp.xlsx", "mainMain_One.xlsx",
+                     "分类统计.xlsx", "域名统计.xlsx"], names
     assert not any(d.is_dir() for d in (out_dir / "Main_One").iterdir())
 
 
@@ -749,3 +754,333 @@ def test_run_allocation_task_domain_limit_without_column(workdir):
     assert task_manager.get(task_id)["status"] == "completed"
     logs = [e.get("message", "") for e in task_manager.get_logs(task_id)]
     assert any("未找到「原站域名」列" in m for m in logs)
+
+# ── 均分模式（不生成额外补充） ─────────────────────────────
+
+def test_assign_portions_to_sites_balances_loads():
+    """每份分给当前总量最少的网站：各网站合计尽量均衡"""
+    # 主数据 120 / 80，4 份补充各 1650/1650/1550/1550
+    # 第1份给 80 的网站、第2份给 120 的网站，之后每份都给当前最少的一方
+    portions = [1650, 1650, 1550, 1550]
+    sites = assign_portions_to_sites(portions, [120, 80])
+    assert sites == [1, 0, 1, 0]
+    loads = [120, 80]
+    for idx, total in zip(sites, portions):
+        loads[idx] += total
+    assert loads == [3320, 3280]
+    assert max(loads) - min(loads) <= 40  # 均衡
+
+    # 份数少于网站数：只分给最少的几个网站
+    assert assign_portions_to_sites([100], [50, 10, 90]) == [1]
+    # 没有主分类时不分配
+    assert assign_portions_to_sites([100], []) == []
+
+
+def test_supplement_file_name_single_and_multiple_parts():
+    """单份沿用 _supp，多份用 _supp1/_supp2（命名不含中文）"""
+    assert supplement_file_name("Main One", 1, 1) == "Main_One_supp.xlsx"
+    assert supplement_file_name("Main|||Two", 1, 2) == "Main_Two_supp1.xlsx"
+    assert supplement_file_name("Main|||Two", 2, 2) == "Main_Two_supp2.xlsx"
+
+
+def test_run_allocation_task_distribute_to_sites(workdir):
+    """均分模式：所有补充表都分给网站（同一网站可拿多份），不产生 extra"""
+    from qmds.modules.web.task_manager import task_manager
+
+    cats = [("Main One", 120), ("Main|||Two", 80), ("Big Cat", 3400)]
+    cats += [(f"cat{i}", 100) for i in range(30)]  # 3000 条小分类
+    df = make_df(cats)
+    fp = workdir / "export_dist.xlsx"
+    df.to_excel(fp, index=False, engine="openpyxl")
+
+    task_id = "test_alloc_distribute"
+    task_manager.create(task_id, "data_allocate", "test")
+    run_allocation_task(task_id, fp, ["Main One", "Main|||Two"], 1500, 2000, 1000,
+                        distribute_to_sites=True)
+
+    task = task_manager.get(task_id)
+    assert task["status"] == "completed", task_manager.get_logs(task_id)
+
+    out_dir = next(d for d in workdir.iterdir() if d.is_dir()
+                   and d.name.startswith("export_dist_分配_"))
+    # 只有网站文件夹，没有 extra
+    folders = {d.name for d in out_dir.iterdir() if d.is_dir()}
+    assert folders == {"Main_One", "Main_Two"}, folders
+
+    # 每个网站 1 份主数据 + 2 份补充数据（4 份补充均分到 2 个网站）
+    for folder, main_name, main_rows in (
+            ("Main_One", "mainMain_One.xlsx", 120),
+            ("Main_Two", "mainMain_Two.xlsx", 80)):
+        # 订单数据表（main + supp1 + supp2）+ 分配后生成的 分类统计.xlsx
+        names = sorted(p.name for p in (out_dir / folder).glob("*.xlsx")
+                       if p.name not in STATS_FILES)
+        assert names == sorted([main_name, f"{folder}_supp1.xlsx",
+                                f"{folder}_supp2.xlsx"]), names
+        main_df = pd.read_excel(out_dir / folder / main_name, engine="openpyxl")
+        assert len(main_df) == main_rows
+
+    # 数据不重不漏：两个网站的全部数据 = 原表
+    seen = set()
+    total_rows = 0
+    for folder in ("Main_One", "Main_Two"):
+        for p in (out_dir / folder).glob("*.xlsx"):
+            if p.name in STATS_FILES:  # 统计结果表不算订单数据
+                continue
+            part = pd.read_excel(p, engine="openpyxl")
+            total_rows += len(part)
+            for sku in part["SKU"]:
+                assert sku not in seen
+                seen.add(sku)
+    assert total_rows == len(df)
+    assert seen == set(df["SKU"])
+
+    # 每站合计 = 主数据 + 补充，且两站尽量均衡
+    sites = task["result"]["sites"]
+    assert {s["category"] for s in sites} == {"Main One", "Main|||Two"}
+    for s in sites:
+        assert s["total_rows"] == s["main_rows"] + s["supp_rows"]
+        assert s["supp_parts"] == 2
+    assert max(s["total_rows"] for s in sites) - min(s["total_rows"] for s in sites) <= 40
+    assert sum(s["total_rows"] for s in sites) == len(df)
+
+    # 汇总表 + 日志
+    summary = pd.read_excel(out_dir / "分配汇总.xlsx", engine="openpyxl")
+    assert list(summary.columns) == ["网站（主分类）", "数据文件夹", "主数据条数",
+                                     "补充份数", "补充条数", "合计条数", "原站域名数"]
+    assert summary["合计条数"].sum() == len(df)
+    assert (summary["原站域名数"] == 1).all()  # 每个网站都只有 example.com
+
+    # 汇总第二个 Sheet: 全部网站合并的原站域名商品数
+    dom_sheet = pd.read_excel(out_dir / "分配汇总.xlsx", sheet_name="原站域名",
+                              engine="openpyxl")
+    assert list(dom_sheet.columns) == ["原站域名", "商品数", "分布网站数"]
+    assert dom_sheet["商品数"].sum() == len(df)
+    # 测试数据中所有行（含主分类）的域名都是 example.com
+    assert dom_sheet.loc[dom_sheet["原站域名"] == "example.com", "商品数"].iloc[0] == len(df)
+
+    # 每个网站文件夹各有 域名统计.xlsx：该网站下各原站域名多少商品
+    for folder in ("Main_One", "Main_Two"):
+        dom_file = out_dir / folder / "域名统计.xlsx"
+        assert dom_file.exists(), list((out_dir / folder).iterdir())
+        dom_rows = pd.read_excel(dom_file, sheet_name="域名统计", engine="openpyxl")
+        assert list(dom_rows.columns) == ["原站域名", "商品数", "占比(%)",
+                                          "主数据条数", "补充数据条数", "涉及分类数"]
+        site_rows = next(s for s in sites if s["folder"] == folder)
+        # 域名商品数合计 = 该网站的数据总量（主数据 + 补充数据）
+        assert dom_rows["商品数"].sum() == site_rows["total_rows"]
+        assert dom_rows["主数据条数"].sum() + dom_rows["补充数据条数"].sum() \
+            == site_rows["total_rows"]
+        assert (dom_rows["商品数"] == dom_rows["主数据条数"] + dom_rows["补充数据条数"]).all()
+        dom_sum = pd.read_excel(dom_file, sheet_name="汇总", engine="openpyxl")
+        assert "原站域名总数" in set(dom_sum["指标"])
+    logs = [e.get("message", "") for e in task_manager.get_logs(task_id)]
+    assert any("每个网站的数据量" in m for m in logs)
+    assert any("无额外补充" in m for m in logs)
+
+
+def test_run_allocation_task_distribute_with_domain_limit(workdir):
+    """域名约束（按网站累计）+ 均分模式：装不下时自动抬高上限，仍无 extra
+
+    2 个网站、example.com 剩余 12000 条、每站上限设 5000：
+    2 × 5000 = 10000 < 12000，装不下 -> 该域名每站上限自动抬到 6000，
+    每个网站各拿 6000 条该域名数据（累计不超抬高后的上限）。
+    """
+    from qmds.modules.web.task_manager import task_manager
+
+    items = [("Main One", 100, "main.com"), ("Main Two", 100, "main2.com")]
+    items += [("cat", 12000, "example.com")]
+    df = make_df_domains(items)
+    fp = workdir / "export_dist_domain.xlsx"
+    df.to_excel(fp, index=False, engine="openpyxl")
+
+    task_id = "test_alloc_distribute_domain"
+    task_manager.create(task_id, "data_allocate", "test")
+    run_allocation_task(task_id, fp, ["Main One", "Main Two"], 40000, 50000, 1000,
+                        max_domain_count=5000, distribute_to_sites=True)
+
+    task = task_manager.get(task_id)
+    assert task["status"] == "completed", task_manager.get_logs(task_id)
+
+    out_dir = next(d for d in workdir.iterdir() if d.is_dir()
+                   and d.name.startswith("export_dist_domain_分配_"))
+    folders = {d.name for d in out_dir.iterdir() if d.is_dir()}
+    assert folders == {"Main_One", "Main_Two"}, folders  # 没有 extra
+
+    sites = task["result"]["sites"]
+    assert {s["category"] for s in sites} == {"Main One", "Main Two"}
+    assert sum(s["total_rows"] for s in sites) == len(df)  # 数据不丢
+    # 每个网站累计拿到的 example.com 不超过抬高后的上限（6000）
+    for site in sites:
+        assert site["supp_rows"] == 6000, site
+        assert site["supp_parts"] == 1
+
+    logs = [e.get("message", "") for e in task_manager.get_logs(task_id)]
+    assert any("域名上限抬高" in m and "5000 -> 6000" in m for m in logs)
+    assert any("无额外补充" in m for m in logs)
+    # 每个网站各一份补充表 -> 沿用 _supp.xlsx 命名
+    for folder, name in (("Main_One", "Main_One_supp.xlsx"),
+                         ("Main_Two", "Main_Two_supp.xlsx")):
+        assert (out_dir / folder / name).exists()
+
+
+def test_plan_allocation_to_sites_site_cumulative_domain_cap():
+    """纯函数：同域名上限按网站累计，多个分类的同域名数据在同一网站内合计不超上限"""
+    from qmds.modules.web.services.data_allocator import plan_allocation_to_sites
+
+    counts = {"Main A": 100, "Main B": 100, "c1": 4000, "c2": 3000, "c3": 500}
+    domains = {
+        "c1": {"example.com": 4000},
+        "c2": {"example.com": 3000},
+        "c3": {"example.com": 500},
+    }
+    plan = plan_allocation_to_sites(counts, ["Main A", "Main B"], 100, 5000,
+                                    split_threshold=1000,
+                                    category_domains=domains, max_domain_count=5000)
+    # example.com 共 7500，2 个网站，每站上限 5000 -> 3750 装得下，无需抬高
+    assert plan["domain_limit"]["raised"] == []
+    assert plan["file_count"] == 2
+    for files, site in zip(plan["site_files"], plan["sites"]):
+        total = sum(f["domains"].get("example.com", 0) for f in files)
+        assert total <= 5000  # 按网站累计不超上限
+        assert site["domain_max_rows"]["example.com"] == total
+    assert sum(s["supp_rows"] for s in plan["sites"]) == 7500
+
+
+def test_plan_allocation_to_sites_raises_cap_when_impossible():
+    """纯函数：单域名数据超过 网站数×上限 时自动抬高并给出告警"""
+    from qmds.modules.web.services.data_allocator import plan_allocation_to_sites
+
+    # 2 个网站 × 上限 5000 = 10000 < 12000，装不下 -> 上限抬到 ceil(12000/2) = 6000
+    counts = {"Main A": 10, "Main B": 10, "c1": 12000}
+    domains = {"c1": {"example.com": 12000}}
+    plan = plan_allocation_to_sites(counts, ["Main A", "Main B"], 100, 5000,
+                                    split_threshold=1000,
+                                    category_domains=domains, max_domain_count=5000)
+    assert plan["domain_limit"]["raised"] == [{"domain": "example.com",
+                                               "requested": 5000,
+                                               "effective": 6000,
+                                               "total": 12000}]
+    assert any("自动抬到 6000 条" in w for w in plan["warnings"])
+    # 两个网站各 6000 条，合计不丢
+    assert [s["supp_rows"] for s in plan["sites"]] == [6000, 6000]
+    for files in plan["site_files"]:
+        assert sum(f["domains"].get("example.com", 0) for f in files) == 6000
+
+def test_preview_plan_matches_actual_allocation(workdir):
+    """预测（plan_allocation_to_sites）与实际执行结果一致（每站主/补/份数/合计）"""
+    from qmds.modules.web.services.data_allocator import plan_allocation_to_sites
+    from qmds.modules.web.task_manager import task_manager
+
+    items = [("Main One", 300, "main.com"), ("Main Two", 200, "main2.com")]
+    items += [("Big Cat", 9000, "example.com")]
+    items += [(f"cat{i}", 300, f"c{i}.com") for i in range(20)]
+    df = make_df_domains(items)
+    fp = workdir / "export_predict.xlsx"
+    df.to_excel(fp, index=False, engine="openpyxl")
+
+    params = dict(min_size=1500, max_size=2500, split_threshold=1000,
+                  max_domain_count=4000)
+    counts, domains = {}, {}
+    for cat, cnt, dom in items:
+        counts[cat] = counts.get(cat, 0) + cnt
+        domains.setdefault(cat, {})
+        domains[cat][dom] = domains[cat].get(dom, 0) + cnt
+    plan = plan_allocation_to_sites(counts, ["Main One", "Main Two"],
+                                    category_domains=domains, **params)
+
+    task_id = "test_alloc_predict"
+    task_manager.create(task_id, "data_allocate", "test")
+    run_allocation_task(task_id, fp, ["Main One", "Main Two"], params["min_size"],
+                        params["max_size"], params["split_threshold"],
+                        max_domain_count=params["max_domain_count"],
+                        distribute_to_sites=True)
+    task = task_manager.get(task_id)
+    assert task["status"] == "completed", task_manager.get_logs(task_id)
+
+    actual = {s["category"]: s for s in task["result"]["sites"]}
+    predicted = {s["category"]: s for s in plan["sites"]}
+    assert set(actual) == set(predicted) == {"Main One", "Main Two"}
+    for cat in predicted:
+        # 预测 = 实际：每站主数据 / 补充数据 / 份数 / 合计
+        assert actual[cat]["main_rows"] == predicted[cat]["main_rows"], cat
+        assert actual[cat]["supp_rows"] == predicted[cat]["supp_rows"], cat
+        assert actual[cat]["supp_parts"] == predicted[cat]["supp_parts"], cat
+        assert actual[cat]["total_rows"] == predicted[cat]["total_rows"], cat
+    assert sum(s["total_rows"] for s in actual.values()) == len(df)
+
+    # 实际每个网站拿到的同域名累计不超过（可能被抬高后的）每站上限
+    caps = plan["domain_limit"]["effective"]
+    out_dir = next(d for d in workdir.iterdir() if d.is_dir()
+                   and d.name.startswith("export_predict_分配_"))
+    for s in actual.values():
+        folder = out_dir / s["folder"]
+        dom_totals = {}
+        for p in folder.glob("*.xlsx"):
+            if p.name in STATS_FILES:
+                continue
+            part = pd.read_excel(p, engine="openpyxl")
+            for dom, n in part["原站域名"].fillna("").astype(str).str.strip() \
+                    .value_counts().items():
+                dom_totals[dom] = dom_totals.get(dom, 0) + int(n)
+        for dom, n in dom_totals.items():
+            if dom not in caps:  # 只在主分类表格中出现的域名不参与约束
+                continue
+            assert n <= caps[dom], (s["category"], dom, n, caps[dom])
+
+
+def test_run_allocation_task_keeps_source_export_deletes_presplit(workdir):
+    """拆表后删除分配产生的 main/supp 表（统计之前），原始导出表格保留"""
+    from qmds.modules.web.task_manager import task_manager
+
+    df = make_df([("Main One", 50), ("other", 100), ("more", 100)])
+    fp = workdir / "split_cleanup.xlsx"
+    df.to_excel(fp, index=False, engine="openpyxl")
+
+    task_id = "test_split_cleanup"
+    task_manager.create(task_id, "data_allocate", "test")
+    run_allocation_task(task_id, fp, ["Main One"], 40, 60,
+                        split_options={"enabled": True, "supp_rows_per_file": 40,
+                                       "remove_source": True},
+                        distribute_to_sites=True)
+
+    task = task_manager.get(task_id)
+    assert task["status"] == "completed", task_manager.get_logs(task_id)
+
+    # 原始导出表格保留（不删除）
+    assert fp.exists(), "原始导出表格不应被删除"
+
+    out_dir = next(d for d in workdir.iterdir()
+                   if d.is_dir() and d.name.startswith("split_cleanup_分配_"))
+    # 分配产生的 main/supp 表已被删除，只剩分卷（_part 命名）
+    assert [p.name for p in out_dir.glob("*.xlsx")] == ["分配汇总.xlsx"]
+    for folder in (out_dir / "Main_One",):
+        names = [p.name for p in folder.glob("*.xlsx")]
+        data_files = [n for n in names if n not in STATS_FILES]
+        assert data_files, names
+        assert all("_part" in n for n in data_files), data_files
+        assert not any(n.startswith("main") and "_part" not in n for n in data_files), names
+        assert "_supp" not in "".join(n for n in data_files if "_part" not in n)
+
+    # 统计只统计分卷，不会把源表+分卷重复计数
+    stats = pd.read_excel(out_dir / "Main_One" / "分类统计.xlsx",
+                          sheet_name="分类统计", engine="openpyxl")
+    dom = pd.read_excel(out_dir / "Main_One" / "域名统计.xlsx",
+                        sheet_name="域名统计", engine="openpyxl")
+    site = task["result"]["sites"][0]
+    assert int(stats["产品数"].sum()) == site["total_rows"], (stats["产品数"].sum(),
+                                                              site["total_rows"])
+    assert int(dom["商品数"].sum()) == site["total_rows"]
+    assert site["total_rows"] == len(df)  # 唯一主分类 -> 拿到全部数据
+
+    # 日志顺序：拆表 -> 统计之前清理 main/supp 表 -> 网站统计
+    logs = [e.get("message", "") for e in task_manager.get_logs(task_id)]
+    split_idx = next(i for i, m in enumerate(logs) if "拆表完成" in m)
+    clean_idx = next(i for i, m in enumerate(logs)
+                     if "统计之前已清理分配产生的 main/supp 表" in m)
+    stats_idx = next(i for i, m in enumerate(logs)
+                     if "网站分类统计完成" in m)
+    assert split_idx < clean_idx < stats_idx, logs
+    assert "拆分时删除" in logs[clean_idx]
+
+
+

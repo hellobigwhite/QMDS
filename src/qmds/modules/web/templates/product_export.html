@@ -74,7 +74,7 @@
 
 <div class="card">
     <h2>📊 数据分配</h2>
-    <p class="text-muted mb-4">选择导出后的表格，先获取表格中的分类及产品数量，勾选可作为主分类的类目：主分类数据将单独成主数据表（main+分类名命名）。去除主分类后的剩余数据将打包成若干份补充表（每份约 4~5 万条），其中数量超过拆分阈值的大分类会拆分后均匀分配到每一份补充表（不会整类分给单一主分类），其余小分类整类分配，每个主分类获得一份补充表。每个主分类一个数据文件夹：主数据表（main 开头）与补充数据表（分类名_supp，不含中文）放在同一文件夹，额外补充放入 extra 文件夹，全部输出到原表格同目录下的分配文件夹。补充数据分配时保证：每个主分类分到的补充数据中，同一「原站域名」的条数不超过设定上限（默认 5000，超限时自动增加补充份数）。分配完成后自动统计每个网站（主分类文件夹）的分类结构，在该文件夹生成 <code>分类统计.xlsx</code>（供 AI 生成网站信息使用）。</p>
+    <p class="text-muted mb-4">选择导出后的表格，先获取表格中的分类及产品数量，勾选可作为主分类的类目：主分类数据将单独成主数据表（main+分类名命名）。去除主分类后的剩余数据将打包成若干份补充表（每份约 4~5 万条），其中数量超过拆分阈值的大分类会拆分后均匀分配到每一份补充表（不会整类分给单一主分类），其余小分类整类分配，每个主分类获得一份补充表。每个主分类一个数据文件夹：主数据表（main 开头）与补充数据表（分类名_supp，不含中文；拿到多份时 _supp1/_supp2…）放在同一文件夹，并按「主数据 + 已分补充」最少者依次把每一份补充数据分给各网站，使各网站商品总数尽量均衡（默认不产生 extra 文件夹；取消勾选「剩余数据均分到各网站」则恢复旧行为，多余的份放入 extra）。分配完成后在输出目录生成「分配汇总.xlsx」，列出每个网站实际拿到的数据量。全部输出到原表格同目录下的分配文件夹。补充数据分配时保证：<b>同一「原站域名」在一个网站中（累计该网站所有补充表）的条数不超过设定上限</b>（默认 5000）；当某域名的剩余数据超过「网站数 × 上限」而无法在不超限的情况下装完时，会自动抬高该域名的每站上限并在日志与预测中说明（优先保证不丢数据、不产生 extra）。参数改完后可点「🎯 预测分配结果」查看每个网站将拿到的数据量、同域名最大条数与是否会产生额外补充，再决定是否提交。开启「分配后批量拆表」时，每张表拆成 <code>_part{N}</code> 分卷后，<b>会在统计数据之前删除分配产生的 main/supp 表</b>（只保留分卷），避免分类统计/域名统计把源表与分卷重复计数；<b>原始导出表格不会被删除</b>。分配完成后自动统计每个网站（主分类文件夹）：在该文件夹生成 <code>分类统计.xlsx</code>（分类结构，供 AI 生成网站信息使用）和 <code>域名统计.xlsx</code>（每个「原站域名」下有多少商品：商品数、占比、主数据/补充数据条数、涉及分类数，按商品数降序）；全部网站合并的域名商品数另见输出目录 <code>分配汇总.xlsx</code> 的「原站域名」Sheet。</p>
     <form id="allocForm" method="POST" action="/product-data/allocate">
         <div style="display: grid; grid-template-columns: 2fr 2fr 1fr 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px;">
             <div>
@@ -102,8 +102,20 @@
                 <input type="number" id="alloc_split" name="split_threshold" value="3000" min="0" style="width:100%;" title="数量超过该值的分类将拆分后均匀分配到各补充表，不会整类分给单一主分类">
             </div>
             <div>
-                <label for="alloc_domain_max">同域名每份最多条数</label>
-                <input type="number" id="alloc_domain_max" name="max_domain_count" value="5000" min="0" style="width:100%;" title="每个主分类分到的补充数据中，同一「原站域名」的条数上限；超限时自动增加补充份数（0 = 不限制）">
+                <label for="alloc_domain_max">同域名每站累计最多条数</label>
+                <input type="number" id="alloc_domain_max" name="max_domain_count" value="5000" min="0" style="width:100%;" title="同一「原站域名」在一个网站（累计该网站所有补充表）中的条数上限；均分模式下装不下时自动抬高该域名的每站上限（保证不生成额外补充），旧模式（未勾选均分）下按每份补充表限制。0 = 不限制">
+            </div>
+        </div>
+        <div style="margin-bottom: 12px; padding: 10px 12px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px;">
+            <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:14px; font-weight:600;">
+                <input type="hidden" name="distribute_sites" value="off">
+                <input type="checkbox" id="alloc_distribute" name="distribute_sites" value="on" checked onchange="updateAllocSummary()">
+                剩余数据均分到各网站（不生成额外补充）
+            </label>
+            <div class="text-muted" style="font-size:12px; margin-left:24px; margin-top:4px; line-height:1.7;">
+                勾选（推荐）：全部剩余数据都分给所选主分类，按「主数据 + 已分补充」最少者依次分配，各网站商品总数尽量均衡；
+                一个网站拿到多份补充表时命名为 <code>{分类名}_supp1.xlsx</code>、<code>{分类名}_supp2.xlsx</code>…；<b>不再产生 extra 文件夹</b>。<br>
+                取消勾选：恢复旧行为——每个网站只绑定一份补充表，多余的份放入 <code>extra{N}</code>（未绑定主分类）。
             </div>
         </div>
         <div style="margin-bottom: 12px; display: flex; align-items: center; gap: 12px;">
@@ -122,7 +134,12 @@
             </div>
             <div id="alloc-cats-list" style="max-height: 300px; overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px;">
             </div>
+            <div style="margin-top: 10px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                <button type="button" class="btn-sm" id="alloc-preview-btn" onclick="runAllocPreview()" disabled>🎯 预测分配结果（精确到每个网站）</button>
+                <span id="alloc-preview-status" class="text-muted" style="font-size:12px;"></span>
+            </div>
             <div id="alloc-summary" style="margin-top: 12px; padding: 10px 14px; background: #f9fafb; border-radius: 8px; font-size: 14px; line-height: 1.8;"></div>
+            <div id="alloc-preview-result"></div>
         </div>
         <fieldset id="alloc-split-fieldset" style="margin-top: 12px; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px 14px;">
             <legend style="font-size: 14px; font-weight: 600; padding: 0 8px;">
@@ -150,9 +167,13 @@
                 </div>
             </div>
             <label style="display:flex; align-items:center; gap:8px; margin-top:10px; cursor:pointer; font-weight:400;">
-                <input type="checkbox" id="split_remove_source" name="split_remove_source" checked>
-                拆分完成后删除原表格（拆分结果保存在各主分类的数据文件夹内）
+                <input type="hidden" name="split_remove_source" value="off">
+                <input type="checkbox" id="split_remove_source" name="split_remove_source" value="on" checked>
+                拆分完成后删除分配产生的 main/supp 表（<b>在统计数据之前删除</b>，只保留分卷，避免统计把源表与分卷重复计数）
             </label>
+            <div class="text-muted" style="font-size:12px; margin-left:24px; margin-top:4px; line-height:1.7;">
+                删除的是本次分配写出的 main/supp 表；<b>原始导出表格不会删除</b>（数据分配时选择的那张表保留在原处）。
+            </div>
         </fieldset>
         <button type="submit" id="alloc-submit" class="btn btn-success" style="margin-top: 12px;" disabled>开始分配</button>
     </form>
@@ -923,6 +944,166 @@ function allocSelectFiltered(check) {
     updateAllocSummary();
 }
 
+function allocEsc(text) {
+    return String(text === null || text === undefined ? '' : text)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// 均分模式预演：用与后端一致的贪心（每份分给当前总量最少的网站）估算每站数据量
+function renderPerSitePreview(checkedBoxes, portions, target) {
+    var mains = [];
+    checkedBoxes.forEach(function(cb) {
+        mains.push({category: cb.value, count: parseInt(cb.dataset.count, 10) || 0});
+    });
+    if (!mains.length) return '';
+    var loads = mains.map(function(m) { return m.count; });
+    var parts = mains.map(function() { return 0; });
+    for (var p = 0; p < portions; p++) {
+        var idx = 0;
+        for (var i = 1; i < loads.length; i++) {
+            if (loads[i] < loads[idx]) idx = i;
+        }
+        loads[idx] += target;
+        parts[idx] += 1;
+    }
+    var rows = mains.map(function(m, i) {
+        return {category: m.category, main: m.count, supp: loads[i] - m.count,
+                parts: parts[i], total: loads[i]};
+    }).sort(function(a, b) { return b.total - a.total; });
+
+    var th = 'padding:2px 8px;';
+    var out = '<div style="margin-top:6px;">每个网站预计数据量（估算：主数据为实际条数，补充按份数均摊）：</div>';
+    out += '<table style="font-size:12px;border-collapse:collapse;margin-top:4px;background:#fff;">';
+    out += '<tr style="background:#f3f4f6;">' +
+           '<th style="text-align:left;' + th + '">网站（主分类）</th>' +
+           '<th style="text-align:right;' + th + '">主数据</th>' +
+           '<th style="text-align:right;' + th + '">补充约</th>' +
+           '<th style="text-align:right;' + th + '">补充份数</th>' +
+           '<th style="text-align:right;' + th + '">合计约</th></tr>';
+    rows.forEach(function(r) {
+        out += '<tr><td style="' + th + '">' + allocEsc(r.category) + '</td>' +
+               '<td style="text-align:right;' + th + '">' + r.main.toLocaleString() + '</td>' +
+               '<td style="text-align:right;' + th + '">' + r.supp.toLocaleString() + '</td>' +
+               '<td style="text-align:right;' + th + '">' + r.parts + '</td>' +
+               '<td style="text-align:right;' + th + '"><b>' + r.total.toLocaleString() + '</b></td></tr>';
+    });
+    out += '</table>';
+    return out;
+}
+
+// ── 提交前预测分配结果（调后端按当前参数真实规划，只读不写文件） ──
+function renderAllocPreview(d) {
+    var th = 'padding:3px 8px;';
+    var out = '<div style="margin-top:10px; padding:10px 14px; border:1px solid #c7d2fe; background:#eef2ff; border-radius:8px; font-size:13px; line-height:1.8;">';
+    out += '<b>🎯 预测分配结果</b> <span class="text-muted" style="font-weight:400;">（后端按当前参数真实规划，与实际执行一致）</span><br>';
+    out += '原表 <b>' + d.total_rows.toLocaleString() + '</b> 行 · 主分类 <b>' +
+           d.main_category_count + '</b> 个 · 剩余数据 <b>' + d.remaining_total.toLocaleString() + '</b> 条';
+    if (d.remaining_total > 0) {
+        out += ' · 补充表 <b>' + d.file_count + '</b> 份（每份约 ' + d.target_size.toLocaleString() + ' 条）';
+    }
+    out += '<br>';
+    if (d.extra_portions > 0) {
+        out += '<span style="color:#c62828;">⚠ 将生成 <b>' + d.extra_portions +
+               '</b> 份额外补充（未绑定主分类）。可勾选「剩余数据均分到各网站」，或增加主分类 / 调大每份条数来避免。</span><br>';
+    } else {
+        out += '<span style="color:#2e7d32;">✓ 不生成额外补充（extra）：全部剩余数据都分给所选网站</span><br>';
+    }
+
+    out += '<table style="font-size:12px;border-collapse:collapse;margin-top:6px;background:#fff;">';
+    out += '<tr style="background:#e0e7ff;">' +
+           '<th style="text-align:left;' + th + '">网站（主分类）</th>' +
+           '<th style="text-align:right;' + th + '">主数据</th>' +
+           '<th style="text-align:right;' + th + '">补充数据</th>' +
+           '<th style="text-align:right;' + th + '">补充份数</th>' +
+           '<th style="text-align:right;' + th + '">合计</th>' +
+           '<th style="text-align:left;' + th + '">该站同域名最多</th></tr>';
+    d.sites.forEach(function(s) {
+        var domText = '—';
+        var domKeys = Object.keys(s.domain_max_rows || {});
+        if (domKeys.length) {
+            domKeys.slice(0, 3).forEach(function(k, i) {
+                if (i) domText += '，';
+                domText += allocEsc(k || '(空域名)') + ' ' + s.domain_max_rows[k].toLocaleString() + ' 条';
+            });
+        }
+        out += '<tr><td style="' + th + '">' + allocEsc(s.category) + '</td>' +
+               '<td style="text-align:right;' + th + '">' + s.main_rows.toLocaleString() + '</td>' +
+               '<td style="text-align:right;' + th + '">' + s.supp_rows.toLocaleString() + '</td>' +
+               '<td style="text-align:right;' + th + '">' + s.supp_parts + '</td>' +
+               '<td style="text-align:right;' + th + '"><b>' + s.total_rows.toLocaleString() + '</b></td>' +
+               '<td style="' + th + 'font-size:11px;color:#555;">' + domText + '</td></tr>';
+    });
+    out += '</table>';
+
+    if (d.domain_limit && d.domain_limit.enabled) {
+        out += '原站域名上限: <b>' + d.domain_limit.requested.toLocaleString() +
+               '</b> 条 / 网站（按网站累计所有补充表）';
+        if (d.domain_limit.raised && d.domain_limit.raised.length) {
+            out += '<br><span style="color:#f59e0b;">⚠ ' + d.domain_limit.raised.length +
+                   ' 个域名按设定上限装不下，已自动抬高（不产生 extra）：</span>';
+            d.domain_limit.raised.slice(0, 5).forEach(function(r) {
+                out += '<br>&nbsp;&nbsp;' + allocEsc(r.domain || '(空域名)') + ': ' +
+                       r.requested.toLocaleString() + ' → <b>' + r.effective.toLocaleString() +
+                       '</b>（剩余 ' + r.total.toLocaleString() + ' 条）';
+            });
+            out += '<br><span class="text-muted">如需严格不超原上限，可增加主分类数量（多一个网站多一份额度），或把该域名数据拆到更多网站。</span>';
+        }
+        out += '<br>';
+    } else {
+        out += '原站域名约束: 未启用（该值设为 0，或表格中没有「原站域名」列）<br>';
+    }
+
+    if (d.warnings && d.warnings.length) {
+        out += '<span style="color:#f59e0b;">提示:</span><br>';
+        d.warnings.forEach(function(w) {
+            out += '&nbsp;&nbsp;· ' + allocEsc(w) + '<br>';
+        });
+    }
+    var diff = d.site_total_rows - d.total_rows;
+    if (diff === 0) {
+        out += '<span style="color:#2e7d32;">✓ 校验: 各网站合计 <b>' + d.site_total_rows.toLocaleString() +
+               '</b> = 原表行数，数据不丢不重</span>';
+    } else {
+        out += '<span style="color:#c62828;">✗ 校验: 各网站合计 ' + d.site_total_rows.toLocaleString() +
+               ' 与原表相差 ' + diff.toLocaleString() + ' 行（以任务日志为准）</span>';
+    }
+    out += '</div>';
+    return out;
+}
+
+function runAllocPreview() {
+    var btn = document.getElementById('alloc-preview-btn');
+    var status = document.getElementById('alloc-preview-status');
+    var box = document.getElementById('alloc-preview-result');
+    var form = document.getElementById('allocForm');
+    if (!form || !box) return;
+    btn.disabled = true;
+    status.textContent = '正在按当前参数预测（读取表格中，大文件约需 1 分钟）...';
+    box.innerHTML = '';
+    fetch('/product-data/allocate-preview', {method: 'POST', body: new FormData(form)})
+        .then(function(resp) { return resp.json().then(function(j) { return {ok: resp.ok, body: j}; }); })
+        .then(function(r) {
+            btn.disabled = false;
+            if (!r.body || !r.body.ok) {
+                status.textContent = '';
+                box.innerHTML = '<div style="margin-top:10px;padding:10px 14px;border:1px solid #fecaca;' +
+                    'background:#fef2f2;border-radius:8px;color:#c62828;font-size:13px;">预测失败: ' +
+                    allocEsc((r.body && r.body.error) || '未知错误') + '</div>';
+                return;
+            }
+            status.textContent = '预测完成（参数改动后请重新预测）';
+            box.innerHTML = renderAllocPreview(r.body.data);
+        })
+        .catch(function(err) {
+            btn.disabled = false;
+            status.textContent = '';
+            box.innerHTML = '<div style="margin-top:10px;padding:10px 14px;border:1px solid #fecaca;' +
+                'background:#fef2f2;border-radius:8px;color:#c62828;font-size:13px;">预测失败: ' +
+                allocEsc(err && err.message ? err.message : String(err)) + '</div>';
+        });
+}
+
 function updateAllocSummary() {
     var checked = document.querySelectorAll('.alloc-cat-checkbox:checked');
     var minSize = parseInt(document.getElementById('alloc_min').value, 10) || 40000;
@@ -943,6 +1124,15 @@ function updateAllocSummary() {
         if (cat.count > splitThreshold && !selectedMains[cat.category]) splitCount++;
     });
 
+    var distributeEl = document.getElementById('alloc_distribute');
+    var distribute = !distributeEl || distributeEl.checked;
+    // 参数已变化：旧的预测结果作废
+    var previewBox = document.getElementById('alloc-preview-result');
+    if (previewBox) previewBox.innerHTML = '';
+    var previewStatus = document.getElementById('alloc-preview-status');
+    if (previewStatus) previewStatus.textContent = '';
+    var previewBtn = document.getElementById('alloc-preview-btn');
+    if (previewBtn) previewBtn.disabled = checked.length === 0;
     var html = '';
     if (n === 0) {
         html = '已选主分类: 0 个 &nbsp;|&nbsp; 表格总计: ' + allocTotalRows.toLocaleString() + ' 条';
@@ -952,14 +1142,18 @@ function updateAllocSummary() {
         if (remaining > 0) {
             portions = Math.max(n, Math.ceil(remaining / maxSize));
             target = Math.round(remaining / portions);
-            extra = Math.max(0, portions - n);
+            extra = distribute ? 0 : Math.max(0, portions - n);
         }
         html = '已选主分类: <b>' + n + '</b> 个（共 ' + selRows.toLocaleString() + ' 条，每个主分类单独成表）<br>';
         html += '剩余数据: <b>' + remaining.toLocaleString() + '</b> 条';
         if (remaining > 0) {
             html += '，将分为 <b>' + portions + '</b> 份补充表（每份约 ' + target.toLocaleString() + ' 条）';
-            if (extra > 0) html += '，其中 ' + extra + ' 份为额外补充（未绑定主分类）';
+            if (extra > 0) html += '，其中 <b style="color:#c62828;">' + extra + ' 份为额外补充（未绑定主分类）</b>';
+            else if (distribute) html += '，<b style="color:#2e7d32;">全部均分到 ' + n + ' 个网站</b>';
             html += '<br>';
+            if (distribute) {
+                html += renderPerSitePreview(checked, portions, target) + '<br>';
+            }
             if (splitCount > 0 && portions > 1) {
                 html += '大分类拆分: <b>' + splitCount + '</b> 个（超过 ' + splitThreshold.toLocaleString() +
                         ' 条的分类将均匀拆分到各补充表，不整类分给单一主分类）<br>';
@@ -977,8 +1171,10 @@ function updateAllocSummary() {
             // 原站域名约束预览
             var domainMax = parseInt(document.getElementById('alloc_domain_max').value, 10) || 0;
             if (domainMax > 0) {
-                html += '<br>原站域名约束: 每个主分类的补充数据中同一「原站域名」最多 ' +
-                        domainMax.toLocaleString() + ' 条（超限时自动增加补充份数）';
+                html += '<br>原站域名约束: ' + (distribute ? '每个网站（累计该站所有补充表）' : '每份补充表') +
+                        '中同一「原站域名」最多 ' + domainMax.toLocaleString() + ' 条';
+                html += '<br><span style="color:#f59e0b;">⚠ 上面是与域名约束无关的快速估算；' +
+                        '点「🎯 预测分配结果」可看到含域名约束的精确结果（每站份数/数据量/是否会产生额外补充）</span>';
             }
             // 批量拆表预览
             var splitEnabledEl = document.getElementById('split_enabled');
