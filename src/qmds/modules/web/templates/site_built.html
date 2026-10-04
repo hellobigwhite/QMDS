@@ -130,8 +130,12 @@
                 <label style="font-size:13px;"><input type="checkbox" name="export_fields" value="created_at"> 创建时间</label>
                 <button type="submit" class="btn btn-success" name="action" value="export_selected"
                         onclick="return confirmExport();">导出勾选到Excel</button>
+                <button type="button" class="btn btn-info" id="copySelectedBtn"
+                        onclick="copySelectedSites()">📋 复制勾选到粘贴板</button>
+                <span id="copySelectedStatus" class="text-muted" style="font-size:12px;"></span>
             </div>
-            <p class="text-muted" style="font-size:12px;">默认导出 建站时间/域名/服务器/模板底板，建站时间格式为 年/月/日。</p>
+            <p class="text-muted" style="font-size:12px;">默认导出 建站时间/域名/服务器/模板底板，建站时间格式为 年/月/日。
+                「📋 复制勾选到粘贴板」复制的是与导出完全相同的内容（含表头、制表符分隔），可直接在 Excel/WPS 里 Ctrl+V 粘贴成一列列一份表。</p>
         </div>
 
         <div class="card" style="background:#f0f7ff; margin-bottom:16px;">
@@ -378,6 +382,90 @@ function confirmExport() {
         return false;
     }
     return true;
+}
+
+// ── 复制勾选站点到粘贴板（后端返回与导出 Excel 相同的制表符文本） ──
+async function copyTextToClipboard(text) {
+    try {
+        if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+            return true;
+        }
+    } catch (e) {
+        // 继续走兜底方案
+    }
+    // 兜底 1: 隐藏 textarea + execCommand
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', 'readonly');
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    let ok = false;
+    try {
+        ok = document.execCommand('copy');
+    } catch (e) {
+        ok = false;
+    }
+    document.body.removeChild(ta);
+    if (!ok) {
+        // 兜底 2: 弹出文本框让用户手动复制
+        window.prompt('浏览器不允许自动复制，请按 Ctrl+C 复制以下内容：', text);
+    }
+    return ok;
+}
+
+async function copySelectedSites() {
+    const selected = Array.from(document.querySelectorAll('input[name="selected_ids"]:checked'));
+    const status = document.getElementById('copySelectedStatus');
+    const btn = document.getElementById('copySelectedBtn');
+    if (!selected.length) {
+        alert('请先勾选要复制的站点。');
+        return;
+    }
+    const fields = Array.from(document.querySelectorAll('input[name="export_fields"]:checked'));
+    if (!fields.length) {
+        alert('请至少选择一个要复制的字段。');
+        return;
+    }
+    const form = document.querySelector('form[action="/site-management/built"]');
+    if (!form) {
+        alert('页面结构异常，未找到表单。');
+        return;
+    }
+    const data = new FormData(form);
+    data.set('action', 'copy_selected');
+    if (status) status.textContent = '正在生成内容...';
+    if (btn) btn.disabled = true;
+    try {
+        const resp = await fetch('/site-management/built', {method: 'POST', body: data});
+        let body = null;
+        try {
+            body = await resp.json();
+        } catch (e) {
+            body = null;
+        }
+        if (!body || !body.ok) {
+            if (status) status.textContent = '';
+            alert('复制失败: ' + ((body && body.error) || ('HTTP ' + resp.status)));
+            return;
+        }
+        const ok = await copyTextToClipboard(body.data.text);
+        if (status) {
+            status.textContent = ok
+                ? ('已复制 ' + body.data.count + ' 个站点 × ' + body.data.columns.length
+                   + ' 列（含表头），可直接粘贴到 Excel')
+                : ('已弹出内容文本框（' + body.data.count + ' 个站点），请手动 Ctrl+C 复制');
+            setTimeout(function() { status.textContent = ''; }, 8000);
+        }
+    } catch (e) {
+        if (status) status.textContent = '';
+        alert('复制失败: ' + (e && e.message ? e.message : e));
+    } finally {
+        if (btn) btn.disabled = false;
+    }
 }
 
 document.getElementById('pendingSelector').addEventListener('change', syncRecommendedAction);

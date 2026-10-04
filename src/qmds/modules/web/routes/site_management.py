@@ -18,6 +18,91 @@ log = get_logger("web")
 
 bp = Blueprint("site_management", __name__)
 
+# ── 勾选站点导出/复制（同一份数据，Excel 下载与剪贴板共用） ──────────
+
+# 导出字段 -> 表头（顺序由前端勾选顺序决定）
+SITE_EXPORT_FIELD_LABELS = {
+    "build_time": "建站时间",
+    "domain": "域名",
+    "server": "服务器",
+    "template": "模板底板",
+    "category": "大类",
+    "main_category": "主分类",
+    "title": "标题",
+    "description": "描述",
+    "address": "地址",
+    "health_status": "健康状态",
+    "main_data_status": "主数据状态",
+    "extra_data_status": "补充数据状态",
+    "main_category_status": "主分类状态",
+    "auto_category_status": "菜单状态",
+    "plugin_status": "插件状态",
+    "media_status": "媒体状态",
+    "report_status": "上报状态",
+    "report_time": "上报时间",
+    "created_at": "创建时间",
+}
+
+# 日期时间字段（导出时统一格式化为 年/月/日）
+SITE_EXPORT_TIME_FIELDS = ("build_time", "report_time", "created_at")
+
+# 导出/复制默认字段
+SITE_EXPORT_DEFAULT_FIELDS = ["build_time", "domain", "server", "template"]
+
+# 复制到剪贴板的内容上限（字符），超过时建议改用 Excel 导出
+MAX_CLIPBOARD_CHARS = 2000000
+
+
+def _export_fields_from_form() -> list:
+    """读取本次请求要导出的字段（未勾选时用默认字段）"""
+    fields = [f for f in request.form.getlist("export_fields") if f]
+    return fields or list(SITE_EXPORT_DEFAULT_FIELDS)
+
+
+def build_site_export_rows(site_db, selected_ids, export_fields) -> tuple:
+    """按勾选站点与字段构建导出数据
+
+    返回 (rows, columns)：rows 为 {表头: 值} 列表（按站点顺序），columns 为表头列表。
+    导出 Excel 与复制到剪贴板共用，保证两边内容完全一致。
+    """
+    time_fields = set(SITE_EXPORT_TIME_FIELDS)
+    columns = [SITE_EXPORT_FIELD_LABELS.get(f, f) for f in export_fields]
+    rows = []
+    for sid in selected_ids:
+        site = site_db.get_site_by_id(sid)
+        if not site:
+            continue
+        row = {}
+        for field in export_fields:
+            value = site.get(field, "")
+            if field in time_fields and value:
+                try:
+                    dt = datetime.fromisoformat(str(value))
+                    value = dt.strftime("%Y/%m/%d")
+                except Exception:
+                    value = str(value)[:10].replace("-", "/")
+            row[SITE_EXPORT_FIELD_LABELS.get(field, field)] = value
+        rows.append(row)
+    return rows, columns
+
+
+def _tsv_cell(value) -> str:
+    """单元格文本：去掉制表符与换行（粘贴到 Excel 时才不会串列串行）"""
+    if value is None:
+        return ""
+    text = str(value)
+    for ch in ("\t", "\r", "\n"):
+        text = text.replace(ch, " ")
+    return text.strip()
+
+
+def site_export_tsv(rows, columns) -> str:
+    """把导出数据拼成制表符文本（首行表头，CRLF 换行，Excel/WPS 可直接粘贴分列）"""
+    lines = ["\t".join(_tsv_cell(c) for c in columns)]
+    for row in rows:
+        lines.append("\t".join(_tsv_cell(row.get(c, "")) for c in columns))
+    return "\r\n".join(lines)
+
 # ── 批量下图失败图片容忍上限 ──────────────────────────────────
 # 上传数据后的批量下图阶段，反复下载失败的图片在此数量内则跳过并继续
 # 执行下一步（少量图片缺失不影响建站流程）；超过则判定该步骤失败。
@@ -1789,49 +1874,9 @@ def site_built():
                 return redirect(url_for("site_management.site_built", q=q))
 
             elif action == "export_selected":
-                export_fields = request.form.getlist("export_fields")
-                if not export_fields:
-                    export_fields = ["build_time", "domain", "server", "template"]
-
-                field_labels = {
-                    "build_time": "建站时间",
-                    "domain": "域名",
-                    "server": "服务器",
-                    "template": "模板底板",
-                    "category": "大类",
-                    "main_category": "主分类",
-                    "title": "标题",
-                    "description": "描述",
-                    "address": "地址",
-                    "health_status": "健康状态",
-                    "main_data_status": "主数据状态",
-                    "extra_data_status": "补充数据状态",
-                    "main_category_status": "主分类状态",
-                    "auto_category_status": "菜单状态",
-                    "plugin_status": "插件状态",
-                    "media_status": "媒体状态",
-                    "report_status": "上报状态",
-                    "report_time": "上报时间",
-                    "created_at": "创建时间",
-                }
-                time_fields = {"build_time", "report_time", "created_at"}
-
-                rows = []
-                for sid in selected_ids:
-                    site = site_db.get_site_by_id(sid)
-                    if not site:
-                        continue
-                    row = {}
-                    for field in export_fields:
-                        value = site.get(field, "")
-                        if field in time_fields and value:
-                            try:
-                                dt = datetime.fromisoformat(str(value))
-                                value = dt.strftime("%Y/%m/%d")
-                            except Exception:
-                                value = str(value)[:10].replace("-", "/")
-                        row[field_labels.get(field, field)] = value
-                    rows.append(row)
+                export_fields = _export_fields_from_form()
+                rows, columns = build_site_export_rows(site_db, selected_ids,
+                                                       export_fields)
 
                 if not rows:
                     flash("没有可导出的站点数据", "error")
@@ -1840,7 +1885,6 @@ def site_built():
                 from io import BytesIO
                 import pandas as pd
                 output = BytesIO()
-                columns = [field_labels.get(f, f) for f in export_fields]
                 pd.DataFrame(rows, columns=columns).to_excel(output, index=False, engine="openpyxl")
                 output.seek(0)
 
@@ -1851,6 +1895,25 @@ def site_built():
                     download_name=filename,
                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
+
+            elif action == "copy_selected":
+                # 与「导出勾选到Excel」同一份数据，返回制表符文本由前端写入剪贴板，
+                # 可直接粘贴进 Excel/WPS（自动按列分行）
+                export_fields = _export_fields_from_form()
+                rows, columns = build_site_export_rows(site_db, selected_ids,
+                                                       export_fields)
+                if not rows:
+                    return jsonify({"ok": False,
+                                    "error": "没有可复制的站点数据（请先勾选站点）"}), 400
+                text = site_export_tsv(rows, columns)
+                if len(text) > MAX_CLIPBOARD_CHARS:
+                    return jsonify({"ok": False, "error": "内容过大（"
+                                    f"{len(text)} 字符，超过 {MAX_CLIPBOARD_CHARS}），请改用「导出勾选到Excel」"}), 413
+                return jsonify({"ok": True, "data": {
+                    "text": text,
+                    "count": len(rows),
+                    "columns": columns,
+                }})
 
             task_id = f"built_{action}_{int(time.time())}"
             action_labels = {
